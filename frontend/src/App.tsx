@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AssetLibrary } from './pages/AssetLibrary';
 import { VideoEditor } from './pages/VideoEditor';
 import { BatchCut } from './pages/BatchCut';
@@ -6,7 +6,21 @@ import { Settings } from './pages/Settings';
 import { Folder, Film, Layers, Settings as SettingsIcon, Sparkles } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('editor');
+  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
+
+  // 全局防御：防止浏览器在页面任何区域被拖入文件时执行默认的“跳转并打开视频”行为
+  useEffect(() => {
+    const preventWindowDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('dragover', preventWindowDrop);
+    window.addEventListener('drop', preventWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', preventWindowDrop);
+      window.removeEventListener('drop', preventWindowDrop);
+    };
+  }, []);
 
   const navItems = [
     { id: 'library', label: '素材库', icon: Folder },

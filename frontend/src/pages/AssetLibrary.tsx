@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { fetchMaterials, uploadMaterial, deleteMaterial, Material } from '../services/api';
-import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle } from 'lucide-react';
+import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'talking_head', label: '口播主视频', desc: '用于声音主轨与人像切出', icon: Film, color: 'text-blue-600 bg-blue-50' },
@@ -14,6 +14,22 @@ export const AssetLibrary: React.FC = () => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [uploading, setUploading] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [uploadProgressText, setUploadProgressText] = useState<string>('');
+
+  // 关键：阻止浏览器在拖拽文件进入未绑定区域时的默认打开/下载行为
+  useEffect(() => {
+    const preventWindowDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('dragover', preventWindowDrop);
+    window.addEventListener('drop', preventWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', preventWindowDrop);
+      window.removeEventListener('drop', preventWindowDrop);
+    };
+  }, []);
 
   const loadData = async (cat: string) => {
     setLoading(true);
@@ -31,19 +47,54 @@ export const AssetLibrary: React.FC = () => {
     loadData(activeTab);
   }, [activeTab]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const uploadFileList = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
     setUploading(true);
     try {
       for (let i = 0; i < files.length; i++) {
-        await uploadMaterial(activeTab, files[i]);
+        const file = files[i];
+        setUploadProgressText(`正在上传 (${i + 1}/${files.length}): ${file.name}...`);
+        await uploadMaterial(activeTab, file);
       }
       await loadData(activeTab);
     } catch (err) {
-      alert('上传失败，请检查后端服务是否启动');
+      alert('上传失败，请确保后端服务正常运行');
     } finally {
       setUploading(false);
+      setUploadProgressText('');
+    }
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await uploadFileList(e.target.files);
+    }
+    e.target.value = '';
+  };
+
+  // 拖拽事件监听
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 避免在子元素间移动时闪烁
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      await uploadFileList(files);
     }
   };
 
@@ -56,6 +107,8 @@ export const AssetLibrary: React.FC = () => {
       alert('删除失败');
     }
   };
+
+  const currentCategoryInfo = CATEGORIES.find(c => c.key === activeTab);
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
@@ -96,25 +149,45 @@ export const AssetLibrary: React.FC = () => {
         })}
       </div>
 
-      {/* 上传拖拽区域 */}
-      <div className="mb-8 p-8 border-2 border-dashed border-gray-200 rounded-2xl bg-white text-center hover:border-blue-400 transition-colors">
+      {/* 上传拖拽区域（具备完整的 HTML5 拖拽监听） */}
+      <div
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`mb-8 p-8 border-2 border-dashed rounded-2xl text-center transition-all duration-200 ${
+          isDragging
+            ? 'border-blue-600 bg-blue-50/70 scale-[1.01] shadow-lg ring-4 ring-blue-500/10'
+            : 'border-gray-200 bg-white hover:border-blue-400 shadow-sm'
+        }`}
+      >
         <input
           type="file"
           id="material-upload"
           className="hidden"
           multiple
           accept="video/*"
-          onChange={handleFileUpload}
+          onChange={handleFileInputChange}
           disabled={uploading}
         />
-        <label htmlFor="material-upload" className="cursor-pointer flex flex-col items-center">
-          <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-3">
-            <Upload className="w-6 h-6" />
+        <label htmlFor="material-upload" className="cursor-pointer flex flex-col items-center select-none">
+          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-3 transition-transform duration-200 ${
+            isDragging ? 'bg-blue-600 text-white scale-110 shadow-md' : 'bg-blue-50 text-blue-600'
+          }`}>
+            <Upload className={`w-7 h-7 ${isDragging ? 'animate-bounce' : ''}`} />
           </div>
-          <span className="text-sm font-medium text-gray-900">
-            {uploading ? '正在上传与提取元数据...' : '点击或拖拽视频至此处上传'}
+
+          <span className="text-sm font-semibold text-gray-900">
+            {uploading
+              ? (uploadProgressText || '正在上传并提取元数据...')
+              : isDragging
+              ? `松开鼠标即可上传至【${currentCategoryInfo?.label}】`
+              : `点击或直接拖拽视频至此处上传（归入【${currentCategoryInfo?.label}】）`}
           </span>
-          <span className="text-xs text-gray-400 mt-1">支持 MP4, MOV, MKV 等常见格式，将自动提取时长与规格</span>
+
+          <span className="text-xs text-gray-400 mt-1.5">
+            支持 MP4, MOV, MKV, AVI, WEBM 格式，自动探测分辨率与时长
+          </span>
         </label>
       </div>
 
@@ -122,7 +195,7 @@ export const AssetLibrary: React.FC = () => {
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-gray-800">
-            已就绪素材清单 ({materials.length})
+            【{currentCategoryInfo?.label}】已就绪素材清单 ({materials.length})
           </h2>
         </div>
 
@@ -130,7 +203,7 @@ export const AssetLibrary: React.FC = () => {
           <div className="py-12 text-center text-gray-400 text-sm">加载中...</div>
         ) : materials.length === 0 ? (
           <div className="py-16 text-center text-gray-400 border border-gray-100 rounded-2xl bg-white">
-            该分类下暂无视频素材，请先上传
+            该分类下暂无视频素材，请将视频拖入上方区域上传
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
