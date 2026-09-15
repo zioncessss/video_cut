@@ -54,3 +54,40 @@ def test_editor_analyze_and_render_flow(tmp_path):
     # 清理
     storage_service.delete_material(th.id)
     storage_service.delete_material(venue.id)
+
+def test_editor_correct_endpoint():
+    subs = [
+        {"id": "sub-1", "start_time": 0.0, "end_time": 2.5, "raw_text": "练科尔到库技巧", "corrected_text": "练科尔到库技巧"}
+    ]
+    res = client.post(
+        "/api/v1/editor/correct",
+        json={"subtitles": subs, "domain": "driving_school"}
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["code"] == 0
+    assert len(data["data"]["subtitles"]) == 1
+    assert "科目二" in data["data"]["subtitles"][0]["corrected_text"]
+
+def test_instruction_apply_endpoint(tmp_path):
+    fake_th_file = tmp_path / "th_inst.mp4"
+    fake_th_file.write_bytes(b"stream")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_inst.mp4", fake_th_file)
+
+    res = client.post(
+        "/api/v1/projects/analyze-and-cut",
+        json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": True}
+    )
+    project_id = res.json()["id"]
+
+    inst_res = client.post(
+        "/api/v1/instruction/apply",
+        json={"project_id": project_id, "instruction": "把第1句文案润色为热烈开场"}
+    )
+    assert inst_res.status_code == 200
+    inst_data = inst_res.json()
+    assert inst_data["explanation"] != ""
+    assert "harness_engine_used" in inst_data
+
+    storage_service.delete_material(th.id)
+

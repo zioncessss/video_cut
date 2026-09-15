@@ -1,27 +1,48 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../services/api';
-import { Settings as SettingsIcon, Terminal, CheckCircle2, AlertCircle, Save } from 'lucide-react';
+import { API_BASE, testHarness, TestHarnessResult } from '../services/api';
+import { Settings as SettingsIcon, Terminal, CheckCircle2, AlertCircle, Save, Zap, Loader2 } from 'lucide-react';
 
 export const Settings: React.FC = () => {
-  const [activeHarness, setActiveHarness] = useState<string>('zcode');
+  const [activeHarness, setActiveHarness] = useState<string>('codex');
   const [llmModel, setLlmModel] = useState<string>('GLM-5.3-Flash');
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [llmBaseUrl, setLlmBaseUrl] = useState<string>('');
   const [zcodePath, setZcodePath] = useState<string | null>(null);
   const [detected, setDetected] = useState<{ [key: string]: boolean }>({});
   const [saving, setSaving] = useState<boolean>(false);
+  const [testing, setTesting] = useState<boolean>(false);
+  const [testResult, setTestResult] = useState<TestHarnessResult | null>(null);
 
   useEffect(() => {
     axios.get(`${API_BASE}/settings`).then(res => {
       setActiveHarness(res.data.active_harness);
-      setLlmModel(res.data.llm_model);
+      setLlmModel(res.data.llm_model || '');
       setLlmApiKey(res.data.llm_api_key || '');
       setLlmBaseUrl(res.data.llm_base_url || '');
       setZcodePath(res.data.zcode_path || null);
       setDetected(res.data.detected_engines || {});
     }).catch(() => {});
   }, []);
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testHarness(activeHarness, llmModel);
+      setTestResult(res);
+    } catch (e: any) {
+      setTestResult({
+        success: false,
+        engine: activeHarness,
+        latency_ms: 0,
+        active_model: '',
+        message: e?.response?.data?.message || '测试请求超时或连接失败'
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -32,7 +53,7 @@ export const Settings: React.FC = () => {
         llm_api_key: llmApiKey,
         llm_base_url: llmBaseUrl
       });
-      alert('设置已成功保存并落盘！');
+      alert('设置已成功保存并持久化！');
     } catch (e) {
       alert('保存设置失败');
     } finally {
@@ -103,55 +124,71 @@ export const Settings: React.FC = () => {
           )}
         </div>
 
-        {/* 模型选择 */}
+        {/* 模型参数配置 */}
         <div>
-          <label className="block text-sm font-semibold text-gray-800 mb-2">
-            LLM 纠错与意图解析模型
+          <label className="block text-sm font-semibold text-gray-800 mb-1">
+            Codex / LLM 模型参数覆盖 (可选 -m)
           </label>
-          <select
+          <p className="text-[11px] text-gray-500 mb-2">
+            留空将完全继承本地 <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">~/.codex/config.toml</code> 配置；亦可在此显式指定模型名称（如 <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">glm-5.3-flash</code> 或 <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">deepseek-chat</code>）。
+          </p>
+          <input
+            type="text"
             value={llmModel}
             onChange={e => setLlmModel(e.target.value)}
-            className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500"
+            placeholder="留空默认使用 Codex 本地配置 (或输入 glm-5.3-flash)"
+            className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+          />
+        </div>
+
+        {/* 连通性测试反馈卡片 */}
+        {testResult && (
+          <div
+            className={`p-4 rounded-xl border text-xs flex items-start space-x-3 transition-all ${
+              testResult.success
+                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                : 'bg-red-50/70 border-red-200 text-red-900'
+            }`}
           >
-            <option value="GLM-5.3-Flash">GLM-5.3-Flash (ZCode 内置原生、推荐)</option>
-            <option value="GLM-5.3">GLM-5.3 (ZCode 深度推理)</option>
-            <option value="deepseek-chat">deepseek-chat (语义理解优异)</option>
-            <option value="gpt-4o-mini">gpt-4o-mini (极速轻量)</option>
-            <option value="qwen-plus">qwen-plus (通义千问)</option>
-            <option value="local-ollama">local-ollama (本地私有化)</option>
-          </select>
-        </div>
-
-        {/* 可选自定义 API 端点配置 */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
-              自定义 API Base URL (选填)
-            </label>
-            <input
-              type="text"
-              value={llmBaseUrl}
-              onChange={e => setLlmBaseUrl(e.target.value)}
-              placeholder="https://api.openai.com/v1"
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
-            />
+            {testResult.success ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1">
+              <div className="font-semibold flex items-center justify-between">
+                <span>{testResult.success ? '连通性测试通过' : '连通性测试未通过'}</span>
+                {testResult.latency_ms > 0 && (
+                  <span className="font-mono text-[11px] bg-white/80 px-2 py-0.5 rounded border border-gray-200/50">
+                    响应延迟: {testResult.latency_ms} ms
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] opacity-90">{testResult.message}</p>
+              {testResult.active_model && (
+                <p className="mt-1 text-[11px] font-mono text-gray-600">
+                  当前生效模型: <span className="font-semibold text-gray-800">{testResult.active_model}</span>
+                </p>
+              )}
+            </div>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
-              自定义 API Key (选填)
-            </label>
-            <input
-              type="password"
-              value={llmApiKey}
-              onChange={e => setLlmApiKey(e.target.value)}
-              placeholder="sk-..."
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
-            />
-          </div>
-        </div>
+        )}
 
-        {/* 保存按钮 */}
-        <div className="pt-4 border-t border-gray-100 flex justify-end">
+        {/* 操作按钮区 */}
+        <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
+          <button
+            onClick={handleTestConnection}
+            disabled={testing}
+            className="flex items-center space-x-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold text-xs px-4 py-2.5 rounded-xl transition-colors disabled:opacity-50"
+          >
+            {testing ? (
+              <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            ) : (
+              <Zap className="w-4 h-4 text-amber-500" />
+            )}
+            <span>{testing ? '正在探测 CLI...' : '测试连通性 (Ping)'}</span>
+          </button>
+
           <button
             onClick={handleSave}
             disabled={saving}

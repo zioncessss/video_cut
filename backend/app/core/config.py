@@ -33,12 +33,23 @@ def has_zcode_available() -> bool:
     import shutil
     return ZCODE_CLI_PATH.exists() and bool(shutil.which("node"))
 
-# 默认激活的 Harness：若存在 ZCode CLI 则优先启用 zcode
-DEFAULT_HARNESS = "zcode" if has_zcode_available() else "embedded"
+def has_codex_available() -> bool:
+    import shutil
+    return bool(shutil.which("codex"))
+
+# 默认激活的 Harness：若存在 Codex CLI 则优先启用 codex，其次 zcode，否则 embedded
+def get_default_harness() -> str:
+    if has_codex_available():
+        return "codex"
+    if has_zcode_available():
+        return "zcode"
+    return "embedded"
+
+DEFAULT_HARNESS = get_default_harness()
 ACTIVE_HARNESS = os.getenv("ACTIVE_HARNESS", DEFAULT_HARNESS)  # "embedded", "codex", "zcode"
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "GLM-5.3-Flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
 
 def load_settings():
     global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL

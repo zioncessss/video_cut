@@ -49,7 +49,8 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
     # 2. Harness 上下文驾校专有词纠偏
     correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
-    corrected_segments = await get_active_harness().correct_subtitles(correction_req)
+    correction_res = await get_active_harness().correct_subtitles(correction_req)
+    corrected_segments = correction_res.updated_subtitles
 
     # 3. 关键词匹配与空镜智能分配 (J/L-Cut)
     subtitles: List[SubtitleSegment] = []
@@ -104,6 +105,28 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
     )
     _projects[project.id] = project
     return project
+
+class CorrectSubtitlesRequest(BaseModel):
+    subtitles: List[Dict[str, Any]]
+    domain: str = "driving_school"
+
+@router.post("/correct")
+async def correct_subtitles_endpoint(req: CorrectSubtitlesRequest):
+    correction_req = HarnessCorrectionRequest(
+        raw_subtitles=req.subtitles,
+        domain_context=req.domain
+    )
+    result = await get_active_harness().correct_subtitles(correction_req)
+    return {
+        "code": 0,
+        "message": "智能纠偏完成",
+        "data": {
+            "subtitles": result.updated_subtitles,
+            "corrections": [c.model_dump() for c in result.corrections_summary],
+            "harness_engine_used": result.harness_engine_used,
+            "latency_ms": result.latency_ms
+        }
+    }
 
 @router.get("/{project_id}", response_model=CutProject)
 async def get_project(project_id: str):

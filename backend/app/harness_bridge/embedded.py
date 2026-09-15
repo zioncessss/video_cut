@@ -3,6 +3,8 @@ from typing import List, Dict, Any
 from app.harness_bridge.base import (
     BaseHarnessBridge,
     HarnessCorrectionRequest,
+    HarnessCorrectionResponse,
+    SubtitleCorrectionItem,
     HarnessInstructionRequest,
     HarnessPlanResponse,
 )
@@ -27,17 +29,36 @@ class EmbeddedHarnessBridge(BaseHarnessBridge):
     async def is_available(self) -> bool:
         return True
 
-    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> List[Dict[str, Any]]:
+    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> HarnessCorrectionResponse:
         corrected_list = []
+        corrections_summary = []
         for item in request.raw_subtitles:
-            c_text = item.get("raw_text", "")
+            orig_text = item.get("raw_text", item.get("corrected_text", ""))
+            c_text = orig_text
+            changes = []
             for typo, correct in COMMON_DRIVING_CORRECTIONS.items():
-                c_text = c_text.replace(typo, correct)
+                if typo in c_text:
+                    c_text = c_text.replace(typo, correct)
+                    changes.append({"from": typo, "to": correct, "reason": "内置驾考专有词纠偏"})
             
             new_item = dict(item)
             new_item["corrected_text"] = c_text
             corrected_list.append(new_item)
-        return corrected_list
+            if changes:
+                corrections_summary.append(
+                    SubtitleCorrectionItem(
+                        subtitle_id=item.get("id", ""),
+                        original_text=orig_text,
+                        corrected_text=c_text,
+                        changes=changes
+                    )
+                )
+        return HarnessCorrectionResponse(
+            updated_subtitles=corrected_list,
+            corrections_summary=corrections_summary,
+            harness_engine_used="embedded",
+            latency_ms=1.0
+        )
 
     async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
         instr = request.user_instruction.strip()

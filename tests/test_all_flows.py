@@ -35,6 +35,15 @@ def test_settings_api():
     assert post_res.status_code == 200
     assert post_res.json()["data"]["active_harness"] == "embedded"
 
+    probe_res = client.post(
+        "/api/v1/settings/test-harness",
+        json={"engine": "embedded"}
+    )
+    assert probe_res.status_code == 200
+    probe_data = probe_res.json()
+    assert probe_data["code"] == 0
+    assert probe_data["data"]["success"] is True
+
 def test_batch_api():
     res = client.post(
         "/api/v1/batch/jobs",

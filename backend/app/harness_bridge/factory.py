@@ -7,18 +7,13 @@ from app.harness_bridge.zcode import ZCodeHarnessBridge
 
 _instances: Dict[str, BaseHarnessBridge] = {}
 
-def get_active_harness() -> BaseHarnessBridge:
-    """
-    根据当前配置与环境可用性，动态获取对应的 Harness 桥接器单例。
-    支持 'zcode', 'codex', 'embedded'。
-    """
-    key = config.ACTIVE_HARNESS.lower()
-    
-    if key == "zcode":
+def get_harness_by_key(key: str) -> BaseHarnessBridge:
+    k = key.lower()
+    if k == "zcode":
         if "zcode" not in _instances:
             _instances["zcode"] = ZCodeHarnessBridge()
         return _instances["zcode"]
-    elif key == "codex":
+    elif k == "codex":
         if "codex" not in _instances:
             _instances["codex"] = CodexHarnessBridge()
         return _instances["codex"]
@@ -26,3 +21,11 @@ def get_active_harness() -> BaseHarnessBridge:
         if "embedded" not in _instances:
             _instances["embedded"] = EmbeddedHarnessBridge()
         return _instances["embedded"]
+
+def get_active_harness() -> BaseHarnessBridge:
+    """
+    根据当前配置与环境可用性，动态获取对应的 Harness 桥接器单例。
+    支持 'zcode', 'codex', 'embedded'。
+    """
+    return get_harness_by_key(config.ACTIVE_HARNESS)
+

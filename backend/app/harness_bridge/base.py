@@ -7,15 +7,38 @@ class HarnessCorrectionRequest(BaseModel):
     domain_context: str = "driving_school"
     custom_glossary: Optional[List[str]] = None
 
+class SubtitleCorrectionItem(BaseModel):
+    subtitle_id: str
+    original_text: str
+    corrected_text: str
+    changes: List[Dict[str, str]] = []
+
+class HarnessCorrectionResponse(BaseModel):
+    updated_subtitles: List[Dict[str, Any]]
+    corrections_summary: List[SubtitleCorrectionItem] = []
+    harness_engine_used: str
+    latency_ms: float = 0.0
+
+    def __len__(self):
+        return len(self.updated_subtitles)
+
+    def __iter__(self):
+        return iter(self.updated_subtitles)
+
+    def __getitem__(self, index):
+        return self.updated_subtitles[index]
+
 class HarnessInstructionRequest(BaseModel):
     current_project_state: Dict[str, Any]
     user_instruction: str
+    available_materials: Optional[List[Dict[str, Any]]] = None
 
 class HarnessPlanResponse(BaseModel):
     explanation: str
     updated_subtitles: Optional[List[Dict[str, Any]]] = None
     updated_brolls: Optional[List[Dict[str, Any]]] = None
     harness_engine_used: str
+    latency_ms: float = 0.0
 
 class BaseHarnessBridge(ABC):
     @abstractmethod

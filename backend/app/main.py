@@ -47,7 +47,8 @@ def mount_routers():
 
     try:
         from app.api.editor import router as editor_router
-        app.include_router(editor_router, prefix="/api/v1/projects", tags=["Editor"])
+        app.include_router(editor_router, prefix="/api/v1/projects", tags=["Projects"])
+        app.include_router(editor_router, prefix="/api/v1/editor", tags=["Editor"])
     except Exception as e:
         pass
 

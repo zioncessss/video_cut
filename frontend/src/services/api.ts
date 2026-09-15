@@ -38,3 +38,35 @@ export const fetchHardwareMetrics = async () => {
   const res = await axios.get(`${API_BASE}/system/resources`);
   return res.data;
 };
+
+export interface TestHarnessResult {
+  success: boolean;
+  engine: string;
+  latency_ms: number;
+  active_model: string;
+  message: string;
+}
+
+export const testHarness = async (engine: string, modelOverride?: string): Promise<TestHarnessResult> => {
+  const res = await axios.post(`${API_BASE}/settings/test-harness`, {
+    engine,
+    model_override: modelOverride || null,
+  });
+  return res.data.data;
+};
+
+export const fetchSettings = async () => {
+  const res = await axios.get(`${API_BASE}/settings`);
+  return res.data;
+};
+
+export const updateSettings = async (settings: {
+  active_harness: string;
+  llm_model?: string;
+  llm_api_key?: string;
+  llm_base_url?: string;
+}) => {
+  const res = await axios.post(`${API_BASE}/settings`, settings);
+  return res.data;
+};
+
