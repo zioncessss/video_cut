@@ -2,6 +2,7 @@ import sys
 import os
 import threading
 import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -11,6 +12,8 @@ if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
 log_file = ROOT_DIR / "launcher.log"
+TARGET_URL = "http://127.0.0.1:18888/"
+HEALTH_URL = "http://127.0.0.1:18888/api/health"
 
 def log(msg: str):
     try:
@@ -18,6 +21,13 @@ def log(msg: str):
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
     except Exception:
         pass
+
+def is_server_ready(timeout=0.8) -> bool:
+    try:
+        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 def start_backend():
     try:
@@ -30,44 +40,41 @@ def start_backend():
 
 def main():
     log("=== VideoCut Launcher Starting ===")
-    
-    # 1. 启动后端守护线程
+
+    # 1. 检测服务是否已在运行中（防止重复启动报错）
+    if is_server_ready():
+        log("Backend is already running. Opening browser directly...")
+        webbrowser.open(TARGET_URL)
+        return
+
+    # 2. 启动后台服务守护线程
     server_thread = threading.Thread(target=start_backend, daemon=True)
     server_thread.start()
-    time.sleep(1.2)
 
-    target_url = "http://127.0.0.1:18888/"
-    log(f"Target URL: {target_url}")
+    # 3. 等待服务就绪（最多等待 6 秒）
+    log("Waiting for backend service to become ready...")
+    ready = False
+    for _ in range(30):
+        if is_server_ready(0.2):
+            ready = True
+            break
+        time.sleep(0.2)
 
-    # 2. 尝试唤起桌面窗口 (优先 pywebview，失败或无环境时自动打开系统默认浏览器)
-    gui_started = False
+    if ready:
+        log("Backend service is ready! Automatically opening browser...")
+    else:
+        log("Backend service wait timed out, attempting to open browser anyway...")
+
+    # 4. 自动打开系统默认浏览器（Chrome / Edge / 默认浏览器）
+    webbrowser.open(TARGET_URL)
+    log(f"Browser opened with target URL: {TARGET_URL}")
+
+    # 5. 保持主进程常驻，持续提供后端服务
     try:
-        log("Attempting to launch native desktop window with pywebview...")
-        import webview
-        window = webview.create_window(
-            title="VideoCut 驾校短视频网感剪辑工作台",
-            url=target_url,
-            width=1360,
-            height=860,
-            min_size=(1080, 720),
-            background_color="#F8FAFC"
-        )
-        log("Calling webview.start()...")
-        webview.start()
-        gui_started = True
-        log("webview.start() closed normally.")
-    except Exception as e:
-        log(f"pywebview GUI launch notice/exception: {e}")
-
-    if not gui_started:
-        log("Opening in default web browser as desktop fallback...")
-        webbrowser.open(target_url)
-        # 保持进程常驻为浏览器服务
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            log("Launcher exiting.")
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        log("Launcher stopped by user.")
 
 if __name__ == "__main__":
     main()
