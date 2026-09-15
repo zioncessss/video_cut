@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
 from app.core.config import STORAGE_DIR, ROOT_DIR
 
 app = FastAPI(
@@ -22,7 +23,16 @@ if STORAGE_DIR.exists():
 
 frontend_dist = ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():
+    if (frontend_dist / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
     app.mount("/app", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+@app.get("/")
+async def root():
+    index_path = frontend_dist / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return {"status": "ok", "service": "VideoCut Harness Engine"}
 
 @app.get("/api/health")
 async def health_check():

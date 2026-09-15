@@ -5,50 +5,69 @@ import time
 import webbrowser
 from pathlib import Path
 
-# 将 backend 加入搜索路径
 ROOT_DIR = Path(__file__).resolve().parent
 backend_dir = ROOT_DIR / "backend"
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+log_file = ROOT_DIR / "launcher.log"
+
+def log(msg: str):
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
 def start_backend():
-    import uvicorn
-    from app.main import app
-    uvicorn.run(app, host="127.0.0.1", port=18888, log_level="warning")
+    try:
+        log("Starting FastAPI backend on 127.0.0.1:18888...")
+        import uvicorn
+        from app.main import app
+        uvicorn.run(app, host="127.0.0.1", port=18888, log_level="warning")
+    except Exception as e:
+        log(f"Backend fatal error: {e}")
 
 def main():
-    # 1. 后台线程静默启动 FastAPI 核心引擎
+    log("=== VideoCut Launcher Starting ===")
+    
+    # 1. 启动后端守护线程
     server_thread = threading.Thread(target=start_backend, daemon=True)
     server_thread.start()
-    time.sleep(1.2)  # 等待服务端口绑定
+    time.sleep(1.2)
 
-    target_url = "http://127.0.0.1:18888/app/"
-    dev_url = "http://127.0.0.1:5173"  # 前端本地开发服务器备用
-    
-    # 优先检测本地打包或开发页面
-    url_to_open = target_url
+    target_url = "http://127.0.0.1:18888/"
+    log(f"Target URL: {target_url}")
 
-    # 2. 尝试使用 PyWebView 唤起原生桌面窗体（免黑框终端）
+    # 2. 尝试唤起桌面窗口 (优先 pywebview，失败或无环境时自动打开系统默认浏览器)
+    gui_started = False
     try:
+        log("Attempting to launch native desktop window with pywebview...")
         import webview
         window = webview.create_window(
             title="VideoCut 驾校短视频网感剪辑工作台",
-            url=url_to_open,
+            url=target_url,
             width=1360,
             height=860,
             min_size=(1080, 720),
             background_color="#F8FAFC"
         )
+        log("Calling webview.start()...")
         webview.start()
+        gui_started = True
+        log("webview.start() closed normally.")
     except Exception as e:
-        print(f"WebView launch fallback: {e}")
-        # 若系统缺少原生 WebView 运行时，自动优雅唤起默认浏览器窗口
-        webbrowser.open(url_to_open)
+        log(f"pywebview GUI launch notice/exception: {e}")
+
+    if not gui_started:
+        log("Opening in default web browser as desktop fallback...")
+        webbrowser.open(target_url)
+        # 保持进程常驻为浏览器服务
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            pass
+            log("Launcher exiting.")
 
 if __name__ == "__main__":
     main()

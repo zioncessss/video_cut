@@ -1,16 +1,25 @@
 ' VideoCut Windows 一键免终端启动脚本
-' 通过 WScript.Shell 的 0 参数隐藏运行窗口，彻底规避控制台黑框弹出
+On Error Resume Next
 
+Set fso = CreateObject("Scripting.FileSystemObject")
 Set WshShell = CreateObject("WScript.Shell")
-strCurDir = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
-
-' 优先检测本地虚拟环境的 pythonw.exe，未找到则使用全局 pythonw
-Dim pythonwPath
-If CreateObject("Scripting.FileSystemObject").FileExists(strCurDir & "\.venv\Scripts\pythonw.exe") Then
-    pythonwPath = """" & strCurDir & "\.venv\Scripts\pythonw.exe"""
-Else
-    pythonwPath = "pythonw"
-End If
+strCurDir = fso.GetParentFolderName(WScript.ScriptFullName)
 
 WshShell.CurrentDirectory = strCurDir
-WshShell.Run pythonwPath & " launcher.py", 0, False
+
+Dim pythonExe, launcherPath
+launcherPath = """" & strCurDir & "\launcher.py"""
+
+If fso.FileExists(strCurDir & "\.venv\Scripts\pythonw.exe") Then
+    pythonExe = """" & strCurDir & "\.venv\Scripts\pythonw.exe"""
+ElseIf fso.FileExists(strCurDir & "\.venv\Scripts\python.exe") Then
+    pythonExe = """" & strCurDir & "\.venv\Scripts\python.exe"""
+Else
+    pythonExe = "pythonw"
+End If
+
+intReturn = WshShell.Run(pythonExe & " " & launcherPath, 0, False)
+
+If Err.Number <> 0 Then
+    MsgBox "启动失败: " & Err.Description & vbCrLf & "请尝试双击运行 [启动软件.bat]", 16, "VideoCut 启动错误"
+End If
