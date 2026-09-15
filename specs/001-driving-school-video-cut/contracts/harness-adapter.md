@@ -1,72 +1,72 @@
-# Harness 适配器接口协议 (Harness Adapter Contract)
+# 混合驱动 Harness 适配器接口协议 (Hybrid Harness Adapter Contract)
 
-**Version**: 1.0.0  
-**Interface Type**: Backend / Engine Decoupling Layer  
-
----
-
-## 1. 目标与定位
-
-为实现宪章第 II 条“Harness 抽象与引擎解耦”，本项目通过 `BaseHarnessAdapter` 定义统一契约。无论是本地内置的 Python+FFmpeg 执行器，还是外部的 `codex` 或 `zcode` harness 服务，均必须实现此协议。
+**Version**: 2.0.0  
+**Pattern**: Dual-Engine (Native Hardcoded + Harness Wrapper)  
 
 ---
 
-## 2. 接口定义 (Python Abstract Base Class)
+## 1. 架构定位
+
+- **Native Engine（本地硬编码内核）**：负责固定高频任务——素材存取、视频探测、基础 ASR、确定性 FFmpeg 滤镜压制、硬件资源探测。
+- **Harness Wrapper（智能体套壳层）**：负责高阶灵活任务——自然语言语义纠偏、对话式微调指令理解、多样化混剪剧本生成、外部 Codex/ZCode 进程调用。
+
+---
+
+## 2. 核心接口定义 (Core Interfaces)
 
 ```python
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
-class VideoCutRequest(BaseModel):
-    project_id: str
-    talking_head_path: str
-    target_aspect_ratio: str = "9:16"  # "9:16" or "16:9"
-    subtitles: List[Dict[str, Any]]
-    broll_cutaways: List[Dict[str, Any]]
-    burn_subtitles: bool = True
-    output_dir: str
+# === 高阶操作：Harness 任务载荷 ===
+class HarnessCorrectionRequest(BaseModel):
+    """请求 Harness 执行上下文专有词纠错"""
+    raw_subtitles: List[Dict[str, Any]]
+    domain_context: str = "driving_school"  # 驾校垂直领域
+    custom_glossary: Optional[List[str]] = None
 
-class TaskProgress(BaseModel):
-    task_id: str
-    stage: str  # "extract_audio" | "asr" | "llm_correct" | "broll_compose" | "ffmpeg_render"
-    progress_percent: float
-    message: str
+class HarnessInstructionRequest(BaseModel):
+    """用户在底部输入的自然语言微调指令"""
+    current_project_state: Dict[str, Any]
+    user_instruction: str  # 例如："把第3句空镜换成另一个场地素材，把语速较慢的片段适当压缩"
 
-class HardwareMetrics(BaseModel):
-    cpu_percent: float
-    memory_available_gb: float
-    gpu_accelerator_detected: Optional[str] = None  # "nvenc" | "videotoolbox" | "qsv" | None
-    recommended_concurrency: int = 2
+class HarnessPlanResponse(BaseModel):
+    """Harness 返回的高阶修改建议或更新后的剪辑状态"""
+    explanation: str
+    updated_subtitles: Optional[List[Dict[str, Any]]] = None
+    updated_brolls: Optional[List[Dict[str, Any]]] = None
+    harness_engine_used: str  # "codex" | "zcode" | "embedded"
 
-class BaseHarnessAdapter(ABC):
+# === 抽象基类：Harness 适配器 ===
+class BaseHarnessBridge(ABC):
     @abstractmethod
-    async def get_capabilities(self) -> Dict[str, Any]:
-        """返回当前 Harness 具备的能力（例如：本地硬件加速、支持的模型版本等）"""
+    async def is_available(self) -> bool:
+        """检测当前环境中的 Codex / ZCode Harness 是否就绪"""
         pass
 
     @abstractmethod
-    async def inspect_resources(self) -> HardwareMetrics:
-        """获取当前宿主机硬件资源与推荐并发配额"""
+    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> List[Dict[str, Any]]:
+        """利用 Harness / LLM 对原始 ASR 字幕进行上下文与驾校专有词纠偏"""
         pass
 
     @abstractmethod
-    async def transcribe_and_correct(self, audio_path: str) -> List[Dict[str, Any]]:
-        """执行 ASR 识别 + LLM 语义校偏，返回时间戳字幕序列"""
+    async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
+        """解析用户自然语言微调意图，并动态调整剪辑工程配置"""
         pass
 
     @abstractmethod
-    async def render_video(self, request: VideoCutRequest, progress_callback=None) -> str:
-        """根据切片工程配置驱动 FFmpeg 管道执行渲染，返回输出视频路径"""
+    async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
+        """利用 Harness 创意规划能力，批量生成不同镜头编排维度的混剪方案"""
         pass
 ```
 
 ---
 
-## 3. 外部 Harness (Codex / ZCode) 扩展规范
+## 3. 固化层与套壳层的交互流程 (Workflow)
 
-若切换至 Codex 或 ZCode Harness：
-1. 建立 `CodexHarnessAdapter` 实现类。
-2. 将 `VideoCutRequest` 映射为对应 Harness 的 Job Payload。
-3. 状态回调映射为标准 `TaskProgress` 流式推送。
-4. Web 前端完全无需修改任何调用逻辑。
+1. **用户上传与 ASR**：由 Native Engine 执行，直接提取出 `raw_subtitles`。
+2. **术语纠错与智能打标**：Native Engine 将数据封装给 `HarnessBridge.correct_subtitles()`，Harness 调取智能体完成语义纠错与关键词标记。
+3. **前端渲染展示**：用户看到左侧视频 + 右侧带标签的字幕卡片。
+4. **底部自然语言微调**：用户输入指令 -> Native Engine 转发给 `HarnessBridge.apply_natural_instruction()` -> Harness 返回调整方案并应用。
+5. **最终合成渲染**：点击“生成” -> Native Engine 组装结构化 FFmpeg 指令直接进行多轨高精度硬件加速压制。

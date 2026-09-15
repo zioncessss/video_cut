@@ -1,130 +1,91 @@
-# Implementation Plan: 驾校短视频网感剪辑工作台 (C-End Harness Video Cut Workbench)
+# Implementation Plan: 驾校短视频网感剪辑工作台 (混合双引擎架构)
 
 **Branch**: `master` | **Date**: 2026-09-15 | **Spec**: [specs/001-driving-school-video-cut/spec.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/spec.md)
 
-**Input**: Feature specification from `specs/001-driving-school-video-cut/spec.md`
+**Input**: Feature specification from `specs/001-driving-school-video-cut/spec.md` + 混合架构决策（固定操作硬编码，高阶灵活操作 Harness 套壳）
 
 ---
 
 ## Summary
 
-本项目为 Codex / ZCode / 本地自定义 Harness 封装面向 C 端驾校推广业务的桌面剪辑套件。采用“桌面轻量窗体（免终端启动） + 浅色调响应式 Web 工作台 + Python 智能音视频管线（FFmpeg + Faster-Whisper + LLM 语义校错） + 硬件自适应并发池”架构，实现口播原声持续、语义关键词智能平替空镜（J/L-Cut）、双轨字幕可视化微调以及防死机批量混剪。
+本项目为 Codex、ZCode 等智能体 Harness 打造面向 C 端的驾校营销短视频剪辑外壳。
+核心采用 **混合双引擎驱动体系（Hybrid Dual-Engine）**：
+1. **固化高效执行层 (Native Hardcoded Engine)**：素材目录四分类存储、音视频元数据探测、毫秒级 ASR 提取、确定性 FFmpeg 多轨复合滤镜（J/L-Cut）合成压制、系统硬件资源监控与并发控制。
+2. **高阶智能套壳层 (Harness Wrapper Layer)**：通过统一 `HarnessBridge` 接口套壳连接外部 `Codex`、`ZCode`（及内置轻量 Agent 备用），驱动驾校专有词语义纠偏、底部自然语言微调指令理解重写、以及多样化批量混剪脚本规划。
+3. **免终端桌面启动 (Zero-Terminal Desktop)**：`pywebview` 桌面原生窗口承载现代化浅色调 Web 工作台，Windows/macOS 双端双击即开。
 
 ---
 
 ## Technical Context
 
-**Language/Version**: Python 3.11+ (后端与音视频管线) / TypeScript + React 18+ (Web 前端)  
+**Language/Version**: Python 3.11+ (Native 核心与 Harness 桥接) / TypeScript + React 18+ (C 端现代界面)  
 **Primary Dependencies**: 
-- 后端：`fastapi`, `uvicorn`, `faster-whisper`, `ffmpeg-python`, `psutil`, `pydantic`, `pywebview`
-- 前端：`vite`, `react`, `lucide-react`, `tailwindcss`, `axios`
-- 系统工具：`ffmpeg`, `ffprobe`  
-**Storage**: 本地文件系统目录隔离存储（`storage/materials/{category}/`） + SQLite / JSON 本地工程持久化  
-**Testing**: `pytest` (后端单元与管线集成测试) + `vitest` (前端组件与状态测试)  
-**Target Platform**: Windows 10/11 64位 & macOS 12+ (双端免终端桌面启动)  
-**Project Type**: 桌面封装 Web 混合应用 (Desktop C-End App)  
-**Performance Goals**: 
-- 单段 60 秒口播视频 ASR 与 LLM 纠偏处理时间 < 8 秒（GPU）或 < 20 秒（CPU）
-- 本地 1080p 视频渲染速度达到 1.5x~3x 实时速度（启用硬件加速时）
-- 批量处理时内存安全水位维持在 75% 以下，杜绝 OOM 崩溃  
-**Constraints**: 
-- 启动完全脱离控制台黑框终端
-- 界面风格必须为浅色现代高质感 UI（Light Mode）
-- 音视频合成必须严格保留口播原声连贯性  
-**Scale/Scope**: 单机支持 100+ 视频素材管理，单次支持 50+ 视频批量混剪调度  
+- 固化内核：`fastapi`, `uvicorn`, `faster-whisper`, `ffmpeg-python`, `psutil`, `pydantic`, `pywebview`
+- 套壳交互：`asyncio.subprocess` (对接 Codex/ZCode CLI), OpenAI 协议 SDK (对接 LLM/Agent)
+- 前端交互：`vite`, `react`, `lucide-react`, `tailwindcss`, `axios`  
+**Storage**: 物理目录结构 (`storage/materials/{talking_head,venue,medical,lesson}/`) + 本地工程配置文件  
+**Testing**: `pytest` (测试 Native 流水线及 Harness 适配器通信)  
+**Target Platform**: Windows 10/11 & macOS 12+ (免终端桌面运行)  
+**Project Type**: Desktop Hybrid Web Application (桌面套壳 Web 交互)  
 
 ---
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
-
 | 宪章准则 | 评估结果 | 落实机制 |
 | :--- | :--- | :--- |
-| **I. C端体验与免终端启动** | ✅ 通过 | 封装独立桌面启动入口（`pythonw` + `pywebview` / 静态打包），无终端依赖 |
-| **II. Harness 抽象与引擎解耦** | ✅ 通过 | 设计 `BaseHarnessAdapter` 统一接口契约，适配 Codex/ZCode/Local |
-| **III. 智能音视频管线与声画解耦** | ✅ 通过 | ASR (Faster-Whisper) + LLM 语义纠错 + FFmpeg 复合滤镜 J/L-Cut |
-| **IV. 硬件感知与并发调度** | ✅ 通过 | `psutil` 动态算力测算公式，自适应并发限制，预防 OOM |
-| **V. 极简高效与防无用循环** | ✅ 通过 | 扁平结构，无冗余多层抽象，事件驱动，释放句柄与进程 |
+| **I. C端体验与免终端启动** | ✅ 通过 | 封装独立桌面启动入口（`pythonw` + `pywebview`），无命令行暴露 |
+| **II. Harness 抽象与套壳解耦** | ✅ 通过 | 固化操作本地快跑，高阶意图由 `HarnessBridge` 套壳调度 Codex / ZCode |
+| **III. 智能音视频管线与声画解耦** | ✅ 通过 | 确定性 FFmpeg 滤镜管道保留口播音轨，关键词精准切入空镜 |
+| **IV. 硬件感知与并发调度** | ✅ 通过 | `psutil` 算力检测，自适应调节并发限制，防 OOM 死机 |
+| **V. 极简高效与防无用循环** | ✅ 通过 | 职责分明：硬编码保证性能与稳定性，Harness 保证智能与灵活，杜绝冗余抽象 |
 
 ---
 
 ## Project Structure
 
-### Documentation (this feature)
-
-```text
-specs/001-driving-school-video-cut/
-├── spec.md              # 业务需求与用户故事规格书
-├── plan.md              # 本技术实现架构方案
-├── research.md          # 选型调研与架构决策报告
-├── data-model.md        # 核心数据实体与状态模型
-├── quickstart.md        # 快速启动与测试验证指南
-├── contracts/           # 接口协议与契约
-│   ├── harness-adapter.md # Harness 抽象契约
-│   └── web-api.md         # 前后端交互 API 协议
-└── tasks.md             # 任务清单 (由 $speckit-tasks 生成)
-```
-
-### Source Code (repository root)
-
 ```text
 video_cut/
-├── launcher.py               # 桌面应用免终端启动入口 (PyWebView / 桌面窗体)
-├── start_windows.vbs         # Windows 静默双击启动引导脚本
-├── start_mac.command         # macOS 双击启动引导脚本
-├── backend/                  # 后端服务与音视频引擎
+├── launcher.py               # 桌面应用免终端启动入口 (PyWebView 原生窗口)
+├── start_windows.vbs         # Windows 静默双击启动脚本 (无黑框)
+├── start_mac.command         # macOS 双击启动脚本
+├── backend/
 │   ├── app/
-│   │   ├── api/              # REST & WebSocket 路由
-│   │   │   ├── materials.py  # 素材上传与目录管理
-│   │   │   ├── editor.py     # 剪辑解析、字幕微调、即时渲染
-│   │   │   ├── batch.py      # 批量混剪调度
-│   │   │   └── system.py     # 硬件资源监测
-│   │   ├── core/             # 核心配置与资源自适应调度器
+│   │   ├── api/              # REST 路由 (Web 前端交互)
+│   │   │   ├── materials.py  # [硬编码] 素材上传与四分类存储
+│   │   │   ├── editor.py     # [混合] 剪辑解析与视频渲染
+│   │   │   ├── instruction.py# [Harness套壳] 底部自然语言微调接口
+│   │   │   ├── batch.py      # [混合] 批量生产调度
+│   │   │   └── system.py     # [硬编码] 硬件资源监控
+│   │   ├── core/             # 系统基础支撑
 │   │   │   ├── config.py
-│   │   │   └── resource.py   # CPU/内存/GPU 检测与并发配额
-│   │   ├── harness/          # Harness 抽象层
-│   │   │   ├── base.py       # BaseHarnessAdapter 抽象基类
-│   │   │   ├── local.py      # 本地内置音视频剪辑 Harness
-│   │   │   └── codex.py      # Codex / ZCode 适配器实现
-│   │   ├── pipeline/         # 音视频处理流水线
-│   │   │   ├── asr.py        # Faster-Whisper 提取时间戳
-│   │   │   ├── llm.py        # 驾校专有术语语义纠偏
-│   │   │   └── composer.py   # FFmpeg J/L-Cut 多轨滤镜合成器
+│   │   │   └── resource.py   # [硬编码] psutil 算力监控与并发限流
+│   │   ├── native_engine/    # 【固化执行层】
+│   │   │   ├── asr_runner.py # Faster-Whisper 毫秒级提取
+│   │   │   ├── ffmpeg_filter.py # 确定性 J/L-Cut 多轨滤镜压制
+│   │   │   └── storage.py    # 目录分类读写与元数据探查
+│   │   ├── harness_bridge/   # 【高阶套壳层】
+│   │   │   ├── base.py       # BaseHarnessBridge 统一协议
+│   │   │   ├── codex.py      # Codex Harness 适配器 (CLI/RPC)
+│   │   │   ├── zcode.py      # ZCode Harness 适配器 (CLI/RPC)
+│   │   │   └── embedded.py   # 内置轻量 Agent 适配器 (备用回退)
 │   │   └── main.py           # FastAPI 服务主入口
-│   └── requirements.txt      # 后端依赖配置
-├── frontend/                 # 浅色质感 C 端前端工程
+│   └── requirements.txt
+├── frontend/                 # 浅色质感 C 端前端 (Vite + React + Tailwind CSS)
 │   ├── src/
-│   │   ├── components/       # 公共组件 (播放器、波形条、时间轴卡片)
-│   │   ├── pages/            # 页面路由
+│   │   ├── pages/
 │   │   │   ├── AssetLibrary.tsx  # 素材库四分类管理
 │   │   │   ├── VideoEditor.tsx   # 剪辑工作台 (左播放器右字幕底指令)
 │   │   │   ├── BatchCut.tsx      # 批量混剪生产
-│   │   │   └── Settings.tsx      # Harness 与参数设置
-│   │   ├── services/         # API 请求与 WebSocket 客户端
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── package.json
-│   └── vite.config.ts
-├── storage/                  # 素材与渲染产物本地持久化目录
+│   │   │   └── Settings.tsx      # Harness 引擎切换与参数设置
+│   │   └── ...
+├── storage/                  # 素材物理库
 │   └── materials/
-│       ├── talking_head/     # 口播视频
-│       ├── venue/            # 场地视频
-│       ├── medical/          # 体检视频
-│       └── lesson/           # 教学学车视频
-└── tests/                    # 自动化测试套件
-    ├── test_asr_llm.py       # ASR 与 LLM 纠错测试
-    ├── test_composer.py      # FFmpeg 声画分离 J/L-Cut 渲染测试
-    └── test_resource.py      # 硬件感知调度测试
+│       ├── talking_head/
+│       ├── venue/
+│       ├── medical/
+│       └── lesson/
+└── tests/
+    ├── test_native_pipeline.py  # 固化渲染测试
+    └── test_harness_bridge.py   # Harness 通信与微调测试
 ```
-
----
-
-## 计划执行阶段说明
-
-1. **Phase 0 (调研决策)**：已输出 [research.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/research.md)
-2. **Phase 1 (架构设计与契约)**：
-   - 数据实体：[data-model.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/data-model.md)
-   - 接口协议：[contracts/harness-adapter.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/contracts/harness-adapter.md)、[contracts/web-api.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/contracts/web-api.md)
-   - 验证指南：[quickstart.md](file:///d:/project/video_cut/specs/001-driving-school-video-cut/quickstart.md)
-3. **Phase 2 (任务拆解)**：即将通过 `$speckit-tasks` 自动拆解生成 `tasks.md`，随后进行落地开发。
