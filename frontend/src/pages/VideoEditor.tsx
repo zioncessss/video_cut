@@ -55,18 +55,24 @@ export const VideoEditor: React.FC = () => {
     setSubtitles(updated);
   };
 
+  const [aiFeedback, setAiFeedback] = useState<string | null>(null);
+
   const handleApplyInstruction = async () => {
     if (!projectId || !aiInstruction.trim()) return;
     setApplyingInstruction(true);
+    setAiFeedback(null);
     try {
       const res = await axios.post(`${API_BASE}/instruction/apply`, {
         project_id: projectId,
         instruction: aiInstruction
       });
-      alert(res.data.explanation);
+      if (res.data.updated_subtitles && res.data.updated_subtitles.length > 0) {
+        setSubtitles(res.data.updated_subtitles);
+      }
+      setAiFeedback(res.data.explanation);
       setAiInstruction('');
     } catch (err) {
-      alert('指令解析失败');
+      alert('指令解析失败，请检查 Harness 状态');
     } finally {
       setApplyingInstruction(false);
     }
@@ -149,10 +155,27 @@ export const VideoEditor: React.FC = () => {
         </div>
       </div>
 
+      {/* AI 调整反馈提示 */}
+      {aiFeedback && (
+        <div className="mt-3 bg-blue-50/80 border border-blue-200/80 rounded-xl px-4 py-2 flex items-center justify-between text-xs text-blue-900 shadow-sm animate-in fade-in">
+          <div className="flex items-center space-x-2">
+            <Sparkles className="w-4 h-4 text-blue-600 flex-shrink-0" />
+            <span className="font-medium">{aiFeedback}</span>
+          </div>
+          <button onClick={() => setAiFeedback(null)} className="text-blue-500 hover:text-blue-700 text-xs ml-4">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* 底部浮动交互条：AI Prompt 指令输入框 + 生成按钮 + 硬件监控 */}
       <div className="mt-4 bg-white border border-gray-200/80 rounded-2xl p-3 shadow-sm flex items-center space-x-3">
         <div className="flex-1 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
-          <Wand2 className="w-4 h-4 text-blue-600" />
+          {applyingInstruction ? (
+            <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />
+          ) : (
+            <Wand2 className="w-4 h-4 text-blue-600" />
+          )}
           <input
             type="text"
             value={aiInstruction}

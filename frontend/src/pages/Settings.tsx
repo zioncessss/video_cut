@@ -4,8 +4,11 @@ import { API_BASE } from '../services/api';
 import { Settings as SettingsIcon, Terminal, CheckCircle2, AlertCircle, Save } from 'lucide-react';
 
 export const Settings: React.FC = () => {
-  const [activeHarness, setActiveHarness] = useState<string>('embedded');
-  const [llmModel, setLlmModel] = useState<string>('gpt-4o-mini');
+  const [activeHarness, setActiveHarness] = useState<string>('zcode');
+  const [llmModel, setLlmModel] = useState<string>('GLM-5.3-Flash');
+  const [llmApiKey, setLlmApiKey] = useState<string>('');
+  const [llmBaseUrl, setLlmBaseUrl] = useState<string>('');
+  const [zcodePath, setZcodePath] = useState<string | null>(null);
   const [detected, setDetected] = useState<{ [key: string]: boolean }>({});
   const [saving, setSaving] = useState<boolean>(false);
 
@@ -13,6 +16,9 @@ export const Settings: React.FC = () => {
     axios.get(`${API_BASE}/settings`).then(res => {
       setActiveHarness(res.data.active_harness);
       setLlmModel(res.data.llm_model);
+      setLlmApiKey(res.data.llm_api_key || '');
+      setLlmBaseUrl(res.data.llm_base_url || '');
+      setZcodePath(res.data.zcode_path || null);
       setDetected(res.data.detected_engines || {});
     }).catch(() => {});
   }, []);
@@ -22,9 +28,11 @@ export const Settings: React.FC = () => {
     try {
       await axios.post(`${API_BASE}/settings`, {
         active_harness: activeHarness,
-        llm_model: llmModel
+        llm_model: llmModel,
+        llm_api_key: llmApiKey,
+        llm_base_url: llmBaseUrl
       });
-      alert('设置已成功保存！');
+      alert('设置已成功保存并落盘！');
     } catch (e) {
       alert('保存设置失败');
     } finally {
@@ -85,6 +93,14 @@ export const Settings: React.FC = () => {
               );
             })}
           </div>
+
+          {/* 检测详情提示 */}
+          {zcodePath && (
+            <div className="mt-3 p-3 bg-emerald-50/60 border border-emerald-200/60 rounded-xl text-xs text-emerald-800 flex items-center space-x-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              <span>检测到本地 ZCode 智能引擎核心已就绪：<code className="font-mono text-[11px] bg-emerald-100/70 px-1.5 py-0.5 rounded">{zcodePath}</code></span>
+            </div>
+          )}
         </div>
 
         {/* 模型选择 */}
@@ -97,11 +113,41 @@ export const Settings: React.FC = () => {
             onChange={e => setLlmModel(e.target.value)}
             className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500"
           >
-            <option value="gpt-4o-mini">gpt-4o-mini (极速、推荐)</option>
+            <option value="GLM-5.3-Flash">GLM-5.3-Flash (ZCode 内置原生、推荐)</option>
+            <option value="GLM-5.3">GLM-5.3 (ZCode 深度推理)</option>
             <option value="deepseek-chat">deepseek-chat (语义理解优异)</option>
+            <option value="gpt-4o-mini">gpt-4o-mini (极速轻量)</option>
             <option value="qwen-plus">qwen-plus (通义千问)</option>
             <option value="local-ollama">local-ollama (本地私有化)</option>
           </select>
+        </div>
+
+        {/* 可选自定义 API 端点配置 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              自定义 API Base URL (选填)
+            </label>
+            <input
+              type="text"
+              value={llmBaseUrl}
+              onChange={e => setLlmBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              自定义 API Key (选填)
+            </label>
+            <input
+              type="password"
+              value={llmApiKey}
+              onChange={e => setLlmApiKey(e.target.value)}
+              placeholder="sk-..."
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+            />
+          </div>
         </div>
 
         {/* 保存按钮 */}

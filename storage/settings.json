@@ -1,0 +1,6 @@
+{
+  "active_harness": "zcode",
+  "llm_api_key": "",
+  "llm_base_url": "https://api.openai.com/v1",
+  "llm_model": "GLM-5.3-Flash"
+}

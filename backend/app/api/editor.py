@@ -17,11 +17,10 @@ from app.native_engine.asr_runner import asr_runner
 from app.native_engine.keyword_matcher import match_keywords_in_segment
 from app.native_engine.ffmpeg_filter import composer
 from app.native_engine.subtitle_styler import generate_srt_file
-from app.harness_bridge.codex import CodexHarnessBridge
+from app.harness_bridge.factory import get_active_harness
 from app.harness_bridge.base import HarnessCorrectionRequest
 
 router = APIRouter()
-harness = CodexHarnessBridge()
 
 # 内存项目缓存字典
 _projects: Dict[str, CutProject] = {}
@@ -50,7 +49,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
     # 2. Harness 上下文驾校专有词纠偏
     correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
-    corrected_segments = await harness.correct_subtitles(correction_req)
+    corrected_segments = await get_active_harness().correct_subtitles(correction_req)
 
     # 3. 关键词匹配与空镜智能分配 (J/L-Cut)
     subtitles: List[SubtitleSegment] = []

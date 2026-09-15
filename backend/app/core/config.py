@@ -26,10 +26,56 @@ SERVER_HOST = os.getenv("VIDEOCUT_HOST", "127.0.0.1")
 SERVER_PORT = int(os.getenv("VIDEOCUT_PORT", "18888"))
 
 # Harness 配置
-ACTIVE_HARNESS = os.getenv("ACTIVE_HARNESS", "embedded")  # "embedded", "codex", "zcode"
+ZCODE_CLI_PATH = Path(os.getenv("ZCODE_CLI_PATH", r"D:\Program Files\ZCode\resources\glm\zcode.cjs"))
+SETTINGS_FILE = STORAGE_DIR / "settings.json"
+
+def has_zcode_available() -> bool:
+    import shutil
+    return ZCODE_CLI_PATH.exists() and bool(shutil.which("node"))
+
+# 默认激活的 Harness：若存在 ZCode CLI 则优先启用 zcode
+DEFAULT_HARNESS = "zcode" if has_zcode_available() else "embedded"
+ACTIVE_HARNESS = os.getenv("ACTIVE_HARNESS", DEFAULT_HARNESS)  # "embedded", "codex", "zcode"
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.getenv("LLM_MODEL", "GLM-5.3-Flash")
+
+def load_settings():
+    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    if SETTINGS_FILE.exists():
+        try:
+            import json
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                ACTIVE_HARNESS = data.get("active_harness", ACTIVE_HARNESS)
+                LLM_API_KEY = data.get("llm_api_key", LLM_API_KEY)
+                LLM_BASE_URL = data.get("llm_base_url", LLM_BASE_URL)
+                LLM_MODEL = data.get("llm_model", LLM_MODEL)
+        except Exception:
+            pass
+
+def save_settings(data: dict):
+    import json
+    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    if "active_harness" in data:
+        ACTIVE_HARNESS = data["active_harness"]
+    if "llm_api_key" in data:
+        LLM_API_KEY = data["llm_api_key"]
+    if "llm_base_url" in data:
+        LLM_BASE_URL = data["llm_base_url"]
+    if "llm_model" in data:
+        LLM_MODEL = data["llm_model"]
+    
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump({
+            "active_harness": ACTIVE_HARNESS,
+            "llm_api_key": LLM_API_KEY,
+            "llm_base_url": LLM_BASE_URL,
+            "llm_model": LLM_MODEL
+        }, f, ensure_ascii=False, indent=2)
+
+# 初始化读取已有配置
+load_settings()
 
 # 驾校垂直领域高频专有词库（用于 ASR 后校正与关键词精准命中）
 DRIVING_SCHOOL_KEYWORDS = {

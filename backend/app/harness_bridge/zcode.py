@@ -1,0 +1,194 @@
+import re
+import json
+import shutil
+import asyncio
+import subprocess
+from typing import List, Dict, Any, Optional
+
+from app.core import config
+from app.harness_bridge.base import (
+    BaseHarnessBridge,
+    HarnessCorrectionRequest,
+    HarnessInstructionRequest,
+    HarnessPlanResponse
+)
+from app.harness_bridge.embedded import EmbeddedHarnessBridge
+
+class ZCodeHarnessBridge(BaseHarnessBridge):
+    """
+    基于本地 ZCode Node 引擎 (GLM-5.3-Flash) 的外部 Harness 桥接器。
+    支持：
+    1. 毫秒级 ASR 字幕智能语义纠偏与驾校专有词库识别
+    2. 自然语言微调指令理解（空镜切换、网感文案优化、节奏微调）
+    3. 全自动平滑降级（当本地未安装或超时时，自动回退到 EmbeddedHarnessBridge）
+    """
+    def __init__(self, cli_path=None):
+        self.cli_path = cli_path or config.ZCODE_CLI_PATH
+        self._fallback = EmbeddedHarnessBridge()
+
+    async def is_available(self) -> bool:
+        """探测本地是否存在 Node 以及 ZCode CLI 引擎入口脚本"""
+        has_node = bool(shutil.which("node"))
+        has_cli = self.cli_path.exists()
+        return has_node and has_cli
+
+    def _run_sync(self, prompt: str, timeout: int = 45) -> Optional[str]:
+        cmd = [
+            "node",
+            str(self.cli_path),
+            "--prompt",
+            prompt,
+            "--json"
+        ]
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout
+            )
+            if res.returncode != 0:
+                return None
+            data = json.loads(res.stdout)
+            return data.get("response")
+        except Exception:
+            return None
+
+    async def _run_zcode_prompt(self, prompt: str, timeout: int = 45) -> Optional[str]:
+        """异步调用本地 ZCode 子进程，执行 prompt 并返回大模型原始响应文本"""
+        if not await self.is_available():
+            return None
+        return await asyncio.to_thread(self._run_sync, prompt, timeout)
+
+    def _extract_json(self, text: str) -> Optional[Any]:
+        """从 LLM 响应中剥离 markdown 标记并提取合法 JSON"""
+        if not text:
+            return None
+        text = text.strip()
+        # 移除 ```json 和 ``` 包裹
+        if "```" in text:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+            if match:
+                text = match.group(1).strip()
+        
+        try:
+            return json.loads(text)
+        except Exception:
+            # 尝试截取 [ ... ] 或 { ... }
+            start_bracket = text.find("[")
+            end_bracket = text.rfind("]")
+            if start_bracket != -1 and end_bracket > start_bracket:
+                try:
+                    return json.loads(text[start_bracket:end_bracket+1])
+                except Exception:
+                    pass
+
+            start_brace = text.find("{")
+            end_brace = text.rfind("}")
+            if start_brace != -1 and end_brace > start_brace:
+                try:
+                    return json.loads(text[start_brace:end_brace+1])
+                except Exception:
+                    pass
+        return None
+
+    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> List[Dict[str, Any]]:
+        """利用 ZCode / GLM-5.3 对原始 ASR 字幕进行上下文与驾校专有词纠偏"""
+        if not await self.is_available():
+            return await self._fallback.correct_subtitles(request)
+
+        # 组织字幕摘要列表
+        raw_items = []
+        for i, item in enumerate(request.raw_subtitles):
+            raw_items.append({"index": i, "text": item.get("raw_text", "")})
+
+        prompt = (
+            "你是一个专业的短视频字幕与剪辑助手。请对以下 ASR 识别出的口播字幕进行垂直专有词纠错与通顺化润色：\n"
+            "【纠错重点】：纠正常见同音错字，如“科尔”->“科目二”，“到库”->“倒库”，“坡起”->“坡道起步”，“测方”->“侧方停车”，“提检”->“体检”，“学车价位”->“学车价格”等。\n"
+            f"原始字幕列表：\n{json.dumps(raw_items, ensure_ascii=False)}\n\n"
+            "请严格仅返回一个合法的 JSON 数组，格式如下：\n"
+            '[{"index": 0, "corrected_text": "..."}, {"index": 1, "corrected_text": "..."}]\n'
+            "注意：严禁输出任何多余说明、严禁输出除了纯 JSON 之外的字符。"
+        )
+
+        response_text = await self._run_zcode_prompt(prompt, timeout=35)
+        parsed = self._extract_json(response_text)
+
+        if isinstance(parsed, list) and len(parsed) > 0:
+            correction_map = {item.get("index"): item.get("corrected_text") for item in parsed if isinstance(item, dict)}
+            result = []
+            for i, item in enumerate(request.raw_subtitles):
+                new_item = dict(item)
+                new_item["corrected_text"] = correction_map.get(i, item.get("raw_text", ""))
+                result.append(new_item)
+            return result
+
+        # 解析失败或超时时回退
+        return await self._fallback.correct_subtitles(request)
+
+    async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
+        """解析用户在工作台底部输入的自然语言微调意图"""
+        if not await self.is_available():
+            res = await self._fallback.apply_natural_instruction(request)
+            res.harness_engine_used = "embedded (zcode unavailable)"
+            return res
+
+        state = request.current_project_state
+        subtitles = list(state.get("subtitles", []))
+        brolls = list(state.get("broll_replacements", []))
+        user_instr = request.user_instruction.strip()
+
+        # 简化字幕状态传递给 LLM
+        simple_subs = []
+        for i, s in enumerate(subtitles):
+            simple_subs.append({
+                "index": i,
+                "text": s.get("corrected_text", s.get("raw_text", "")),
+                "broll_category": s.get("matched_category")
+            })
+
+        prompt = (
+            "你是一个短视频剪辑助手。用户在剪辑工作台中输入了一条微调指令，请你理解意图并给出剪辑工程的修改方案。\n"
+            f"【用户指令】：{user_instr}\n"
+            f"【当前字幕与镜头安排】：\n{json.dumps(simple_subs, ensure_ascii=False)}\n"
+            "【可选镜头分类】：venue (场地/考场), medical (体检/拍照), lesson (练车/教学), null (保留口播真人画面，无空镜)\n\n"
+            "请以严格的合法 JSON 格式输出，格式规范如下：\n"
+            "{\n"
+            '  "explanation": "简短告诉用户你执行了什么调整（例如：已将第2句空镜替换为场地素材，并润色了文案）",\n'
+            '  "updates": [\n'
+            '    {"index": 0, "corrected_text": "修改后的字幕文案", "matched_category": "venue"}\n'
+            "  ]\n"
+            "}\n"
+            "注意：updates 数组中只包含需要修改的项；不要输出任何非 JSON 字符。"
+        )
+        response_text = await self._run_zcode_prompt(prompt, timeout=80)
+        parsed = self._extract_json(response_text)
+
+        if isinstance(parsed, dict) and "explanation" in parsed:
+            explanation = parsed["explanation"]
+            updates = parsed.get("updates", [])
+            for up in updates:
+                if not isinstance(up, dict):
+                    continue
+                idx = up.get("index")
+                if idx is not None and 0 <= idx < len(subtitles):
+                    if "corrected_text" in up and up["corrected_text"]:
+                        subtitles[idx]["corrected_text"] = up["corrected_text"]
+                    if "matched_category" in up:
+                        subtitles[idx]["matched_category"] = up["matched_category"]
+
+            return HarnessPlanResponse(
+                explanation=f"[ZCode GLM-5.3-Flash] {explanation}",
+                updated_subtitles=subtitles,
+                updated_brolls=brolls,
+                harness_engine_used="zcode"
+            )
+
+        # 兜底
+        res = await self._fallback.apply_natural_instruction(request)
+        res.harness_engine_used = "embedded (fallback)"
+        return res
+
+    async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
+        return await self._fallback.generate_batch_variations(template_project, variant_count)
