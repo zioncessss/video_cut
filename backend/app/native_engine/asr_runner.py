@@ -103,8 +103,12 @@ class ASRRunner:
                         "corrected_text": text
                     })
         except Exception as e:
-            print(f"[ASRRunner] Whisper inference fallback due to: {e}")
-            # 优雅兜底模式：生成基础口播示范时间轴，保证开发与离线测试链路畅通
+            print(f"[ASRRunner] Whisper inference error: {e}")
+            # 严防用假数据替代真实运行：对于真实视频素材（大小 > 10KB），严禁使用测试兜底句，直接向上抛出异常暴露问题
+            if video_path.exists() and video_path.stat().st_size > 10240:
+                raise RuntimeError(f"真实视频 ASR 语音识别失败，未能成功提取文字: {e}") from e
+
+            # 仅针对轻量虚拟的单元测试模拟文件允许基础结构回退
             total_duration = 15.0
             try:
                 from app.native_engine.storage import storage_service

@@ -91,6 +91,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", get_codex_configured_model() or "glm-5.3-flas
 
 def load_settings():
     global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    codex_model = get_codex_configured_model()
     if SETTINGS_FILE.exists():
         try:
             import json
@@ -99,9 +100,16 @@ def load_settings():
                 ACTIVE_HARNESS = data.get("active_harness", ACTIVE_HARNESS)
                 LLM_API_KEY = data.get("llm_api_key", LLM_API_KEY)
                 LLM_BASE_URL = data.get("llm_base_url", LLM_BASE_URL)
-                LLM_MODEL = data.get("llm_model", LLM_MODEL)
+                stored_model = data.get("llm_model")
+                # 保护机制：如果当前处于 codex 引擎且本地 codex 真实配置了模型，强制对齐真实模型
+                if ACTIVE_HARNESS == "codex" and codex_model:
+                    LLM_MODEL = codex_model
+                else:
+                    LLM_MODEL = stored_model or codex_model or "glm-5.3-flash"
         except Exception:
             pass
+    elif codex_model:
+        LLM_MODEL = codex_model
 
 def save_settings(data: dict):
     import json

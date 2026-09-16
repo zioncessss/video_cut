@@ -73,16 +73,47 @@ class CodexHarnessBridge(BaseHarnessBridge):
         model_override: Optional[str] = None
     ) -> Tuple[bool, str, float]:
         """
-        以非交互式执行 Codex CLI 并通过临时文件提取最终 Agent 回复。
-        关键保障：显式传入 stdin=asyncio.subprocess.DEVNULL 避免 Windows 管道挂起。
+        执行大模型推理：
+        1. 优先通过本地 Codex 后端代理（15721 /v1/responses 真实端点）直连调用，毫秒级响应且规避 Windows CLI 管道挂起。
+        2. 若代理不可用，回退至命令行 `codex exec`。
         """
+        import httpx
+        start_time = time.time()
+        provider_cfg = config.get_codex_provider_config()
+        base_url = provider_cfg.get("base_url", "http://127.0.0.1:15721/v1").rstrip("/")
+        token = provider_cfg.get("token", "PROXY_MANAGED")
+        active_model = (model_override or provider_cfg.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
+
+        # 1. 尝试直连本地后端代理 /v1/responses (wire_api="responses")
+        try:
+            url = f"{base_url}/responses"
+            payload = {
+                "model": active_model,
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]
+            }
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    output_text = ""
+                    for item in data.get("output", []):
+                        if item.get("type") == "message":
+                            for c in item.get("content", []):
+                                if c.get("type") == "output_text":
+                                    output_text += c.get("text", "")
+                    if output_text.strip():
+                        latency_ms = (time.time() - start_time) * 1000
+                        return True, output_text.strip(), latency_ms
+        except Exception:
+            pass
+
+        # 2. 回退到 Codex CLI 进程执行
         if not await self.is_available():
             return False, "codex CLI not found in system PATH", 0.0
 
         temp_fd, temp_file_path = tempfile.mkstemp(suffix=".txt", prefix="codex_out_")
         os.close(temp_fd)
 
-        # 优先直接使用 node 执行 npm 下的 codex.js，彻底规避 Windows cmd.exe 与批处理脚本转义问题
         base_cmd = ["codex"]
         appdata = os.environ.get("APPDATA", "")
         if appdata:
@@ -101,13 +132,11 @@ class CodexHarnessBridge(BaseHarnessBridge):
             "-o", temp_file_path
         ]
 
-        active_model = (model_override or config.LLM_MODEL or "").strip()
         if active_model:
             cmd.extend(["-m", active_model])
 
         cmd.append(prompt)
 
-        start_time = time.time()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -130,16 +159,14 @@ class CodexHarnessBridge(BaseHarnessBridge):
 
             latency_ms = (time.time() - start_time) * 1000
 
-            # 读取临时文件内容
             last_message = ""
             if os.path.exists(temp_file_path):
                 try:
                     with open(temp_file_path, "r", encoding="utf-8", errors="replace") as f:
                         last_message = f.read().strip()
-                except Exception as ex:
+                except Exception:
                     last_message = ""
 
-            # 若临时文件为空，备用检查 stdout
             if not last_message and stdout_bytes:
                 last_message = stdout_bytes.decode("utf-8", errors="replace").strip()
 
@@ -162,8 +189,8 @@ class CodexHarnessBridge(BaseHarnessBridge):
     async def stream_chat(self, prompt: str, model_override: Optional[str] = None):
         """
         全实时 Token 级流式输出：
-        优先直连本机 Codex 后端代理（实时产出 reasoning_content 思维链与 content 增量）；
-        若代理未就绪，则优雅无缝回退至 Codex CLI JSONL 执行。
+        优先直连本机 Codex 后端代理的 /v1/responses 实时 SSE 流（产出 reasoning 思考链与 content 增量）；
+        若代理未就绪，则优雅回退至 CLI 进程 JSONL 流。
         """
         import httpx
         provider_cfg = config.get_codex_provider_config()
@@ -171,42 +198,44 @@ class CodexHarnessBridge(BaseHarnessBridge):
         token = provider_cfg.get("token", "PROXY_MANAGED")
         model = (model_override or provider_cfg.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
 
-        # 1. 优先尝试本地 Codex 代理的实时 token SSE 流式生成
-        direct_stream_success = False
+        # 1. 优先尝试本地 Codex 代理的 /v1/responses 实时流式响应
         try:
-            url = f"{base_url}/chat/completions"
+            url = f"{base_url}/responses"
             headers = {"Authorization": f"Bearer {token}"}
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
                 "stream": True
             }
             async with httpx.AsyncClient() as client:
-                async with client.stream("POST", url, json=payload, headers=headers, timeout=40.0) as resp:
+                async with client.stream("POST", url, json=payload, headers=headers, timeout=50.0) as resp:
                     if resp.status_code == 200:
-                        direct_stream_success = True
                         async for line in resp.aiter_lines():
                             line_str = line.strip()
-                            if not line_str or line_str == "data: [DONE]":
+                            if not line_str or not line_str.startswith("data: "):
                                 continue
-                            if line_str.startswith("data: "):
-                                try:
-                                    chunk_data = json.loads(line_str[6:])
-                                    choices = chunk_data.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        # 实时推理思考过程 (Thinking / Reasoning)
-                                        if "reasoning_content" in delta and delta["reasoning_content"]:
-                                            yield {"type": "reasoning", "delta": delta["reasoning_content"]}
-                                        # 实时文本生成 (Content)
-                                        if "content" in delta and delta["content"]:
-                                            yield {"type": "content", "delta": delta["content"]}
-                                except Exception:
-                                    pass
+                            try:
+                                d = json.loads(line_str[6:])
+                                evt_type = d.get("type")
+                                # 实时思考推理过程
+                                if evt_type == "response.reasoning_summary_text.delta":
+                                    delta_txt = d.get("delta", "")
+                                    if delta_txt:
+                                        yield {"type": "reasoning", "delta": delta_txt}
+                                # 实时文本输出
+                                elif evt_type == "response.output_text.delta":
+                                    delta_txt = d.get("delta", "")
+                                    if delta_txt:
+                                        yield {"type": "content", "delta": delta_txt}
+                                elif evt_type == "response.completed":
+                                    yield {"type": "done"}
+                                    return
+                            except Exception:
+                                pass
                         yield {"type": "done"}
                         return
         except Exception:
-            direct_stream_success = False
+            pass
 
         # 2. 备用方案：通过 Codex CLI 进程执行
         if not await self.is_available():

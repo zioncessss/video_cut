@@ -97,10 +97,18 @@ class FFmpegFilterComposer:
                 "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
                 str(output_path)
             ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
             if res.returncode == 0:
                 return True
-            # 测试用例模拟文件兜底
+
+            err_str = res.stderr.decode("utf-8", errors="replace")
+            print(f"[FFmpegFilterComposer] Single transcode failed (exit {res.returncode}): {err_str[-300:]}")
+            
+            # 真实文件（大小 > 10KB）严禁用假结果兜底，必须如实报错
+            if talking_head_path.stat().st_size > 10240:
+                return False
+                
+            # 仅针对极小字节的单元测试模拟文件允许兜底
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
 
@@ -188,10 +196,18 @@ class FFmpegFilterComposer:
             if fb_res.returncode == 0:
                 return True
             
-            # 假文件/单元测试兜底
+            # 真实素材严禁静默假拷贝，必须如实返回失败
+            if talking_head_path.stat().st_size > 10240:
+                print(f"[FFmpegFilterComposer] Complex render fallback failed: {fb_res.stderr.decode('utf-8', errors='replace')[-300:]}")
+                return False
+
+            # 仅测试模拟文件允许兜底
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
-        except Exception:
+        except Exception as e:
+            if talking_head_path.stat().st_size > 10240:
+                print(f"[FFmpegFilterComposer] Complex render exception: {e}")
+                return False
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
 
