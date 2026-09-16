@@ -56,31 +56,49 @@ def generate_ass_file(
     支持 4 种视觉主题: viral_gold, tech_emerald, marker_pen, minimal_white。
     """
     strat = strategy or {}
-    theme = strat.get("subtitle_theme", "viral_gold")
+    show_subtitles = strat.get("show_subtitles", True)
+    if not show_subtitles:
+        # 用户选择隐藏字幕，生成空的 ASS 文件
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("[Script Info]\nTitle: VideoCut Subtitles\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+        return output_path
+
+    theme = strat.get("subtitle_theme", "glow_gold")
+    font_size_str = strat.get("font_size", "medium")
+    # 字号映射：小=42，中=52，大=64，特大=76
+    font_size_map = {"small": 42, "medium": 52, "large": 64, "xlarge": 76}
+    chosen_font_size = font_size_map.get(font_size_str, 52)
+
+    # 垂直位置映射 (subtitle_position_y: 距离顶部百分比，默认 82%)
+    # ASS MarginV 表示距离底部的边距：1920 * (100 - y) / 100
+    pos_y_percent = strat.get("subtitle_position_y", 82)
+    margin_v = max(40, min(1800, int(1920 * (100 - pos_y_percent) / 100)))
+
     enable_hl = strat.get("enable_highlight", True)
     hl_color_hex = strat.get("highlight_color", "#FACC15")
     hl_scale = strat.get("highlight_scale", True)
     custom_words = strat.get("custom_highlight_words", [])
 
-    # 主题样式表定义
-    # ASS Default 样式格式: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+    # 主题样式表模板:
+    # 格式: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
     # BorderStyle: 1=Outline + drop shadow (无黑底，自然融入画面), 3=Opaque box (带底框)
-    # Alignment=2 居中底部, MarginV=260 竖屏口播黄金视线位置
-    theme_styles = {
+    theme_templates = {
         # 1. 纯净发光金黄 (完全融入画面，无黑色底框，高亮词发光变金黄)
-        "glow_gold": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H60000000,-1,0,0,0,100,100,2,0,1,3,2,2,40,40,260,1",
+        "glow_gold": "Style: Default,Microsoft YaHei,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,&H60000000,-1,0,0,0,100,100,2,0,1,3,2,2,40,40,{margin_v},1",
         # 2. 超透毛玻璃白 (仅带极微弱磨砂透明轮廓，不遮挡画面细节)
-        "glass_clean": "Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H00333333,&H30000000,-1,0,0,0,100,100,1,0,1,2,1,2,40,40,260,1",
+        "glass_clean": "Style: Default,Microsoft YaHei,{fontsize},&H00FFFFFF,&H000000FF,&H00333333,&H30000000,-1,0,0,0,100,100,1,0,1,2,1,2,40,40,{margin_v},1",
         # 3. 电影级自然立体白 (柔和多层立体投影，无黑底框)
-        "cinema_shadow": "Style: Default,Microsoft YaHei,55,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,2,4,2,40,40,260,1",
+        "cinema_shadow": "Style: Default,Microsoft YaHei,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,2,4,2,40,40,{margin_v},1",
         # 4. 科技翡翠
-        "tech_emerald": "Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H001A1A1A,&H6010B981,-1,0,0,0,100,100,3,0,1,2,2,2,40,40,260,1",
+        "tech_emerald": "Style: Default,Microsoft YaHei,{fontsize},&H00FFFFFF,&H000000FF,&H001A1A1A,&H6010B981,-1,0,0,0,100,100,3,0,1,2,2,2,40,40,{margin_v},1",
         # 5. 爆款黑底胶囊金
-        "viral_gold": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,260,1",
+        "viral_gold": "Style: Default,Microsoft YaHei,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,{margin_v},1",
         # 6. 教学记号笔
-        "marker_pen": "Style: Default,Microsoft YaHei,56,&H00111111,&H000000FF,&H00FFFFFF,&H00FEF08A,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,260,1",
+        "marker_pen": "Style: Default,Microsoft YaHei,{fontsize},&H00111111,&H000000FF,&H00FFFFFF,&H00FEF08A,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,{margin_v},1",
     }
-    selected_style = theme_styles.get(theme, theme_styles["glow_gold"])
+    style_template = theme_templates.get(theme, theme_templates["glow_gold"])
+    selected_style = style_template.format(fontsize=chosen_font_size, margin_v=margin_v)
     ass_hl_color = hex_to_ass_color(hl_color_hex)
     scale_tag = r"\fscx110\fscy110" if hl_scale else ""
     reset_scale_tag = r"\fscx100\fscy100" if hl_scale else ""

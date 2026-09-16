@@ -42,6 +42,9 @@ interface VideoEditorProps {
 const DEFAULT_STRATEGY: EditingStrategy = {
   subtitle_theme: 'glow_gold',
   font_size: 'medium',
+  show_subtitles: true,
+  subtitle_position_y: 82,
+  subtitle_position_x: 50,
   enable_highlight: true,
   highlight_color: '#FACC15',
   highlight_scale: true,
@@ -287,14 +290,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             <span>{correcting ? 'AI 专有词纠错中...' : '智能纠错'}</span>
           </button>
 
-          {/* 初剪触发 */}
+          {/* 初剪触发与 ASR 音频转写 */}
           <button
             onClick={handleAnalyze}
             disabled={analyzing || !selectedThId}
             className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-2 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+            title="通过 FFmpeg 提取 16kHz 高保真音频，并调用 faster-whisper 引擎进行全链路语音识别"
           >
             {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            <span>{analyzing ? '识别与分析中...' : 'AI 智能识别与初剪'}</span>
+            <span>{analyzing ? '音频抽取与 ASR 识别中...' : '🎙️ 提取音频并生成 ASR 字幕'}</span>
           </button>
         </div>
       </div>
@@ -341,6 +345,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             onTimeUpdate={setCurrentTime}
             aspectRatio="9:16"
             strategy={strategy}
+            onStrategyChange={setStrategy}
             isRendered={Boolean(outputVideoUrl)}
           />
         </div>

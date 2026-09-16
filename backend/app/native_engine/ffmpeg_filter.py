@@ -36,8 +36,23 @@ class FFmpegFilterComposer:
         extra_filters = []
         strat = strategy or {}
 
-        # 1. ASS 字幕烧录
-        if ass_subtitle_path and Path(ass_subtitle_path).exists():
+        # 探测可用中文字体文件路径 (Windows 优先使用微软雅黑或黑体，防范 fontconfig 缺失报错)
+        fontfile_arg = ""
+        candidate_fonts = [
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+            Path("/System/Library/Fonts/PingFang.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        ]
+        for cf in candidate_fonts:
+            if cf.exists():
+                escaped_font = str(cf).replace("\\", "/").replace(":", "\\:")
+                fontfile_arg = f"fontfile='{escaped_font}':"
+                break
+
+        # 1. ASS 字幕烧录 (若策略未隐藏字幕)
+        if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
             # Windows 路径转义: 替换反斜杠为正斜杠，并对冒号转义
             escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
             extra_filters.append(f"ass='{escaped_ass}'")
@@ -47,10 +62,10 @@ class FFmpegFilterComposer:
             wm_text = strat.get("watermark_text", "").replace("'", "")
             opacity = strat.get("watermark_opacity", 0.4)
             extra_filters.append(
-                f"drawtext=text='{wm_text}':fontsize=32:fontcolor=white@{opacity}:x=w-tw-50:y=50:shadowcolor=black@{opacity}:shadowx=1:shadowy=1"
+                f"drawtext={fontfile_arg}text='{wm_text}':fontsize=32:fontcolor=white@{opacity}:x=w-tw-50:y=50:shadowcolor=black@{opacity}:shadowx=1:shadowy=1"
             )
 
-        # 3. 顶部 Title 挂顶横幅 (若同时开启水印，横幅微移至 y=140，居中胶囊，与右上角水印层次分明)
+        # 3. 顶部 Title 挂顶横幅 (若同时开启水印，横幅微移至 y=135，居中胶囊，与右上角水印层次分明)
         if strat.get("enable_top_banner") and strat.get("banner_main_title"):
             title = strat.get("banner_main_title", "").replace("'", "")
             sub_title = (strat.get("banner_sub_title") or "").replace("'", "")
@@ -61,11 +76,11 @@ class FFmpegFilterComposer:
             extra_filters.append(f"drawbox=x=100:y={banner_y}:w=880:h=135:color=black@0.7:t=fill")
             # 绘制主标题
             extra_filters.append(
-                f"drawtext=text='{title}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y={title_y}:shadowcolor=black@0.6:shadowx=2:shadowy=2"
+                f"drawtext={fontfile_arg}text='{title}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y={title_y}:shadowcolor=black@0.6:shadowx=2:shadowy=2"
             )
             if sub_title:
                 extra_filters.append(
-                    f"drawtext=text='{sub_title}':fontsize=30:fontcolor=yellow:x=(w-text_w)/2:y={sub_y}"
+                    f"drawtext={fontfile_arg}text='{sub_title}':fontsize=30:fontcolor=yellow:x=(w-text_w)/2:y={sub_y}"
                 )
 
         overlay_chain = "," + ",".join(extra_filters) if extra_filters else ""

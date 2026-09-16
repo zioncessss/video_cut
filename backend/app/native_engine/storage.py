@@ -83,6 +83,27 @@ class StorageService:
             with open(dest_path, "wb") as f:
                 f.write(source_path_or_bytes)
 
+        # 视频编码兼容性保护：检测是否为 HEVC/H.265 或非标准编码，自动转为浏览器万能支持的 H.264
+        try:
+            probe_cmd = [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+                str(dest_path)
+            ]
+            c_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            if c_res.returncode == 0 and c_res.stdout.strip() and c_res.stdout.strip() != "h264":
+                conv_tmp = dest_path.with_name(f"{dest_path.stem}_conv.mp4")
+                conv_cmd = [
+                    "ffmpeg", "-y", "-i", str(dest_path),
+                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                    str(conv_tmp)
+                ]
+                if subprocess.run(conv_cmd, capture_output=True, timeout=120).returncode == 0:
+                    dest_path.unlink()
+                    conv_tmp.rename(dest_path)
+        except Exception:
+            pass
+
         metadata = self.probe_video_metadata(dest_path)
         rel_path = str(dest_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
 

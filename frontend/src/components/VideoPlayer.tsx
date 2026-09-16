@@ -14,6 +14,7 @@ interface VideoPlayerProps {
   onTimeUpdate: (time: number) => void;
   aspectRatio?: string;
   strategy?: EditingStrategy;
+  onStrategyChange?: (newStrategy: EditingStrategy) => void;
   isRendered?: boolean;
 }
 
@@ -24,12 +25,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onTimeUpdate,
   aspectRatio = '9:16',
   strategy,
+  onStrategyChange,
   isRendered = false
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [duration, setDuration] = useState<number>(0);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [dragStartY, setDragStartY] = useState<number>(0);
+  const [dragStartPosY, setDragStartPosY] = useState<number>(82);
 
   const activeSubtitle = subtitles.find(
     s => currentTime >= s.start_time && currentTime <= s.end_time
@@ -165,14 +171,68 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const hasBanner = Boolean(strategy?.enable_top_banner && strategy?.banner_main_title);
   const hasWatermark = Boolean(strategy?.enable_watermark && strategy?.watermark_text);
 
+  // 字号大小类名映射
+  const getFontSizeClass = () => {
+    const size = strategy?.font_size || 'medium';
+    switch (size) {
+      case 'small':
+        return 'text-[10px] leading-tight';
+      case 'medium':
+        return 'text-xs leading-relaxed';
+      case 'large':
+        return 'text-sm font-black leading-snug';
+      case 'xlarge':
+        return 'text-base font-black tracking-wide leading-normal';
+      default:
+        return 'text-xs leading-relaxed';
+    }
+  };
+
+  // 拖拽移动字幕位置事件处理
+  const handleSubtitleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+    setDragStartY(e.clientY);
+    setDragStartPosY(strategy?.subtitle_position_y ?? 82);
+  };
+
+  const handleContainerMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const deltaY = e.clientY - dragStartY;
+    const deltaPercent = (deltaY / rect.height) * 100;
+    const newY = Math.max(20, Math.min(92, Math.round(dragStartPosY + deltaPercent)));
+    if (strategy && onStrategyChange && newY !== strategy.subtitle_position_y) {
+      onStrategyChange({ ...strategy, subtitle_position_y: newY });
+    }
+  };
+
+  const handleContainerMouseUp = () => {
+    if (isDragging) {
+      setIsDragging(false);
+    }
+  };
+
+  const currentPosY = strategy?.subtitle_position_y ?? 82;
+  const isSubtitleVisible = strategy?.show_subtitles !== false;
+
   return (
-    <div className="flex flex-col items-center justify-center h-full max-h-full">
+    <div className="flex flex-col items-center justify-center h-full max-h-full select-none">
       {/* 9:16 竖屏播放视窗：采用 max-h-[68vh] 自适应父容器高度，彻底避免垂直溢出 */}
-      <div className="relative h-[66vh] aspect-[9/16] max-w-full bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border-2 border-gray-800 select-none">
+      <div
+        ref={containerRef}
+        onMouseMove={handleContainerMouseMove}
+        onMouseUp={handleContainerMouseUp}
+        onMouseLeave={handleContainerMouseUp}
+        className="relative h-[66vh] aspect-[9/16] max-w-full bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border-2 border-gray-800 select-none"
+      >
         {videoUrl ? (
           <video
             ref={videoRef}
             src={videoUrl}
+            crossOrigin="anonymous"
+            playsInline
             className="w-full h-full object-cover"
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}
@@ -216,10 +276,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
             )}
 
-            {/* 3. 动态口播字幕层 (精准单词高亮，融入画面无黑底) */}
-            {activeSubtitle && (
-              <div className="absolute bottom-10 left-2 right-2 text-center pointer-events-none z-20 transition-all duration-150">
-                <div className={`inline-block px-3 py-1 rounded-xl text-xs max-w-[95%] leading-relaxed ${getThemeClass()}`}>
+            {/* 3. 动态口播字幕层 (支持精准单词高亮、可自由按住鼠标上下拖拽移动、支持一键隐藏) */}
+            {activeSubtitle && isSubtitleVisible && (
+              <div
+                style={{ top: `${currentPosY}%`, transform: 'translateY(-50%)' }}
+                onMouseDown={handleSubtitleMouseDown}
+                title="按住鼠标可上下自由拖动字幕位置"
+                className={`absolute left-2 right-2 text-center z-20 transition-all cursor-move select-none ${
+                  isDragging ? 'ring-2 ring-blue-400/80 rounded-2xl opacity-90' : 'hover:outline-dashed hover:outline-1 hover:outline-blue-400/50'
+                }`}
+              >
+                <div className={`inline-block px-3 py-1.5 rounded-xl max-w-[95%] transition-all ${getThemeClass()} ${getFontSizeClass()}`}>
                   {renderSubtitleText()}
                 </div>
               </div>

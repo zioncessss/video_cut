@@ -90,7 +90,8 @@ class ASRRunner:
         try:
             from faster_whisper import WhisperModel
             if self._model is None:
-                self._model = WhisperModel("base", device="auto", compute_type="default")
+                # 显式指定 compute_type="float32"，避免 Windows/CPU 报 float16 不支持的 warning
+                self._model = WhisperModel("base", device="cpu", compute_type="float32")
             whisper_segments, _ = self._model.transcribe(str(audio_tmp if extracted else video_path), language="zh")
             for seg in whisper_segments:
                 text = seg.text.strip()
@@ -101,7 +102,8 @@ class ASRRunner:
                         "raw_text": text,
                         "corrected_text": text
                     })
-        except Exception:
+        except Exception as e:
+            print(f"[ASRRunner] Whisper inference fallback due to: {e}")
             # 优雅兜底模式：生成基础口播示范时间轴，保证开发与离线测试链路畅通
             total_duration = 15.0
             try:

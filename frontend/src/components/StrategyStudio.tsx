@@ -139,7 +139,117 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
       </div>
 
-      {/* 2. 关键词精准高亮控制 */}
+      {/* 2. 字幕布局、大小与显示控制 (支持隐藏、字号、垂直位置微调与拖动提示) */}
+      <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="flex items-center space-x-1.5">
+            <Type className="w-4 h-4 text-blue-600" />
+            <h3 className="font-semibold text-xs text-gray-800">字幕控制与排版布局</h3>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-[10px] text-gray-500 font-medium">
+              {strategy.show_subtitles !== false ? '显示字幕' : '已隐藏字幕'}
+            </span>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={strategy.show_subtitles !== false}
+                onChange={e => update({ show_subtitles: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-8 h-4.5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-blue-600"></div>
+            </label>
+          </div>
+        </div>
+
+        {strategy.show_subtitles !== false && (
+          <div className="space-y-3 pt-1 border-t border-gray-100 text-xs">
+            {/* 字号选择 */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-gray-600 font-medium text-[11px]">字幕字号大小</span>
+                <span className="text-[10px] text-gray-400">
+                  {strategy.font_size === 'small' && '小 (42px)'}
+                  {(!strategy.font_size || strategy.font_size === 'medium') && '标准 (52px)'}
+                  {strategy.font_size === 'large' && '大号 (64px)'}
+                  {strategy.font_size === 'xlarge' && '超大 (76px)'}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: 'small', label: '小号' },
+                  { id: 'medium', label: '标准' },
+                  { id: 'large', label: '大号' },
+                  { id: 'xlarge', label: '特大' },
+                ].map(size => (
+                  <button
+                    key={size.id}
+                    type="button"
+                    onClick={() => update({ font_size: size.id as any })}
+                    className={`py-1 rounded-lg border text-center text-[11px] transition-all ${
+                      (strategy.font_size || 'medium') === size.id
+                        ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 垂直位置调节 */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">垂直位置 (Y轴高度)</span>
+                <span className="text-[10px] font-mono text-gray-500">
+                  {strategy.subtitle_position_y ?? 82}%
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="range"
+                  min="20"
+                  max="92"
+                  step="1"
+                  value={strategy.subtitle_position_y ?? 82}
+                  onChange={e => update({ subtitle_position_y: parseInt(e.target.value, 10) })}
+                  className="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
+              </div>
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_y: 50 })}
+                  className="hover:text-blue-600"
+                >
+                  居中 (50%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_y: 72 })}
+                  className="hover:text-blue-600"
+                >
+                  中下 (72%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_y: 82 })}
+                  className="hover:text-blue-600"
+                >
+                  贴底 (82%)
+                </button>
+              </div>
+              <div className="mt-1.5 bg-blue-50/60 rounded p-1.5 text-[10px] text-blue-700 flex items-center space-x-1">
+                <span>💡</span>
+                <span>也可直接在左侧播放器中按住字幕自由拖动调整位置！</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 3. 关键词精准高亮控制 */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">

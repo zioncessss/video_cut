@@ -145,7 +145,10 @@ export const streamChatSSE = async (
 
 export interface EditingStrategy {
   subtitle_theme: 'glow_gold' | 'glass_clean' | 'cinema_shadow' | 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
-  font_size: 'small' | 'medium' | 'large';
+  font_size: 'small' | 'medium' | 'large' | 'xlarge';
+  show_subtitles?: boolean;
+  subtitle_position_y?: number;  // 竖屏垂直百分比 10~95 (默认82)
+  subtitle_position_x?: number;  // 竖屏水平百分比 10~90 (默认50)
   enable_highlight: boolean;
   highlight_color: string;
   highlight_scale: boolean;

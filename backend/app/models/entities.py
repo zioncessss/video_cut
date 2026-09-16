@@ -42,7 +42,10 @@ class BrollReplacement(BaseModel):
 
 class EditingStrategy(BaseModel):
     subtitle_theme: str = "glow_gold"   # glow_gold, glass_clean, cinema_shadow, tech_emerald, viral_gold, marker_pen
-    font_size: str = "medium"           # small, medium, large
+    font_size: str = "medium"           # small, medium, large, xlarge
+    show_subtitles: bool = True
+    subtitle_position_y: int = 82       # 竖屏垂直百分比 10~95% (默认82%黄金底部)
+    subtitle_position_x: int = 50       # 竖屏水平百分比 10~90% (默认50%居中)
     enable_highlight: bool = True
     highlight_color: str = "#FACC15"
     highlight_scale: bool = True
