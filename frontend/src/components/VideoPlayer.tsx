@@ -14,6 +14,7 @@ interface VideoPlayerProps {
   onTimeUpdate: (time: number) => void;
   aspectRatio?: string;
   strategy?: EditingStrategy;
+  isRendered?: boolean;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -22,7 +23,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   currentTime,
   onTimeUpdate,
   aspectRatio = '9:16',
-  strategy
+  strategy,
+  isRendered = false
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -182,42 +184,47 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         )}
 
-        {/* 1. 顶部挂顶 Title 横幅 (居中顶部，严谨控制高度与内边距) */}
-        {hasBanner && (
-          <div className="absolute top-3 left-3 right-3 text-center pointer-events-none z-10">
-            <div className="inline-block max-w-[92%] bg-black/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20 shadow-xl">
-              <div className="text-[11px] font-black text-white tracking-wider flex items-center justify-center space-x-1">
-                <span>🔥</span>
-                <span className="truncate">{strategy?.banner_main_title}</span>
-              </div>
-              {strategy?.banner_sub_title && (
-                <div className="text-[9px] font-semibold text-yellow-400 truncate mt-0.5">
-                  {strategy.banner_sub_title}
+        {/* 当播放渲染导出的 MP4 成片时，由于滤镜与 ASS 已物理压制进视频流，跳过 DOM 虚拟层避免双重叠加 */}
+        {!isRendered && (
+          <>
+            {/* 1. 顶部挂顶 Title 横幅 (当同时开启右上角水印时，横幅下移至 top-14，预留顶部净空，彻底避开右上角水印) */}
+            {hasBanner && (
+              <div className={`absolute left-3 right-3 text-center pointer-events-none z-10 transition-all ${
+                hasWatermark ? 'top-14' : 'top-3'
+              }`}>
+                <div className="inline-block max-w-[92%] bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20 shadow-xl">
+                  <div className="text-[11px] font-black text-white tracking-wider flex items-center justify-center space-x-1">
+                    <span>🔥</span>
+                    <span className="truncate">{strategy?.banner_main_title}</span>
+                  </div>
+                  {strategy?.banner_sub_title && (
+                    <div className="text-[9px] font-semibold text-yellow-400 truncate mt-0.5">
+                      {strategy.banner_sub_title}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
+              </div>
+            )}
 
-        {/* 2. 品牌防搬运水印角标 (错开顶部横幅位置，避免产生遮挡碰撞) */}
-        {hasWatermark && (
-          <div
-            className={`absolute right-3 pointer-events-none z-10 text-[9px] font-medium text-white px-2 py-0.5 rounded backdrop-blur-xs tracking-tight select-none shadow-sm transition-all ${
-              hasBanner ? 'top-16' : 'top-3'
-            }`}
-            style={{ opacity: strategy?.watermark_opacity ?? 0.4 }}
-          >
-            {strategy?.watermark_text}
-          </div>
-        )}
+            {/* 2. 品牌防搬运水印角标 (固定置于右上角顶角 top-2.5 right-2.5，纯正角标位) */}
+            {hasWatermark && (
+              <div
+                className="absolute top-2.5 right-2.5 pointer-events-none z-20 text-[10px] font-medium text-white px-2 py-0.5 rounded backdrop-blur-xs tracking-tight select-none shadow-sm transition-all"
+                style={{ opacity: strategy?.watermark_opacity ?? 0.4 }}
+              >
+                {strategy?.watermark_text}
+              </div>
+            )}
 
-        {/* 3. 动态口播字幕层 (精准单词高亮，融入画面无黑底) */}
-        {activeSubtitle && (
-          <div className="absolute bottom-10 left-2 right-2 text-center pointer-events-none z-20 transition-all duration-150">
-            <div className={`inline-block px-3 py-1 rounded-xl text-xs max-w-[95%] leading-relaxed ${getThemeClass()}`}>
-              {renderSubtitleText()}
-            </div>
-          </div>
+            {/* 3. 动态口播字幕层 (精准单词高亮，融入画面无黑底) */}
+            {activeSubtitle && (
+              <div className="absolute bottom-10 left-2 right-2 text-center pointer-events-none z-20 transition-all duration-150">
+                <div className={`inline-block px-3 py-1 rounded-xl text-xs max-w-[95%] leading-relaxed ${getThemeClass()}`}>
+                  {renderSubtitleText()}
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* 比例标签 */}

@@ -341,6 +341,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             onTimeUpdate={setCurrentTime}
             aspectRatio="9:16"
             strategy={strategy}
+            isRendered={Boolean(outputVideoUrl)}
           />
         </div>
 

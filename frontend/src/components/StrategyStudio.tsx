@@ -267,7 +267,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">
             <Shield className="w-4 h-4 text-emerald-600" />
-            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (已错开位置，不与Title重叠)</h3>
+            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (右上角)</h3>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
