@@ -41,7 +41,7 @@ class BrollReplacement(BaseModel):
     playback_mode: str = "fit"  # "fit", "loop", "slow"
 
 class EditingStrategy(BaseModel):
-    subtitle_theme: str = "viral_gold"  # viral_gold, tech_emerald, marker_pen, minimal_white
+    subtitle_theme: str = "glow_gold"   # glow_gold, glass_clean, cinema_shadow, tech_emerald, viral_gold, marker_pen
     font_size: str = "medium"           # small, medium, large
     enable_highlight: bool = True
     highlight_color: str = "#FACC15"

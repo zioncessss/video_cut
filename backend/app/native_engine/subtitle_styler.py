@@ -64,14 +64,23 @@ def generate_ass_file(
 
     # 主题样式表定义
     # ASS Default 样式格式: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-    # Alignment=2 居中底部, MarginV=280 竖屏口播黄金视线位置
+    # BorderStyle: 1=Outline + drop shadow (无黑底，自然融入画面), 3=Opaque box (带底框)
+    # Alignment=2 居中底部, MarginV=260 竖屏口播黄金视线位置
     theme_styles = {
-        "viral_gold": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,4,2,2,40,40,280,1",
-        "tech_emerald": "Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H001A1A1A,&H8010B981,-1,0,0,0,100,100,3,0,1,3,1,2,40,40,280,1",
-        "marker_pen": "Style: Default,Microsoft YaHei,56,&H00111111,&H000000FF,&H00FFFFFF,&H00FEF08A,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,280,1",
-        "minimal_white": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H60000000,-1,0,0,0,100,100,2,0,1,2,4,2,40,40,280,1",
+        # 1. 纯净发光金黄 (完全融入画面，无黑色底框，高亮词发光变金黄)
+        "glow_gold": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H60000000,-1,0,0,0,100,100,2,0,1,3,2,2,40,40,260,1",
+        # 2. 超透毛玻璃白 (仅带极微弱磨砂透明轮廓，不遮挡画面细节)
+        "glass_clean": "Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H00333333,&H30000000,-1,0,0,0,100,100,1,0,1,2,1,2,40,40,260,1",
+        # 3. 电影级自然立体白 (柔和多层立体投影，无黑底框)
+        "cinema_shadow": "Style: Default,Microsoft YaHei,55,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,2,4,2,40,40,260,1",
+        # 4. 科技翡翠
+        "tech_emerald": "Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H001A1A1A,&H6010B981,-1,0,0,0,100,100,3,0,1,2,2,2,40,40,260,1",
+        # 5. 爆款黑底胶囊金
+        "viral_gold": "Style: Default,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,260,1",
+        # 6. 教学记号笔
+        "marker_pen": "Style: Default,Microsoft YaHei,56,&H00111111,&H000000FF,&H00FFFFFF,&H00FEF08A,-1,0,0,0,100,100,2,0,3,0,0,2,40,40,260,1",
     }
-    selected_style = theme_styles.get(theme, theme_styles["viral_gold"])
+    selected_style = theme_styles.get(theme, theme_styles["glow_gold"])
     ass_hl_color = hex_to_ass_color(hl_color_hex)
     scale_tag = r"\fscx110\fscy110" if hl_scale else ""
     reset_scale_tag = r"\fscx100\fscy100" if hl_scale else ""

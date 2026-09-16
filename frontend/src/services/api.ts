@@ -144,7 +144,7 @@ export const streamChatSSE = async (
 };
 
 export interface EditingStrategy {
-  subtitle_theme: 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
+  subtitle_theme: 'glow_gold' | 'glass_clean' | 'cinema_shadow' | 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
   font_size: 'small' | 'medium' | 'large';
   enable_highlight: boolean;
   highlight_color: string;

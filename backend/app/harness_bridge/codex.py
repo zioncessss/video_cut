@@ -326,15 +326,17 @@ class CodexHarnessBridge(BaseHarnessBridge):
         }
         
         prompt = (
-            "你是一个专业的驾校短视频口播字幕纠错助手。\n"
-            "任务：针对驾校场景，修正 ASR 语音识别出的同音错别字、不规范简称或语法错漏。\n"
+            "你是一个专业的驾校短视频口播字幕纠错与重点词提炼助手。\n"
+            "任务：\n"
+            "1. 针对驾校场景，修正 ASR 语音识别出的同音错别字、不规范简称或语法错漏。\n"
+            "2. 针对短视频网感呈现，自动识别每一句中最需要视觉高亮强调的 1~2 个核心词或数字（例如：'科目二'、'一把过'、'五万平'、'十分钟'、'金牌教练'、'倒库'、'方便'等）。\n"
             f"行业专有名词与高频纠正规则参照：{json.dumps(glossary_info, ensure_ascii=False)}\n\n"
             "待校正的原始字幕列表：\n"
             f"{json.dumps(request.raw_subtitles, ensure_ascii=False)}\n\n"
             "请严格以单行或纯 JSON 格式输出，不要输出任何多余的开场白、解释或 markdown 标记。格式如下：\n"
             "{\n"
             '  "subtitles": [\n'
-            '    {"id": "...", "start_time": 0.0, "end_time": 3.0, "raw_text": "...", "corrected_text": "..."}\n'
+            '    {"id": "...", "start_time": 0.0, "end_time": 3.0, "raw_text": "...", "corrected_text": "...", "highlight_keywords": ["核心词1", "核心词2"]}\n'
             "  ],\n"
             '  "corrections": [\n'
             '    {"subtitle_id": "...", "original_text": "错字", "corrected_text": "正确字", "reason": "修改原因"}\n'
@@ -361,6 +363,10 @@ class CodexHarnessBridge(BaseHarnessBridge):
                                 changes=[{"from": str(c.get("original_text", "")), "to": str(c.get("corrected_text", "")), "reason": str(c.get("reason", "智能语义纠错"))}]
                             )
                         )
+                    # 保留或融合 AI 识别出的高亮词
+                    for seg in updated_subtitles:
+                        if "highlight_keywords" in seg and isinstance(seg["highlight_keywords"], list):
+                            seg["matched_keywords"] = seg.get("matched_keywords", []) + seg["highlight_keywords"]
                     return HarnessCorrectionResponse(
                         updated_subtitles=updated_subtitles,
                         corrections_summary=corrections_summary,

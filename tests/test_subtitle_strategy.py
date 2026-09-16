@@ -60,11 +60,11 @@ def test_generate_ass_file(tmp_path):
 
 def test_editing_strategy_model():
     strat = EditingStrategy()
-    assert strat.subtitle_theme == "viral_gold"
+    assert strat.subtitle_theme == "glow_gold"
     assert strat.enable_highlight is True
     assert strat.banner_style == "capsule"
     assert strat.broll_pacing == "standard"
 
     project = CutProject(title="测试工程", talking_head_id="th-123")
-    assert project.strategy.subtitle_theme == "viral_gold"
+    assert project.strategy.subtitle_theme == "glow_gold"
     assert project.strategy.enable_top_banner is True

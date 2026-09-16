@@ -42,28 +42,28 @@ class FFmpegFilterComposer:
             escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
             extra_filters.append(f"ass='{escaped_ass}'")
 
-        # 2. 顶部 Title 挂顶横幅
+        # 2. 顶部 Title 挂顶横幅 (置于顶部 y=60 黄金区，紧凑胶囊设计)
         if strat.get("enable_top_banner") and strat.get("banner_main_title"):
             title = strat.get("banner_main_title", "").replace("'", "")
             sub_title = (strat.get("banner_sub_title") or "").replace("'", "")
-            # 绘制深色半透明横幅胶囊底框 (9:16 顶部 y=120, h=140, 居中)
-            extra_filters.append("drawbox=x=60:y=110:w=960:h=150:color=black@0.65:t=fill")
+            # 绘制深色半透明横幅胶囊底框 (9:16 顶部 y=60, h=135, 居中)
+            extra_filters.append("drawbox=x=100:y=60:w=880:h=135:color=black@0.7:t=fill")
             # 绘制主标题
             extra_filters.append(
-                f"drawtext=text='{title}':fontsize=52:fontcolor=white:x=(w-text_w)/2:y=130:shadowcolor=black@0.6:shadowx=2:shadowy=2"
+                f"drawtext=text='{title}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=80:shadowcolor=black@0.6:shadowx=2:shadowy=2"
             )
             if sub_title:
                 extra_filters.append(
-                    f"drawtext=text='{sub_title}':fontsize=32:fontcolor=yellow:x=(w-text_w)/2:y=200"
+                    f"drawtext=text='{sub_title}':fontsize=30:fontcolor=yellow:x=(w-text_w)/2:y=145"
                 )
 
-        # 3. 右上角品牌水印角标
+        # 3. 右上角品牌水印角标 (错开横幅，置于横幅下方 y=220 或右上角独立净空区，彻底避免碰撞重叠)
         if strat.get("enable_watermark") and strat.get("watermark_text"):
             wm_text = strat.get("watermark_text", "").replace("'", "")
             opacity = strat.get("watermark_opacity", 0.4)
-            alpha_hex = f"{int(opacity * 255):02x}"
+            wm_y = 220 if (strat.get("enable_top_banner") and strat.get("banner_main_title")) else 60
             extra_filters.append(
-                f"drawtext=text='{wm_text}':fontsize=36:fontcolor=white@{opacity}:x=w-tw-50:y=50:shadowcolor=black@{opacity}:shadowx=1:shadowy=1"
+                f"drawtext=text='{wm_text}':fontsize=32:fontcolor=white@{opacity}:x=w-tw-50:y={wm_y}:shadowcolor=black@{opacity}:shadowx=1:shadowy=1"
             )
 
         overlay_chain = "," + ",".join(extra_filters) if extra_filters else ""

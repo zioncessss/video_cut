@@ -40,15 +40,15 @@ interface VideoEditorProps {
 }
 
 const DEFAULT_STRATEGY: EditingStrategy = {
-  subtitle_theme: 'viral_gold',
+  subtitle_theme: 'glow_gold',
   font_size: 'medium',
   enable_highlight: true,
   highlight_color: '#FACC15',
   highlight_scale: true,
-  custom_highlight_words: ['科目二', '一把过', '金牌教练', '体检'],
+  custom_highlight_words: ['科目二', '一把过', '金牌教练', '体检', '十分钟', '轻松'],
   enable_top_banner: true,
   banner_main_title: '科目二一把过秘籍',
-  banner_sub_title: '教练手把手教学 · 细节拆解',
+  banner_sub_title: '教练手把手教学',
   banner_style: 'capsule',
   enable_watermark: true,
   watermark_text: '@顺达驾校官方教学',
@@ -241,15 +241,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   );
 
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] max-w-7xl mx-auto p-6">
+    <div className="flex flex-col h-[calc(100vh-64px)] max-w-7xl mx-auto p-4 overflow-hidden">
       {/* 顶部操作条：口播素材选择、引擎状态徽章、纠错与初剪触发 */}
-      <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-2xl p-4 shadow-sm mb-4 gap-3">
+      <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-3 shadow-xs mb-3 gap-2.5 flex-shrink-0">
         <div className="flex items-center space-x-3">
           <label className="text-xs font-semibold text-gray-700">口播主视频:</label>
           <select
             value={selectedThId}
             onChange={e => setSelectedThId(e.target.value)}
-            className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-blue-500"
+            className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
           >
             {talkingHeads.length === 0 && <option value="">暂无口播视频，请先在素材库上传</option>}
             {talkingHeads.map(t => (
@@ -416,7 +416,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       )}
 
       {/* 底部浮动交互条：AI Prompt 指令输入框 + 生成按钮 + 硬件监控 */}
-      <div className="mt-4 bg-white border border-gray-200/80 rounded-2xl p-3 shadow-sm flex items-center space-x-3">
+      <div className="mt-2.5 bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs flex items-center space-x-2.5 flex-shrink-0">
         <div className="flex-1 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
           {applyingInstruction ? (
             <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Play, Pause, Volume2, VolumeX, Sparkles } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
 import { EditingStrategy } from '../services/api';
 
 interface VideoPlayerProps {
@@ -70,12 +70,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${m}:${s}`;
   };
 
-  // 根据当前字幕与策略切分普通文本与高亮文本
+  // 根据当前字幕与策略切分普通文本与高亮文本（精准单词高亮）
   const renderSubtitleText = () => {
     if (!activeSubtitle) return null;
     const text = activeSubtitle.corrected_text;
     const strat = strategy || {
-      subtitle_theme: 'viral_gold',
+      subtitle_theme: 'glow_gold',
       enable_highlight: true,
       highlight_color: '#FACC15',
       highlight_scale: true,
@@ -109,9 +109,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             return (
               <span
                 key={i}
-                style={{ color: strat.highlight_color }}
-                className={`font-black drop-shadow-md mx-0.5 inline-block transition-all ${
-                  strat.highlight_scale ? 'scale-110 tracking-wide' : ''
+                style={{
+                  color: strat.highlight_color || '#FACC15',
+                  textShadow: `0 0 10px ${strat.highlight_color || '#FACC15'}80, 0 2px 4px rgba(0,0,0,0.9)`
+                }}
+                className={`font-black mx-0.5 inline-block transition-all ${
+                  strat.highlight_scale ? 'scale-110 tracking-wide font-extrabold' : ''
                 }`}
               >
                 {part}
@@ -124,26 +127,46 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     );
   };
 
-  // 获取字幕主题样式类名
+  // 获取字幕主题样式类名 (支持自然融入视频背景，无黑底)
   const getThemeClass = () => {
-    const theme = strategy?.subtitle_theme || 'viral_gold';
+    const theme = strategy?.subtitle_theme || 'glow_gold';
     switch (theme) {
+      // 1. 发光金黄 (完全融入画面，无黑底框，纯白文字 + 金光强调)
+      case 'glow_gold':
+        return 'bg-transparent text-white font-extrabold drop-shadow-[0_2px_5px_rgba(0,0,0,0.95)] [text-shadow:_0_2px_4px_rgb(0_0_0_/_90%)]';
+      
+      // 2. 超透毛玻璃白 (极微弱纯净透光，不遮挡画面)
+      case 'glass_clean':
+        return 'bg-black/20 backdrop-blur-[2px] text-white font-bold border border-white/15 shadow-sm [text-shadow:_0_1px_3px_rgb(0_0_0_/_80%)]';
+      
+      // 3. 电影级自然立体白 (多层柔和深色外阴影，完美融入任何明暗视频)
+      case 'cinema_shadow':
+        return 'bg-transparent text-white font-black tracking-wide drop-shadow-[0_4px_8px_rgba(0,0,0,1)] [text-shadow:_0_3px_6px_rgb(0_0_0_/_95%),_0_1px_2px_rgb(0_0_0_/_90%)]';
+      
+      // 4. 科技翡翠
       case 'tech_emerald':
-        return 'bg-slate-950/80 backdrop-blur-md text-white border border-emerald-500/40 shadow-emerald-950/50';
+        return 'bg-slate-950/60 backdrop-blur-sm text-white font-bold border border-emerald-500/30 shadow-md';
+
+      // 5. 教学记号笔
       case 'marker_pen':
-        return 'bg-amber-300 text-gray-950 font-black border-2 border-white shadow-xl';
-      case 'minimal_white':
-        return 'bg-transparent text-white font-extrabold drop-shadow-[0_4px_6px_rgba(0,0,0,0.9)] border-none';
+        return 'bg-amber-300 text-gray-950 font-black border border-amber-400 shadow-md';
+
+      // 6. 爆款黑底胶囊金
       case 'viral_gold':
+        return 'bg-black/80 backdrop-blur-md text-white font-bold border border-yellow-500/30 shadow-xl';
+
       default:
-        return 'bg-black/85 backdrop-blur-md text-white font-bold border border-yellow-500/30 shadow-2xl';
+        return 'bg-transparent text-white font-extrabold drop-shadow-[0_2px_5px_rgba(0,0,0,0.95)]';
     }
   };
 
+  const hasBanner = Boolean(strategy?.enable_top_banner && strategy?.banner_main_title);
+  const hasWatermark = Boolean(strategy?.enable_watermark && strategy?.watermark_text);
+
   return (
-    <div className="flex flex-col items-center bg-gray-100/70 p-6 rounded-2xl border border-gray-200/80 shadow-sm">
-      {/* 9:16 竖屏播放视窗 */}
-      <div className="relative w-72 aspect-[9/16] bg-gray-900 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border-4 border-gray-800 select-none">
+    <div className="flex flex-col items-center justify-center h-full max-h-full">
+      {/* 9:16 竖屏播放视窗：采用 max-h-[68vh] 自适应父容器高度，彻底避免垂直溢出 */}
+      <div className="relative h-[66vh] aspect-[9/16] max-w-full bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border-2 border-gray-800 select-none">
         {videoUrl ? (
           <video
             ref={videoRef}
@@ -159,16 +182,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         )}
 
-        {/* 1. 顶部挂顶 Title 横幅 */}
-        {strategy?.enable_top_banner && strategy.banner_main_title && (
-          <div className="absolute top-4 left-3 right-3 text-center pointer-events-none z-10">
-            <div className="inline-block max-w-full bg-black/75 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/20 shadow-lg">
-              <div className="text-xs font-black text-white tracking-wider flex items-center justify-center space-x-1">
+        {/* 1. 顶部挂顶 Title 横幅 (居中顶部，严谨控制高度与内边距) */}
+        {hasBanner && (
+          <div className="absolute top-3 left-3 right-3 text-center pointer-events-none z-10">
+            <div className="inline-block max-w-[92%] bg-black/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20 shadow-xl">
+              <div className="text-[11px] font-black text-white tracking-wider flex items-center justify-center space-x-1">
                 <span>🔥</span>
-                <span className="truncate">{strategy.banner_main_title}</span>
+                <span className="truncate">{strategy?.banner_main_title}</span>
               </div>
-              {strategy.banner_sub_title && (
-                <div className="text-[10px] font-semibold text-yellow-400 scale-90 truncate">
+              {strategy?.banner_sub_title && (
+                <div className="text-[9px] font-semibold text-yellow-400 truncate mt-0.5">
                   {strategy.banner_sub_title}
                 </div>
               )}
@@ -176,41 +199,43 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         )}
 
-        {/* 2. 右上角品牌水印角标 */}
-        {strategy?.enable_watermark && strategy.watermark_text && (
+        {/* 2. 品牌防搬运水印角标 (错开顶部横幅位置，避免产生遮挡碰撞) */}
+        {hasWatermark && (
           <div
-            className="absolute top-3 right-3 pointer-events-none z-10 text-[10px] font-medium text-white px-2 py-0.5 rounded backdrop-blur-xs tracking-tight select-none shadow-sm"
-            style={{ opacity: strategy.watermark_opacity ?? 0.4 }}
+            className={`absolute right-3 pointer-events-none z-10 text-[9px] font-medium text-white px-2 py-0.5 rounded backdrop-blur-xs tracking-tight select-none shadow-sm transition-all ${
+              hasBanner ? 'top-16' : 'top-3'
+            }`}
+            style={{ opacity: strategy?.watermark_opacity ?? 0.4 }}
           >
-            {strategy.watermark_text}
+            {strategy?.watermark_text}
           </div>
         )}
 
-        {/* 3. 动态口播字幕层 (支持4套主题与关键词高亮) */}
+        {/* 3. 动态口播字幕层 (精准单词高亮，融入画面无黑底) */}
         {activeSubtitle && (
-          <div className="absolute bottom-12 left-2 right-2 text-center pointer-events-none z-20 transition-all duration-150">
-            <div className={`inline-block px-3 py-1.5 rounded-xl text-xs max-w-[95%] leading-relaxed ${getThemeClass()}`}>
+          <div className="absolute bottom-10 left-2 right-2 text-center pointer-events-none z-20 transition-all duration-150">
+            <div className={`inline-block px-3 py-1 rounded-xl text-xs max-w-[95%] leading-relaxed ${getThemeClass()}`}>
               {renderSubtitleText()}
             </div>
           </div>
         )}
 
-        {/* 比例与预设状态标签 */}
-        <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded font-mono">
+        {/* 比例标签 */}
+        <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded font-mono">
           {aspectRatio}
         </div>
       </div>
 
-      {/* 控制栏 */}
-      <div className="w-full mt-4 flex items-center space-x-3 text-xs text-gray-600">
+      {/* 紧凑控制栏 */}
+      <div className="w-full max-w-[280px] mt-3 flex items-center space-x-2 text-xs text-gray-600 px-2">
         <button
           onClick={togglePlay}
-          className="p-2 rounded-full hover:bg-white text-gray-700 transition-colors shadow-sm"
+          className="p-1.5 rounded-full hover:bg-white text-gray-700 transition-colors shadow-xs"
         >
-          {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+          {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
         </button>
 
-        <span className="font-mono text-gray-500 min-w-[35px]">{formatTime(currentTime)}</span>
+        <span className="font-mono text-gray-500 text-[10px] min-w-[30px]">{formatTime(currentTime)}</span>
         <input
           type="range"
           min="0"
@@ -218,15 +243,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           step="0.1"
           value={currentTime}
           onChange={handleSeek}
-          className="flex-1 h-1.5 bg-gray-300 rounded-lg appearance-none cursor-pointer accent-blue-600"
+          className="flex-1 h-1 bg-gray-300 rounded-lg appearance-none cursor-pointer accent-blue-600"
         />
-        <span className="font-mono text-gray-500 min-w-[35px]">{formatTime(duration)}</span>
+        <span className="font-mono text-gray-500 text-[10px] min-w-[30px]">{formatTime(duration)}</span>
 
         <button
           onClick={() => setIsMuted(!isMuted)}
-          className="p-1.5 rounded-lg hover:bg-white text-gray-600"
+          className="p-1 rounded hover:bg-white text-gray-600"
         >
-          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
         </button>
       </div>
     </div>

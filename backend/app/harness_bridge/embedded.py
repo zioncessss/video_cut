@@ -43,6 +43,11 @@ class EmbeddedHarnessBridge(BaseHarnessBridge):
             
             new_item = dict(item)
             new_item["corrected_text"] = c_text
+            # 自动提取驾校专有词与强调词用于高亮
+            from app.native_engine.keyword_matcher import match_keywords_in_segment
+            kw_res = match_keywords_in_segment(c_text)
+            new_item["matched_keywords"] = kw_res.get("matched_keywords", [])
+            new_item["matched_category"] = kw_res.get("matched_category")
             corrected_list.append(new_item)
             if changes:
                 corrections_summary.append(
