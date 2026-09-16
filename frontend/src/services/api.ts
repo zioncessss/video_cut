@@ -70,3 +70,77 @@ export const updateSettings = async (settings: {
   return res.data;
 };
 
+export interface ChatMessageItem {
+  role: 'user' | 'assistant';
+  content: string;
+  reasoning?: string;
+  action?: {
+    action_type: string;
+    explanation: string;
+    updated_subtitles?: any[];
+    updated_brolls?: any[];
+  } | null;
+}
+
+export const streamChatSSE = async (
+  payload: {
+    message: string;
+    project_id?: string;
+    history?: { role: string; content: string }[];
+    model_override?: string;
+  },
+  onChunk: (chunk: { type: string; delta?: string; message?: string }) => void,
+  onDone: () => void,
+  onError: (err: any) => void
+) => {
+  try {
+    const response = await fetch(`${API_BASE}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('ReadableStream not supported');
+
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          const jsonStr = trimmed.slice(6);
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.type === 'done') {
+              onDone();
+              return;
+            }
+            onChunk(data);
+          } catch (e) {
+            // ignore parse error on partial chunk
+          }
+        }
+      }
+    }
+    onDone();
+  } catch (err) {
+    onError(err);
+  }
+};
+
+

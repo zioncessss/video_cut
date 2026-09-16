@@ -12,7 +12,19 @@ interface CorrectionItem {
   changes?: Array<{ from: string; to: string; reason: string }>;
 }
 
-export const VideoEditor: React.FC = () => {
+interface VideoEditorProps {
+  onProjectLoaded?: (projectId: string) => void;
+  externalStrategyPlan?: {
+    explanation: string;
+    updated_subtitles?: any[];
+    updated_brolls?: any[];
+  } | null;
+}
+
+export const VideoEditor: React.FC<VideoEditorProps> = ({
+  onProjectLoaded,
+  externalStrategyPlan,
+}) => {
   const [talkingHeads, setTalkingHeads] = useState<Material[]>([]);
   const [selectedThId, setSelectedThId] = useState<string>('');
   const [projectId, setProjectId] = useState<string>('');
@@ -59,6 +71,9 @@ export const VideoEditor: React.FC = () => {
         auto_broll: true
       });
       setProjectId(res.data.id);
+      if (onProjectLoaded) {
+        onProjectLoaded(res.data.id);
+      }
       setSubtitles(res.data.subtitles);
     } catch (err) {
       alert('智能识别与初剪失败，请确保后端服务正常运行');
@@ -66,6 +81,18 @@ export const VideoEditor: React.FC = () => {
       setAnalyzing(false);
     }
   };
+
+  // 监听来自全局 Harness 对话框的策略变更意图，热更新工程
+  useEffect(() => {
+    if (externalStrategyPlan) {
+      if (externalStrategyPlan.updated_subtitles && externalStrategyPlan.updated_subtitles.length > 0) {
+        setSubtitles(externalStrategyPlan.updated_subtitles);
+      }
+      if (externalStrategyPlan.explanation) {
+        setAiFeedback(`[副驾驶策略应用] ${externalStrategyPlan.explanation}`);
+      }
+    }
+  }, [externalStrategyPlan]);
 
   const handleCorrectSubtitles = async () => {
     if (subtitles.length === 0) {

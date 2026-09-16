@@ -76,4 +76,10 @@ def mount_routers():
     except Exception as e:
         pass
 
+    try:
+        from app.api.chat import router as chat_router
+        app.include_router(chat_router, prefix="/api/v1/chat", tags=["Chat"])
+    except Exception as e:
+        pass
+
 mount_routers()

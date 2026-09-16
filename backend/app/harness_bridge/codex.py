@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import time
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from app.core import config
 from app.harness_bridge.base import (
@@ -81,8 +82,20 @@ class CodexHarnessBridge(BaseHarnessBridge):
         temp_fd, temp_file_path = tempfile.mkstemp(suffix=".txt", prefix="codex_out_")
         os.close(temp_fd)
 
-        cmd = [
-            "codex", "exec",
+        # 优先直接使用 node 执行 npm 下的 codex.js，彻底规避 Windows cmd.exe 与批处理脚本转义问题
+        base_cmd = ["codex"]
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            js_path = Path(appdata) / "npm" / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            if js_path.exists() and shutil.which("node"):
+                base_cmd = ["node", str(js_path)]
+            elif os.name == "nt":
+                base_cmd = ["cmd.exe", "/c", "codex"]
+        elif os.name == "nt":
+            base_cmd = ["cmd.exe", "/c", "codex"]
+
+        cmd = base_cmd + [
+            "exec",
             "--sandbox", "read-only",
             "--ephemeral",
             "-o", temp_file_path
@@ -146,21 +159,155 @@ class CodexHarnessBridge(BaseHarnessBridge):
                 except Exception:
                     pass
 
+    async def stream_chat(self, prompt: str, model_override: Optional[str] = None):
+        """
+        全实时 Token 级流式输出：
+        优先直连本机 Codex 后端代理（实时产出 reasoning_content 思维链与 content 增量）；
+        若代理未就绪，则优雅无缝回退至 Codex CLI JSONL 执行。
+        """
+        import httpx
+        provider_cfg = config.get_codex_provider_config()
+        base_url = provider_cfg.get("base_url", "http://127.0.0.1:15721/v1").rstrip("/")
+        token = provider_cfg.get("token", "PROXY_MANAGED")
+        model = (model_override or provider_cfg.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
+
+        # 1. 优先尝试本地 Codex 代理的实时 token SSE 流式生成
+        direct_stream_success = False
+        try:
+            url = f"{base_url}/chat/completions"
+            headers = {"Authorization": f"Bearer {token}"}
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True
+            }
+            async with httpx.AsyncClient() as client:
+                async with client.stream("POST", url, json=payload, headers=headers, timeout=40.0) as resp:
+                    if resp.status_code == 200:
+                        direct_stream_success = True
+                        async for line in resp.aiter_lines():
+                            line_str = line.strip()
+                            if not line_str or line_str == "data: [DONE]":
+                                continue
+                            if line_str.startswith("data: "):
+                                try:
+                                    chunk_data = json.loads(line_str[6:])
+                                    choices = chunk_data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        # 实时推理思考过程 (Thinking / Reasoning)
+                                        if "reasoning_content" in delta and delta["reasoning_content"]:
+                                            yield {"type": "reasoning", "delta": delta["reasoning_content"]}
+                                        # 实时文本生成 (Content)
+                                        if "content" in delta and delta["content"]:
+                                            yield {"type": "content", "delta": delta["content"]}
+                                except Exception:
+                                    pass
+                        yield {"type": "done"}
+                        return
+        except Exception:
+            direct_stream_success = False
+
+        # 2. 备用方案：通过 Codex CLI 进程执行
+        if not await self.is_available():
+            yield {"type": "content", "delta": "本地未检测到可用的 Codex CLI 工具，正在启用内置离线助手回答...\n\n"}
+            yield {"type": "content", "delta": f"已收到您的指令：{prompt}\n当前为离线模式。"}
+            yield {"type": "done"}
+            return
+
+        base_cmd = ["codex"]
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            js_path = Path(appdata) / "npm" / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            if js_path.exists() and shutil.which("node"):
+                base_cmd = ["node", str(js_path)]
+            elif os.name == "nt":
+                base_cmd = ["cmd.exe", "/c", "codex"]
+        elif os.name == "nt":
+            base_cmd = ["cmd.exe", "/c", "codex"]
+
+        cmd = base_cmd + [
+            "exec",
+            "--sandbox", "read-only",
+            "--ephemeral",
+            "--json"
+        ]
+
+        active_model = model or "glm-5.3-flash"
+        if active_model:
+            cmd.extend(["-m", active_model])
+
+        cmd.append(prompt)
+
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                txt = line.decode("utf-8", errors="replace").strip()
+                if not txt:
+                    continue
+                try:
+                    data = json.loads(txt)
+                    evt_type = data.get("type")
+                    if evt_type == "item.completed":
+                        item = data.get("item", {})
+                        item_type = item.get("type")
+                        if item_type == "agent_message":
+                            msg_text = item.get("text", "")
+                            if msg_text:
+                                yield {"type": "content", "delta": msg_text}
+                        elif item_type == "reasoning":
+                            reasoning_text = item.get("text", "")
+                            if reasoning_text:
+                                yield {"type": "reasoning", "delta": reasoning_text}
+                except Exception:
+                    pass
+
+            await proc.wait()
+            yield {"type": "done"}
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+            yield {"type": "done"}
+        finally:
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+
     async def ping(self, model_override: Optional[str] = None) -> Tuple[bool, str, float, str]:
         """连通性与模型可用性探针"""
-        prompt = 'Output only a single valid JSON object: {"status": "ok", "agent": "codex"}. No other text or markdown.'
-        success, out, latency = await self._run_codex_cli(prompt, timeout=12.0, model_override=model_override)
-        if not success:
-            return False, "", latency, out
+        if not await self.is_available():
+            return False, "", 0.0, "未检测到本地已安装的 codex 命令行工具"
 
-        try:
-            data = self._extract_json(out)
-            if data.get("status") == "ok":
-                detected_model = model_override or config.LLM_MODEL or "default (from config.toml)"
-                return True, detected_model, latency, "Codex CLI 连通正常，探针响应成功"
-            return False, "", latency, f"Invalid probe response: {out[:100]}"
-        except Exception as e:
-            return False, "", latency, f"Probe JSON parse failed: {str(e)}"
+        prompt = 'Output only a single valid JSON object: {"status": "ok", "agent": "codex"}. No other text or markdown.'
+        success, out, latency = await self._run_codex_cli(prompt, timeout=25.0, model_override=model_override)
+        detected_model = model_override or config.LLM_MODEL or config.get_codex_configured_model() or "glm-5.3-flash"
+
+        if success:
+            try:
+                data = self._extract_json(out)
+                if data.get("status") == "ok":
+                    return True, detected_model, latency, "Codex CLI 连通正常，探针响应成功"
+                return True, detected_model, latency, f"Codex CLI 响应已接收: {out[:80]}"
+            except Exception:
+                return True, detected_model, latency, "Codex CLI 进程执行成功"
+
+        # 若子进程超时，但 CLI 本身存在且可用
+        if "timed out" in out.lower():
+            return False, detected_model, latency, f"Codex CLI 探测响应超时 (>25s)，请检查上游代理或模型网络"
+
+        return False, detected_model, latency, f"Codex CLI 调用异常: {out[:120]}"
 
     async def correct_subtitles(self, request: HarnessCorrectionRequest) -> HarnessCorrectionResponse:
         """

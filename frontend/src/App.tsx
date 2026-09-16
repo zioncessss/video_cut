@@ -3,10 +3,17 @@ import { AssetLibrary } from './pages/AssetLibrary';
 import { VideoEditor } from './pages/VideoEditor';
 import { BatchCut } from './pages/BatchCut';
 import { Settings } from './pages/Settings';
+import { HarnessChatDrawer } from './components/HarnessChatDrawer';
 import { Folder, Film, Layers, Settings as SettingsIcon, Sparkles } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [strategyPlan, setStrategyPlan] = useState<{
+    explanation: string;
+    updated_subtitles?: any[];
+    updated_brolls?: any[];
+  } | null>(null);
 
   // 全局防御：防止浏览器在页面任何区域被拖入文件时执行默认的“跳转并打开视频”行为
   useEffect(() => {
@@ -28,6 +35,14 @@ export const App: React.FC = () => {
     { id: 'batch', label: '批量混剪', icon: Layers },
     { id: 'settings', label: '设置', icon: SettingsIcon },
   ];
+
+  const handleApplyStrategy = (plan: any) => {
+    setStrategyPlan(plan);
+    // 如果当前不在工作台，自动切换回工作台以便用户直观看到修改
+    if (currentTab !== 'editor') {
+      setCurrentTab('editor');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-gray-900 flex flex-col font-sans antialiased selection:bg-blue-100 selection:text-blue-900">
@@ -74,10 +89,21 @@ export const App: React.FC = () => {
       {/* 主体页面渲染 */}
       <main className="flex-1 overflow-auto">
         {currentTab === 'library' && <AssetLibrary />}
-        {currentTab === 'editor' && <VideoEditor />}
+        {currentTab === 'editor' && (
+          <VideoEditor
+            onProjectLoaded={(pid) => setActiveProjectId(pid)}
+            externalStrategyPlan={strategyPlan}
+          />
+        )}
         {currentTab === 'batch' && <BatchCut />}
         {currentTab === 'settings' && <Settings />}
       </main>
+
+      {/* 全局常驻 Harness 对话副驾驶抽屉 */}
+      <HarnessChatDrawer
+        currentProjectId={activeProjectId}
+        onApplyStrategyToProject={handleApplyStrategy}
+      />
     </div>
   );
 };

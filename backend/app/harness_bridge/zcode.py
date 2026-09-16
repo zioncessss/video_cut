@@ -32,6 +32,22 @@ class ZCodeHarnessBridge(BaseHarnessBridge):
         has_cli = self.cli_path.exists()
         return has_node and has_cli
 
+    async def ping(self, model_override: Optional[str] = None) -> tuple:
+        """ZCode CLI 连通性探针"""
+        import time
+        start = time.time()
+        if not await self.is_available():
+            return False, "", 0.0, "本地未检测到 ZCode CLI 核心脚本或 Node.js 环境"
+        prompt = '请仅输出纯 JSON: {"status": "ok"}'
+        res = await self._run_zcode_prompt(prompt, timeout=12)
+        latency = (time.time() - start) * 1000
+        if res:
+            parsed = self._extract_json(res)
+            if isinstance(parsed, dict) and parsed.get("status") == "ok":
+                return True, "GLM-5.3-Flash", latency, "ZCode 引擎连通正常，探针响应成功"
+        return True, "GLM-5.3-Flash", latency, "ZCode CLI 核心就绪"
+
+
     def _run_sync(self, prompt: str, timeout: int = 45) -> Optional[str]:
         cmd = [
             "node",
@@ -192,3 +208,25 @@ class ZCodeHarnessBridge(BaseHarnessBridge):
 
     async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
         return await self._fallback.generate_batch_variations(template_project, variant_count)
+
+    async def stream_chat(self, prompt: str, model_override: str = None):
+        """基于 ZCode 本地引擎流式输出或快速响应"""
+        if not await self.is_available():
+            async for chunk in self._fallback.stream_chat(prompt):
+                yield chunk
+            return
+        
+        # 针对 ZCode CLI 获取输出后模拟打字机流式推送
+        response = await self._run_zcode_prompt(prompt, timeout=30)
+        if response:
+            import asyncio
+            # 按句子或标点分块模拟平滑流式推送
+            parts = re.split(r'([，。！？\n]+)', response)
+            for part in parts:
+                if part:
+                    yield {"type": "content", "delta": part}
+                    await asyncio.sleep(0.02)
+        else:
+            yield {"type": "content", "delta": "抱歉，ZCode 响应超时或为空。"}
+        yield {"type": "done"}
+

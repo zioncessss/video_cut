@@ -90,3 +90,20 @@ class EmbeddedHarnessBridge(BaseHarnessBridge):
             var["title"] = f"{template_project.get('title', '驾校推广')} (混剪版本 #{i+1})"
             variations.append(var)
         return variations
+
+    async def stream_chat(self, prompt: str, model_override: str = None):
+        import asyncio
+        chunks = [
+            "【内置离线助手】",
+            "已收到您的提问或剪辑调整意图：",
+            f"「{prompt}」\n\n",
+            "建议您可以从以下几个维度优化当前的驾校短视频：\n",
+            "1. **口播黄金3秒**：前3秒抛出痛点（如挂科、练车时间紧张）。\n",
+            "2. **视听穿插 (J/L-Cut)**：在教练讲解操作技巧时，切入场地和考试特写空镜头。\n",
+            "3. **专有名词校正**：如科目二倒库、坡道定点停车等，确保 ASR 识别准确无误。"
+        ]
+        for ch in chunks:
+            yield {"type": "content", "delta": ch}
+            await asyncio.sleep(0.05)
+        yield {"type": "done"}
+

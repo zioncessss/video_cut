@@ -37,7 +37,45 @@ def has_codex_available() -> bool:
     import shutil
     return bool(shutil.which("codex"))
 
-# 默认激活的 Harness：若存在 Codex CLI 则优先启用 codex，其次 zcode，否则 embedded
+def get_codex_configured_model() -> str:
+    try:
+        cfg_path = Path.home() / ".codex" / "config.toml"
+        if cfg_path.exists():
+            import tomllib
+            with open(cfg_path, "rb") as f:
+                data = tomllib.load(f)
+                return data.get("model", "")
+    except Exception:
+        pass
+    return ""
+
+def get_codex_provider_config() -> dict:
+    """读取 ~/.codex/config.toml 中的代理端点与模型配置"""
+    try:
+        cfg_path = Path.home() / ".codex" / "config.toml"
+        if cfg_path.exists():
+            import tomllib
+            with open(cfg_path, "rb") as f:
+                data = tomllib.load(f)
+                model = data.get("model", "glm-5.3-flash")
+                provider_name = data.get("model_provider", "custom")
+                providers = data.get("model_providers", {})
+                prov_cfg = providers.get(provider_name, {})
+                base_url = prov_cfg.get("base_url", "http://127.0.0.1:15721/v1")
+                token = prov_cfg.get("experimental_bearer_token", "PROXY_MANAGED")
+                return {
+                    "model": model,
+                    "base_url": base_url,
+                    "token": token
+                }
+    except Exception:
+        pass
+    return {
+        "model": "glm-5.3-flash",
+        "base_url": "http://127.0.0.1:15721/v1",
+        "token": "PROXY_MANAGED"
+    }
+
 def get_default_harness() -> str:
     if has_codex_available():
         return "codex"
@@ -49,7 +87,7 @@ DEFAULT_HARNESS = get_default_harness()
 ACTIVE_HARNESS = os.getenv("ACTIVE_HARNESS", DEFAULT_HARNESS)  # "embedded", "codex", "zcode"
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_MODEL = os.getenv("LLM_MODEL", get_codex_configured_model() or "glm-5.3-flash")
 
 def load_settings():
     global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
