@@ -143,4 +143,28 @@ export const streamChatSSE = async (
   }
 };
 
+export interface EditingStrategy {
+  subtitle_theme: 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
+  font_size: 'small' | 'medium' | 'large';
+  enable_highlight: boolean;
+  highlight_color: string;
+  highlight_scale: boolean;
+  custom_highlight_words: string[];
+  enable_top_banner: boolean;
+  banner_main_title: string;
+  banner_sub_title?: string;
+  banner_style: 'capsule' | 'full_width';
+  enable_watermark: boolean;
+  watermark_text: string;
+  watermark_position: 'top_right' | 'top_left' | 'bottom_right';
+  watermark_opacity: number;
+  broll_pacing: 'fast' | 'standard' | 'talking_only';
+}
 
+export const updateProjectStrategy = async (
+  projectId: string,
+  strategy: EditingStrategy
+) => {
+  const res = await axios.put(`${API_BASE}/projects/${projectId}/strategy`, strategy);
+  return res.data;
+};

@@ -20,23 +20,63 @@ class FFmpegFilterComposer:
         broll_cuts: List[Dict[str, Any]],
         output_path: Path,
         aspect_ratio: str = "9:16",
-        total_duration: float = 15.0
+        total_duration: float = 15.0,
+        ass_subtitle_path: Optional[Path] = None,
+        strategy: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         组装 FFmpeg filter_complex 管道：
-        保持口播主音频轨不变，指定时间区间将画面平替为 B-roll 空镜。
+        1. 保持口播主音频轨不变，指定时间区间将画面平替为 B-roll 空镜。
+        2. 支持复合烧录 ASS 高级高亮字幕、顶部 Title 挂顶横幅与右上角品牌水印角标。
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         scale_filter = self.build_scale_filter(aspect_ratio)
+
+        # 构建字幕及挂顶 Title / 水印 overlay 后处理滤镜
+        extra_filters = []
+        strat = strategy or {}
+
+        # 1. ASS 字幕烧录
+        if ass_subtitle_path and Path(ass_subtitle_path).exists():
+            # Windows 路径转义: 替换反斜杠为正斜杠，并对冒号转义
+            escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
+            extra_filters.append(f"ass='{escaped_ass}'")
+
+        # 2. 顶部 Title 挂顶横幅
+        if strat.get("enable_top_banner") and strat.get("banner_main_title"):
+            title = strat.get("banner_main_title", "").replace("'", "")
+            sub_title = (strat.get("banner_sub_title") or "").replace("'", "")
+            # 绘制深色半透明横幅胶囊底框 (9:16 顶部 y=120, h=140, 居中)
+            extra_filters.append("drawbox=x=60:y=110:w=960:h=150:color=black@0.65:t=fill")
+            # 绘制主标题
+            extra_filters.append(
+                f"drawtext=text='{title}':fontsize=52:fontcolor=white:x=(w-text_w)/2:y=130:shadowcolor=black@0.6:shadowx=2:shadowy=2"
+            )
+            if sub_title:
+                extra_filters.append(
+                    f"drawtext=text='{sub_title}':fontsize=32:fontcolor=yellow:x=(w-text_w)/2:y=200"
+                )
+
+        # 3. 右上角品牌水印角标
+        if strat.get("enable_watermark") and strat.get("watermark_text"):
+            wm_text = strat.get("watermark_text", "").replace("'", "")
+            opacity = strat.get("watermark_opacity", 0.4)
+            alpha_hex = f"{int(opacity * 255):02x}"
+            extra_filters.append(
+                f"drawtext=text='{wm_text}':fontsize=36:fontcolor=white@{opacity}:x=w-tw-50:y=50:shadowcolor=black@{opacity}:shadowx=1:shadowy=1"
+            )
+
+        overlay_chain = "," + ",".join(extra_filters) if extra_filters else ""
 
         if not self.has_ffmpeg:
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
 
         if not broll_cuts:
+            full_vf = f"{scale_filter}{overlay_chain}"
             cmd = [
                 "ffmpeg", "-y", "-i", str(talking_head_path),
-                "-vf", scale_filter,
+                "-vf", full_vf,
                 "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
                 str(output_path)
             ]
@@ -90,9 +130,16 @@ class FFmpegFilterComposer:
             seg_idx += 1
 
         n_segs = len(concat_inputs)
-        filter_parts.append(
-            f"{''.join(concat_inputs)}concat=n={n_segs}:v=1:a=0[v_out]"
-        )
+        if overlay_chain:
+            # 去掉开头的逗号
+            clean_overlay = overlay_chain.lstrip(",")
+            filter_parts.append(
+                f"{''.join(concat_inputs)}concat=n={n_segs}:v=1:a=0[v_concat];[v_concat]{clean_overlay}[v_out]"
+            )
+        else:
+            filter_parts.append(
+                f"{''.join(concat_inputs)}concat=n={n_segs}:v=1:a=0[v_out]"
+            )
 
         full_filter = "".join(filter_parts)
 
@@ -113,9 +160,10 @@ class FFmpegFilterComposer:
                 return True
             
             # 降级尝试单一转码
+            full_vf = f"{scale_filter}{overlay_chain}"
             fallback_cmd = [
                 "ffmpeg", "-y", "-i", str(talking_head_path),
-                "-vf", scale_filter,
+                "-vf", full_vf,
                 "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
                 str(output_path)
             ]

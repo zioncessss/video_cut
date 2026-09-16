@@ -2,8 +2,26 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { SubtitleList, SubtitleItem } from '../components/SubtitleList';
-import { fetchMaterials, fetchHardwareMetrics, fetchSettings, Material, API_BASE } from '../services/api';
-import { Sparkles, Wand2, RefreshCw, Cpu, Check, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { StrategyStudio } from '../components/StrategyStudio';
+import {
+  fetchMaterials,
+  fetchHardwareMetrics,
+  fetchSettings,
+  updateProjectStrategy,
+  Material,
+  EditingStrategy,
+  API_BASE
+} from '../services/api';
+import {
+  Sparkles,
+  Wand2,
+  RefreshCw,
+  Cpu,
+  CheckCircle2,
+  ShieldAlert,
+  Sliders,
+  ListOrdered
+} from 'lucide-react';
 
 interface CorrectionItem {
   subtitle_id: string;
@@ -20,6 +38,24 @@ interface VideoEditorProps {
     updated_brolls?: any[];
   } | null;
 }
+
+const DEFAULT_STRATEGY: EditingStrategy = {
+  subtitle_theme: 'viral_gold',
+  font_size: 'medium',
+  enable_highlight: true,
+  highlight_color: '#FACC15',
+  highlight_scale: true,
+  custom_highlight_words: ['科目二', '一把过', '金牌教练', '体检'],
+  enable_top_banner: true,
+  banner_main_title: '科目二一把过秘籍',
+  banner_sub_title: '教练手把手教学 · 细节拆解',
+  banner_style: 'capsule',
+  enable_watermark: true,
+  watermark_text: '@顺达驾校官方教学',
+  watermark_position: 'top_right',
+  watermark_opacity: 0.45,
+  broll_pacing: 'standard'
+};
 
 export const VideoEditor: React.FC<VideoEditorProps> = ({
   onProjectLoaded,
@@ -42,6 +78,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [lastEngineUsed, setLastEngineUsed] = useState<string | null>(null);
   const [aiFeedback, setAiFeedback] = useState<string | null>(null);
   const [correctionsSummary, setCorrectionsSummary] = useState<CorrectionItem[] | null>(null);
+
+  // 剪辑工作区 Tab 模式：'subtitles' (轨道字幕与空镜) vs 'strategy' (爱拍式策略工坊)
+  const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
+  const [strategy, setStrategy] = useState<EditingStrategy>(DEFAULT_STRATEGY);
+  const [savingStrategy, setSavingStrategy] = useState<boolean>(false);
 
   useEffect(() => {
     fetchMaterials('talking_head').then(data => {
@@ -75,6 +116,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         onProjectLoaded(res.data.id);
       }
       setSubtitles(res.data.subtitles);
+      if (res.data.strategy) {
+        setStrategy(res.data.strategy);
+      }
     } catch (err) {
       alert('智能识别与初剪失败，请确保后端服务正常运行');
     } finally {
@@ -129,6 +173,22 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     setSubtitles(updated);
   };
 
+  const handleSaveStrategy = async () => {
+    if (!projectId) {
+      alert('请先进行 AI 初剪创建工程，再保存策略');
+      return;
+    }
+    setSavingStrategy(true);
+    try {
+      await updateProjectStrategy(projectId, strategy);
+      setAiFeedback('剪辑策略已成功保存至当前工程！渲染时将以该样式导出。');
+    } catch (err) {
+      alert('保存策略失败');
+    } finally {
+      setSavingStrategy(false);
+    }
+  };
+
   const handleApplyInstruction = async () => {
     if (!projectId || !aiInstruction.trim()) return;
     setApplyingInstruction(true);
@@ -155,13 +215,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     if (!projectId) return;
     setRendering(true);
     try {
+      // 1. 同步最新字幕与策略
       await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
         subtitles: subtitles
       });
+      await updateProjectStrategy(projectId, strategy);
+
+      // 2. 发起复合渲染
       const res = await axios.post(`${API_BASE}/projects/${projectId}/render`);
       if (res.data.output_video_path) {
         setOutputVideoUrl(`http://localhost:18888/${res.data.output_video_path}`);
-        alert('视频渲染完成！');
+        alert('视频渲染完成！包含高亮字幕、横幅与水印！');
       }
     } catch (err) {
       alert('渲染合成失败');
@@ -267,7 +331,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         </div>
       )}
 
-      {/* 主体工作台：左侧播放器，右侧时间轴字幕 */}
+      {/* 主体工作台：左侧播放器（即时策略预览），右侧选项卡（时间轴 vs 策略组合工坊） */}
       <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-4 min-h-0">
         <div className="md:col-span-5 h-full flex flex-col justify-center">
           <VideoPlayer
@@ -276,16 +340,65 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
             aspectRatio="9:16"
+            strategy={strategy}
           />
         </div>
 
-        <div className="md:col-span-7 h-full overflow-hidden">
-          <SubtitleList
-            subtitles={subtitles}
-            currentTime={currentTime}
-            onSelectTime={setCurrentTime}
-            onTextChange={handleTextChange}
-          />
+        <div className="md:col-span-7 h-full flex flex-col overflow-hidden bg-white rounded-2xl border border-gray-200/80 shadow-sm p-4">
+          {/* 工作区模式切换 Tabs */}
+          <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4 flex-shrink-0">
+            <div className="flex items-center space-x-2 bg-gray-100 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setActiveTab('subtitles')}
+                className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  activeTab === 'subtitles'
+                    ? 'bg-white text-gray-800 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <ListOrdered className="w-3.5 h-3.5" />
+                <span>字幕与时间轴轨道 ({subtitles.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('strategy')}
+                className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  activeTab === 'strategy'
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>剪辑策略工坊 (Strategy Studio)</span>
+                <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+              </button>
+            </div>
+
+            <div className="text-[11px] text-gray-400">
+              {activeTab === 'strategy' ? '支持像爱拍一样自由组合 4 种方案' : '单句 6~12 字黄金视读切分'}
+            </div>
+          </div>
+
+          {/* 模式内容容器 */}
+          <div className="flex-1 overflow-y-auto pr-1">
+            {activeTab === 'subtitles' ? (
+              <SubtitleList
+                subtitles={subtitles}
+                currentTime={currentTime}
+                onSelectTime={setCurrentTime}
+                onTextChange={handleTextChange}
+              />
+            ) : (
+              <StrategyStudio
+                strategy={strategy}
+                onChange={setStrategy}
+                onSave={handleSaveStrategy}
+                saving={savingStrategy}
+              />
+            )}
+          </div>
         </div>
       </div>
 
@@ -330,9 +443,10 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         <button
           onClick={handleRender}
           disabled={rendering || !projectId}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+          className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
         >
-          {rendering ? '合成压制中...' : '生成预览 (Generate Preview)'}
+          {rendering && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+          <span>{rendering ? '复合压制中...' : '生成预览 (Generate Preview)'}</span>
         </button>
 
         {hardwareInfo && (

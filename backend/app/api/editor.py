@@ -10,13 +10,14 @@ from app.models.entities import (
     CutProjectStatus,
     SubtitleSegment,
     BrollReplacement,
-    MaterialCategory
+    MaterialCategory,
+    EditingStrategy
 )
 from app.native_engine.storage import storage_service
 from app.native_engine.asr_runner import asr_runner
 from app.native_engine.keyword_matcher import match_keywords_in_segment
 from app.native_engine.ffmpeg_filter import composer
-from app.native_engine.subtitle_styler import generate_srt_file
+from app.native_engine.subtitle_styler import generate_srt_file, generate_ass_file
 from app.harness_bridge.factory import get_active_harness
 from app.harness_bridge.base import HarnessCorrectionRequest
 
@@ -147,6 +148,16 @@ async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
     _projects[project_id] = p
     return p
 
+@router.put("/{project_id}/strategy", response_model=CutProject)
+async def update_strategy(project_id: str, strategy: EditingStrategy):
+    p = _projects.get(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    p.strategy = strategy
+    _projects[project_id] = p
+    return p
+
 @router.post("/{project_id}/render", response_model=CutProject)
 async def render_project(project_id: str):
     p = _projects.get(project_id)
@@ -161,31 +172,43 @@ async def render_project(project_id: str):
     output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}.mp4"
     output_path = OUTPUTS_DIR / output_filename
 
-    # 准备空镜物理路径
+    # 1. 如果用户策略设为纯口播 (talking_only)，清空参与渲染的空镜
     broll_cuts_payload = []
-    for b in p.broll_replacements:
-        m = storage_service.get_material(b.material_id)
-        if m:
-            full_b_path = STORAGE_DIR.parent / m.filepath
-            if full_b_path.exists():
-                broll_cuts_payload.append({
-                    "start_time": b.start_time,
-                    "end_time": b.end_time,
-                    "material_path": full_b_path
-                })
+    if p.strategy.broll_pacing != "talking_only":
+        for b in p.broll_replacements:
+            m = storage_service.get_material(b.material_id)
+            if m:
+                full_b_path = STORAGE_DIR.parent / m.filepath
+                if full_b_path.exists():
+                    broll_cuts_payload.append({
+                        "start_time": b.start_time,
+                        "end_time": b.end_time,
+                        "material_path": full_b_path
+                    })
 
+    # 2. 生成 ASS 高级高亮字幕文件与 SRT 文件
+    ass_filename = f"output_{p.id}.ass"
+    ass_path = OUTPUTS_DIR / ass_filename
+    generate_ass_file(
+        [s.model_dump() for s in p.subtitles],
+        ass_path,
+        strategy=p.strategy.model_dump()
+    )
+
+    srt_filename = f"output_{p.id}.srt"
+    generate_srt_file([s.model_dump() for s in p.subtitles], OUTPUTS_DIR / srt_filename)
+
+    # 3. 复合渲染：空镜平替 + ASS字幕 + 顶部横幅 + 水印
     full_th_path = STORAGE_DIR.parent / th.filepath
     success = composer.compose_jl_cut(
         talking_head_path=full_th_path,
         broll_cuts=broll_cuts_payload,
         output_path=output_path,
         aspect_ratio=p.aspect_ratio,
-        total_duration=th.duration if th.duration > 0 else 15.0
+        total_duration=th.duration if th.duration > 0 else 15.0,
+        ass_subtitle_path=ass_path,
+        strategy=p.strategy.model_dump()
     )
-
-    # 同步生成 SRT 文件
-    srt_filename = f"output_{p.id}.srt"
-    generate_srt_file([s.model_dump() for s in p.subtitles], OUTPUTS_DIR / srt_filename)
 
     if success:
         p.status = CutProjectStatus.COMPLETED
@@ -195,3 +218,4 @@ async def render_project(project_id: str):
 
     _projects[project_id] = p
     return p
+

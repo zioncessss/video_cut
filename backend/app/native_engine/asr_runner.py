@@ -22,15 +22,71 @@ class ASRRunner:
             print(f"Audio extraction error: {e}")
             return False
 
+    def split_into_readable_segments(self, segments: List[Dict[str, Any]], max_chars: int = 14) -> List[Dict[str, Any]]:
+        """
+        针对口播短视频进行 6~12 字黄金视读切分：
+        将大于 max_chars 的长句依据标点（逗号、分号、顿号、空格）或平均比例拆分为连贯的短句，
+        并线性插值计算 start_time 和 end_time。
+        """
+        refined_segments = []
+        import re
+
+        for seg in segments:
+            text = seg.get("raw_text", "").strip()
+            start = seg.get("start_time", 0.0)
+            end = seg.get("end_time", start + 3.0)
+            duration = max(0.2, end - start)
+
+            # 如果句子较短，直接保留
+            if len(text) <= max_chars:
+                refined_segments.append(seg)
+                continue
+
+            # 尝试优先按常见短促停顿符（逗号、顿号、分号、感叹号、空格）分句
+            sub_clauses = [c.strip() for c in re.split(r'[,，;；!！、\s]+', text) if c.strip()]
+            
+            # 如果没有标点或者分割后仍有极长子句，按字数等分拆分
+            final_sub_chunks = []
+            for clause in sub_clauses:
+                if len(clause) <= max_chars:
+                    final_sub_chunks.append(clause)
+                else:
+                    # 每 10-12 字等分切片
+                    chunk_len = 10
+                    for i in range(0, len(clause), chunk_len):
+                        final_sub_chunks.append(clause[i:i+chunk_len])
+
+            if not final_sub_chunks:
+                refined_segments.append(seg)
+                continue
+
+            total_chars = sum(len(c) for c in final_sub_chunks)
+            curr_time = start
+            for i, chunk in enumerate(final_sub_chunks):
+                chunk_dur = duration * (len(chunk) / max(1, total_chars))
+                chunk_end = end if i == len(final_sub_chunks) - 1 else curr_time + chunk_dur
+                
+                sub_seg = dict(seg)
+                sub_seg["id"] = f"{seg.get('id', 'seg')}_{i}"
+                sub_seg["start_time"] = round(curr_time, 3)
+                sub_seg["end_time"] = round(chunk_end, 3)
+                sub_seg["raw_text"] = chunk
+                sub_seg["corrected_text"] = chunk
+                refined_segments.append(sub_seg)
+                curr_time = chunk_end
+
+        return refined_segments
+
     def transcribe(self, video_path: Path) -> List[Dict[str, Any]]:
         """
         对口播视频进行语音识别。优先尝试 faster-whisper，
         若未安装或环境受限，自动提供基于静音切分/示范字幕的鲁棒回退。
+        识别完成后自动经由 split_into_readable_segments 规范化为短视频黄金阅读字幕。
         """
         audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
         extracted = self.extract_audio(video_path, audio_tmp)
 
-        segments = []
+        raw_segments = []
         try:
             from faster_whisper import WhisperModel
             if self._model is None:
@@ -39,7 +95,7 @@ class ASRRunner:
             for seg in whisper_segments:
                 text = seg.text.strip()
                 if text:
-                    segments.append({
+                    raw_segments.append({
                         "start_time": round(seg.start, 3),
                         "end_time": round(seg.end, 3),
                         "raw_text": text,
@@ -63,7 +119,7 @@ class ASRRunner:
             ]
             for start, end, text in sample_sentences:
                 if start < total_duration:
-                    segments.append({
+                    raw_segments.append({
                         "start_time": round(start, 3),
                         "end_time": round(min(end, total_duration), 3),
                         "raw_text": text,
@@ -76,6 +132,7 @@ class ASRRunner:
             except Exception:
                 pass
 
-        return segments
+        # 统一执行 6~12 字黄金短句拆分处理
+        return self.split_into_readable_segments(raw_segments)
 
 asr_runner = ASRRunner()
