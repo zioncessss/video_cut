@@ -7,6 +7,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 STORAGE_DIR = ROOT_DIR / "storage"
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
+PROJECTS_DIR = STORAGE_DIR / "projects"
 
 # 素材分类定义
 CATEGORIES: List[str] = ["talking_head", "venue", "medical", "lesson"]
@@ -15,7 +16,7 @@ CATEGORY_DIRS: Dict[str, Path] = {
 }
 
 # 确保所有目录存在
-for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR]:
+for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR, PROJECTS_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
 # 允许的视频扩展名

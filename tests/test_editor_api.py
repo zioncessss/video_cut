@@ -91,3 +91,43 @@ def test_instruction_apply_endpoint(tmp_path):
 
     storage_service.delete_material(th.id)
 
+def test_project_storage_and_material_binding(tmp_path):
+    from app.native_engine.project_storage import project_storage_service
+    fake_th = tmp_path / "talking_binding.mp4"
+    fake_th.write_bytes(b"short_fake_stream")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "talking_binding.mp4", fake_th)
+
+    try:
+        # 1. 未分析前查询工程，应返回 404
+        get_res1 = client.get(f"/api/v1/projects/by-material/{th.id}")
+        assert get_res1.status_code == 404
+
+        # 2. 执行初剪与 ASR 生成工程
+        cut_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False}
+        )
+        assert cut_res.status_code == 200
+        proj_data = cut_res.json()
+        assert proj_data["talking_head_id"] == th.id
+        assert len(proj_data["subtitles"]) > 0
+
+        # 3. 再次查询，应命中磁盘缓存秒级返回 200
+        get_res2 = client.get(f"/api/v1/projects/by-material/{th.id}")
+        assert get_res2.status_code == 200
+        cached_proj = get_res2.json()
+        assert cached_proj["id"] == proj_data["id"]
+        assert len(cached_proj["subtitles"]) == len(proj_data["subtitles"])
+
+        # 4. 非强制重算时，直接返回已有工程
+        cut_res_cached = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "force_retranscribe": False}
+        )
+        assert cut_res_cached.status_code == 200
+        assert cut_res_cached.json()["id"] == proj_data["id"]
+
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+

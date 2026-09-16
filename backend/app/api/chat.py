@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.harness_bridge.factory import get_active_harness
 from app.native_engine.storage import storage_service
-from app.api.editor import _projects
+from app.native_engine.project_storage import project_storage_service
 
 router = APIRouter()
 
@@ -24,8 +24,8 @@ class ChatStreamRequest(BaseModel):
 @router.post("/stream")
 async def chat_stream(req: ChatStreamRequest):
     project_context = ""
-    if req.project_id and req.project_id in _projects:
-        p = _projects[req.project_id]
+    p = project_storage_service.get_by_project_id(req.project_id) if req.project_id else None
+    if p:
         project_context = f"""
 【当前用户正在编辑的视频工程元数据】：
 - 工程ID: {p.id}

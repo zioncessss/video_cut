@@ -30,7 +30,7 @@ def test_settings_api():
 
     post_res = client.post(
         "/api/v1/settings",
-        json={"active_harness": "embedded", "llm_model": "gpt-4o-mini"}
+        json={"active_harness": "embedded", "llm_model": "glm-5.3-flash"}
     )
     assert post_res.status_code == 200
     assert post_res.json()["data"]["active_harness"] == "embedded"

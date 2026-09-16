@@ -14,6 +14,7 @@ class SettingsPayload(BaseModel):
 
 @router.get("")
 async def get_settings():
+    config.load_settings()
     has_codex = bool(shutil.which("codex"))
     has_zcode = config.has_zcode_available()
     return {

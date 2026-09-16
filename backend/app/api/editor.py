@@ -14,6 +14,7 @@ from app.models.entities import (
     EditingStrategy
 )
 from app.native_engine.storage import storage_service
+from app.native_engine.project_storage import project_storage_service
 from app.native_engine.asr_runner import asr_runner
 from app.native_engine.keyword_matcher import match_keywords_in_segment
 from app.native_engine.ffmpeg_filter import composer
@@ -23,23 +24,44 @@ from app.harness_bridge.base import HarnessCorrectionRequest
 
 router = APIRouter()
 
-# 内存项目缓存字典
-_projects: Dict[str, CutProject] = {}
+# 兼容保留向后引用的内存映射
+_projects = project_storage_service._cache_by_proj_id
 
 class AnalyzeAndCutRequest(BaseModel):
     talking_head_id: str
     aspect_ratio: str = "9:16"
     auto_broll: bool = True
+    force_retranscribe: bool = False
 
 class UpdateSubtitlesRequest(BaseModel):
     subtitles: List[Dict[str, Any]]
     broll_replacements: Optional[List[Dict[str, Any]]] = None
+
+@router.get("/by-material/{material_id}", response_model=CutProject)
+async def get_project_by_material(material_id: str):
+    """根据口播视频素材 ID 获取已有持久化工程（若存在则秒级载入缓存）"""
+    p = project_storage_service.get_by_material_id(material_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="该视频素材尚未创建剪辑工程")
+    return p
+
+@router.delete("/by-material/{material_id}")
+async def delete_project_by_material(material_id: str):
+    """清除某口播视频的持久化工程缓存"""
+    success = project_storage_service.delete_project_by_material(material_id)
+    return {"code": 0, "message": "已清除该视频的剪辑工程缓存", "deleted": success}
 
 @router.post("/analyze-and-cut", response_model=CutProject)
 async def analyze_and_cut(req: AnalyzeAndCutRequest):
     talking_head = storage_service.get_material(req.talking_head_id)
     if not talking_head:
         raise HTTPException(status_code=404, detail="口播主视频素材未找到")
+
+    # 如果非强制重算，且该视频已有持久化缓存工程，则直接加载返回
+    if not req.force_retranscribe:
+        cached_project = project_storage_service.get_by_material_id(req.talking_head_id)
+        if cached_project:
+            return cached_project
 
     full_th_path = STORAGE_DIR.parent / talking_head.filepath
     if not full_th_path.exists():
@@ -102,9 +124,10 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         aspect_ratio=req.aspect_ratio,
         subtitles=subtitles,
         broll_replacements=brolls,
+        raw_asr_segments=raw_segments,
         status=CutProjectStatus.DRAFT
     )
-    _projects[project.id] = project
+    project_storage_service.save_project(project)
     return project
 
 class CorrectSubtitlesRequest(BaseModel):
@@ -131,36 +154,36 @@ async def correct_subtitles_endpoint(req: CorrectSubtitlesRequest):
 
 @router.get("/{project_id}", response_model=CutProject)
 async def get_project(project_id: str):
-    p = _projects.get(project_id)
+    p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
     return p
 
 @router.put("/{project_id}/subtitles", response_model=CutProject)
 async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
-    p = _projects.get(project_id)
+    p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
     p.subtitles = [SubtitleSegment(**s) for s in req.subtitles]
     if req.broll_replacements is not None:
         p.broll_replacements = [BrollReplacement(**b) for b in req.broll_replacements]
-    _projects[project_id] = p
+    project_storage_service.save_project(p)
     return p
 
 @router.put("/{project_id}/strategy", response_model=CutProject)
 async def update_strategy(project_id: str, strategy: EditingStrategy):
-    p = _projects.get(project_id)
+    p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
     p.strategy = strategy
-    _projects[project_id] = p
+    project_storage_service.save_project(p)
     return p
 
 @router.post("/{project_id}/render", response_model=CutProject)
 async def render_project(project_id: str):
-    p = _projects.get(project_id)
+    p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
@@ -216,6 +239,6 @@ async def render_project(project_id: str):
     else:
         p.status = CutProjectStatus.FAILED
 
-    _projects[project_id] = p
+    project_storage_service.save_project(p)
     return p
 

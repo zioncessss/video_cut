@@ -8,6 +8,8 @@ import {
   fetchHardwareMetrics,
   fetchSettings,
   updateProjectStrategy,
+  fetchProjectByMaterial,
+  analyzeAndCutVideo,
   Material,
   EditingStrategy,
   API_BASE
@@ -20,7 +22,9 @@ import {
   CheckCircle2,
   ShieldAlert,
   Sliders,
-  ListOrdered
+  ListOrdered,
+  Database,
+  RotateCcw
 } from 'lucide-react';
 
 interface CorrectionItem {
@@ -82,10 +86,43 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [aiFeedback, setAiFeedback] = useState<string | null>(null);
   const [correctionsSummary, setCorrectionsSummary] = useState<CorrectionItem[] | null>(null);
 
+  const [isCachedProject, setIsCachedProject] = useState<boolean>(false);
+  const [loadingProject, setLoadingProject] = useState<boolean>(false);
+
   // 剪辑工作区 Tab 模式：'subtitles' (轨道字幕与空镜) vs 'strategy' (爱拍式策略工坊)
   const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
   const [strategy, setStrategy] = useState<EditingStrategy>(DEFAULT_STRATEGY);
   const [savingStrategy, setSavingStrategy] = useState<boolean>(false);
+
+  const loadProjectForMaterial = async (matId: string) => {
+    if (!matId) return;
+    setLoadingProject(true);
+    try {
+      const proj = await fetchProjectByMaterial(matId);
+      if (proj && proj.id) {
+        setProjectId(proj.id);
+        if (onProjectLoaded) onProjectLoaded(proj.id);
+        setSubtitles(proj.subtitles || []);
+        if (proj.strategy) setStrategy(proj.strategy);
+        if (proj.output_video_path) {
+          setOutputVideoUrl(`http://localhost:18888/${proj.output_video_path}`);
+        } else {
+          setOutputVideoUrl('');
+        }
+        setIsCachedProject(true);
+        setAiFeedback(`已秒级载入工程磁盘缓存（共 ${proj.subtitles?.length || 0} 句字幕）`);
+        return;
+      }
+    } catch (e: any) {
+      // 404 说明未提取过或工程未建立
+      setProjectId('');
+      setSubtitles([]);
+      setOutputVideoUrl('');
+      setIsCachedProject(false);
+    } finally {
+      setLoadingProject(false);
+    }
+  };
 
   useEffect(() => {
     fetchMaterials('talking_head').then(data => {
@@ -101,7 +138,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }).catch(() => {});
   }, []);
 
-  const handleAnalyze = async () => {
+  useEffect(() => {
+    if (selectedThId) {
+      loadProjectForMaterial(selectedThId);
+    }
+  }, [selectedThId]);
+
+  const handleAnalyze = async (force: boolean = false) => {
     if (!selectedThId) {
       alert('请先选择或上传口播主视频');
       return;
@@ -109,19 +152,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     setAnalyzing(true);
     setCorrectionsSummary(null);
     try {
-      const res = await axios.post(`${API_BASE}/projects/analyze-and-cut`, {
-        talking_head_id: selectedThId,
-        aspect_ratio: '9:16',
-        auto_broll: true
+      const res = await analyzeAndCutVideo(selectedThId, {
+        aspectRatio: '9:16',
+        autoBroll: true,
+        forceRetranscribe: force
       });
-      setProjectId(res.data.id);
+      setProjectId(res.id);
       if (onProjectLoaded) {
-        onProjectLoaded(res.data.id);
+        onProjectLoaded(res.id);
       }
-      setSubtitles(res.data.subtitles);
-      if (res.data.strategy) {
-        setStrategy(res.data.strategy);
+      setSubtitles(res.subtitles || []);
+      if (res.strategy) {
+        setStrategy(res.strategy);
       }
+      if (res.output_video_path) {
+        setOutputVideoUrl(`http://localhost:18888/${res.output_video_path}`);
+      }
+      setIsCachedProject(true);
+      setAiFeedback(force ? '已重新提取并刷新 ASR 字幕工程缓存！' : '视频音频提取与 ASR 识别完成，已自动固化为工程缓存！');
     } catch (err) {
       alert('智能识别与初剪失败，请确保后端服务正常运行');
     } finally {
@@ -134,12 +182,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     if (externalStrategyPlan) {
       if (externalStrategyPlan.updated_subtitles && externalStrategyPlan.updated_subtitles.length > 0) {
         setSubtitles(externalStrategyPlan.updated_subtitles);
+        if (projectId) {
+          axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: externalStrategyPlan.updated_subtitles }).catch(() => {});
+        }
       }
       if (externalStrategyPlan.explanation) {
         setAiFeedback(`[副驾驶策略应用] ${externalStrategyPlan.explanation}`);
       }
     }
-  }, [externalStrategyPlan]);
+  }, [externalStrategyPlan, projectId]);
 
   const handleCorrectSubtitles = async () => {
     if (subtitles.length === 0) {
@@ -156,6 +207,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       const data = res.data.data;
       if (data.subtitles) {
         setSubtitles(data.subtitles);
+        if (projectId) {
+          axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data.subtitles }).catch(() => {});
+        }
       }
       setLastEngineUsed(data.harness_engine_used);
       if (data.corrections && data.corrections.length > 0) {
@@ -174,6 +228,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     const updated = [...subtitles];
     updated[idx].corrected_text = newText;
     setSubtitles(updated);
+    if (projectId) {
+      axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated }).catch(() => {});
+    }
   };
 
   const handleSaveStrategy = async () => {
@@ -290,16 +347,39 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             <span>{correcting ? 'AI 专有词纠错中...' : '智能纠错'}</span>
           </button>
 
-          {/* 初剪触发与 ASR 音频转写 */}
-          <button
-            onClick={handleAnalyze}
-            disabled={analyzing || !selectedThId}
-            className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-2 rounded-xl transition-colors shadow-sm disabled:opacity-50"
-            title="通过 FFmpeg 提取 16kHz 高保真音频，并调用 faster-whisper 引擎进行全链路语音识别"
-          >
-            {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            <span>{analyzing ? '音频抽取与 ASR 识别中...' : '🎙️ 提取音频并生成 ASR 字幕'}</span>
-          </button>
+          {/* 初剪触发与 ASR 音频转写 / 缓存状态 */}
+          {loadingProject ? (
+            <div className="flex items-center space-x-1.5 bg-gray-100 text-gray-500 text-xs font-medium px-3.5 py-2 rounded-xl">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-400" />
+              <span>载入工程缓存中...</span>
+            </div>
+          ) : isCachedProject && subtitles.length > 0 ? (
+            <div className="flex items-center space-x-2">
+              <span className="flex items-center space-x-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-xs font-medium px-3 py-2 rounded-xl">
+                <Database className="w-3.5 h-3.5 text-emerald-600" />
+                <span>已载入工程缓存 ({subtitles.length}句)</span>
+              </span>
+              <button
+                onClick={() => handleAnalyze(true)}
+                disabled={analyzing || !selectedThId}
+                className="flex items-center space-x-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
+                title="重新调用 FFmpeg 提取音频与 faster-whisper 引擎重新识别并覆盖当前工程缓存"
+              >
+                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-500" /> : <RotateCcw className="w-3.5 h-3.5 text-gray-500" />}
+                <span>{analyzing ? '重算中...' : '重新提取 ASR'}</span>
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => handleAnalyze(false)}
+              disabled={analyzing || !selectedThId}
+              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-2 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+              title="通过 FFmpeg 提取 16kHz 高保真音频，并调用 faster-whisper 引擎进行全链路语音识别并自动持久化"
+            >
+              {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              <span>{analyzing ? '音频抽取与 ASR 识别中...' : '🎙️ 提取音频并生成 ASR 字幕'}</span>
+            </button>
+          )}
         </div>
       </div>
 

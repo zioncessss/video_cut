@@ -6,7 +6,7 @@ from app.harness_bridge.factory import get_active_harness
 from app.harness_bridge.base import HarnessInstructionRequest, HarnessPlanResponse
 from app.models.entities import SubtitleSegment, BrollReplacement
 from app.native_engine.storage import storage_service
-from app.api.editor import _projects
+from app.native_engine.project_storage import project_storage_service
 
 router = APIRouter()
 
@@ -16,7 +16,7 @@ class NaturalInstructionPayload(BaseModel):
 
 @router.post("/apply", response_model=HarnessPlanResponse)
 async def apply_instruction(payload: NaturalInstructionPayload):
-    project = _projects.get(payload.project_id)
+    project = project_storage_service.get_by_project_id(payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="剪辑工程不存在")
 
@@ -69,5 +69,5 @@ async def apply_instruction(payload: NaturalInstructionPayload):
                 new_brolls.append(b)
         project.broll_replacements = new_brolls
     
-    _projects[payload.project_id] = project
+    project_storage_service.save_project(project)
     return result

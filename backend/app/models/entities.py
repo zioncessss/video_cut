@@ -79,6 +79,8 @@ class CutProject(BaseModel):
     strategy: EditingStrategy = Field(default_factory=EditingStrategy)
     status: CutProjectStatus = CutProjectStatus.DRAFT
     output_video_path: Optional[str] = None
+    raw_asr_segments: Optional[List[Dict[str, Any]]] = None
+    created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
 class HardwareMetrics(BaseModel):

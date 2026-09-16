@@ -171,3 +171,30 @@ export const updateProjectStrategy = async (
   const res = await axios.put(`${API_BASE}/projects/${projectId}/strategy`, strategy);
   return res.data;
 };
+
+export const fetchProjectByMaterial = async (materialId: string) => {
+  const res = await axios.get(`${API_BASE}/projects/by-material/${materialId}`);
+  return res.data;
+};
+
+export const analyzeAndCutVideo = async (
+  talkingHeadId: string,
+  options?: {
+    aspectRatio?: string;
+    autoBroll?: boolean;
+    forceRetranscribe?: boolean;
+  }
+) => {
+  const res = await axios.post(`${API_BASE}/projects/analyze-and-cut`, {
+    talking_head_id: talkingHeadId,
+    aspect_ratio: options?.aspectRatio || '9:16',
+    auto_broll: options?.autoBroll !== false,
+    force_retranscribe: !!options?.forceRetranscribe,
+  });
+  return res.data;
+};
+
+export const deleteProjectByMaterial = async (materialId: string) => {
+  const res = await axios.delete(`${API_BASE}/projects/by-material/${materialId}`);
+  return res.data;
+};
