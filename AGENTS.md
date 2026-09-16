@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan at:
-specs/003-subtitle-strategy-preview/plan.md
+specs/004-electron-sqlite-cross-build/plan.md
 <!-- SPECKIT END -->
 
 ## 🚨 严禁测试函数替代真实运行准则 (Real Execution & Anti-Mock Rules)
