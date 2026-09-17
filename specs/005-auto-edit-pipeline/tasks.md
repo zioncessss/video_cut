@@ -191,7 +191,7 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 ## Phase 11: Polish & Cross-Cutting Concerns
 
 - [x] T037 运行全量回归 `.venv/Scripts/python.exe -m pytest tests/ -q`，全部用例（存量 66 + 新增）通过
-- [x] T038 [P] 按 specs/005-auto-edit-pipeline/quickstart.md 完成 V1~V7 全部人工验收场景并记录结果
+- [ ] T038 [P] 按 specs/005-auto-edit-pipeline/quickstart.md 完成 V1~V7 全部人工验收场景并记录结果（**待用户在 GUI 中执行**；自动化可达部分已验证：V5 分镜决策真实调用六断言通过、V4 迁移单测通过、批量/封面契约测试通过）
 - [x] T039 提交全部实现（Mimosa 提交前扫描通过），更新 specs/005-auto-edit-pipeline/tasks.md 勾选状态，确认 AGENTS.md SPECKIT 指向 005 plan.md 无需变更
 
 ---
