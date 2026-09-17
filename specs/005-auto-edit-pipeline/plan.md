@@ -102,10 +102,14 @@ tests/
 2. 代码面枚举/映射/标签同步（backend 全局 medical 引用清单见 data-model.md §1）。
 
 ### Phase D — AI 分镜决策（Story 5，本特性核心）
-1. prompting.build_scene_decision_prompt()（词库背景 + 精简字幕 + 严格 JSON 样例）。
-2. api_engine/codex 通道实现 + 120s 超时 + 结果校验裁剪（broll 枚举、duration≤句长、transition≤0.5）+ 失败降级关键词规则。
+1. prompting.build_scene_decision_prompt()（词库背景 + 精简字幕 + **不切区与节奏规则** + 严格 JSON 样例；规则文本依据 research.md R8 真实口播风格模型）。
+2. api_engine/codex 通道实现 + **150s 超时**（实测 91~127s）+ 结果确定性校验裁剪（双保险，不信任 AI 单方输出）：
+   - broll∈枚举∪null；duration≤句时长；transition∈[0,0.5]；
+   - **hook/cta 句强制不切**；**价格手势句（这个数/这个价/这么多等正则）强制不切**；
+   - **不相邻连续切**（相邻句冲突时保留前句、裁后句）；**全片空镜占比 ≤40%**（超限按时长从大到小裁）。
 3. editor.py 全流程第 3.5 步接入、`SCENE_DECIDING` 进度档、`scene_decision` 持久化；新端点 `/scene-decision` 重跑。
 4. ffmpeg_filter xfade 档：相邻片段 `xfade=fade:d={transition}:offset=...` 链式串联，音轨 `map 0:a` 不动；`transition_style="cut"` 走现状 concat。
+5. 测试固件：三段真实口播文本（用户校正版）入 `tests/fixtures/`，断言六大行为：价格手势不切、开场保护、CTA 保护、相邻间隔、占比上限、情绪段克制。
 
 ### Phase E — 批量剪辑 + 封面（Story 6/8）
 1. batch_jobs 表 + api/batch.py（submit/status，硬件并发节流，失败真实落库）。
@@ -116,7 +120,8 @@ tests/
 
 | 风险 | 缓解 |
 |---|---|
-| AI 决策超时（实测直连 60s 失败） | timeout 120s + 输出 token 精简 + 批量并行掩盖延迟 + 降级规则兜底 |
+| AI 决策延迟（实测直连 91~127s） | timeout 150s + 输出 token 精简（高亮词已剥离到纠偏调用）+ 批量并行掩盖延迟 + 降级规则兜底 + 结果随工程持久化不重复调用 |
+| AI 误判切走关键画面（价格手势/开场/CTA） | 提示词规则 + 后端确定性校验双保险（Phase D-2），AI 误判也会被裁掉 |
 | xfade 滤镜链复杂度/时长对齐 | fade 档独立开关，cut 档始终可用；offset 逐段累计计算并做浮点容错 |
 | medical→experience 迁移破坏存量 | 幂等脚本 + legacy 备份 + 读取端 medical→experience 兼容映射一层 |
 | 存量工程策略默认值被改写 | 默认值仅作用于新建工程，迁移不触碰已保存策略 |

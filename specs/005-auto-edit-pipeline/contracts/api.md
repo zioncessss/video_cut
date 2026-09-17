@@ -19,7 +19,7 @@ Response（CutProject，新增/变更片段）:
     "matched_category": "experience",
     "highlight_words": [{"word": "九月份", "source": "ai"}, {"word": "一把过", "source": "glossary"}],
     "matched_keywords": ["一把过"],
-    "scene_decision": {"broll_category": "venue", "broll_duration": 1.8,
+    "scene_decision": {"part": "body", "broll_category": "venue", "broll_duration": 1.8,
                        "transition_seconds": 0.4, "material_id": "...", "reason": "明确提及训练场规模卖点"},
     "broll_material_id": "...", "is_manual_edited": false
   }],
@@ -79,12 +79,16 @@ Request:  {"source": "ai"} → 501 {"code":40901, "message": "AI 封面生成规
 - `POST /api/editor/correct`：保留兼容（前端已移除入口），行为不变。
 - `GET /api/editor/{project_id}/progress`：批量与单视频共用，阶段枚举扩展 `SCENE_DECIDING`（85% 档），旧枚举值不动。
 
-## LLM 调用契约（后端内部，两段式）
+## LLM 调用契约（后端内部，职责分离的两段式）
 
-1. **纠偏+高亮**（既有，不变）: `prompting.build_correction_prompt()` → `{subtitles:[{id,corrected_text,highlight_keywords}], corrections:[...]}`。
-2. **分镜决策**（新增 `prompting.build_scene_decision_prompt()`，词库驱动背景）:
+1. **纠偏+高亮**（既有，不变）: `prompting.build_correction_prompt()` → `{subtitles:[{id,corrected_text,highlight_keywords}], corrections:[...]}`。高亮词职责完全在此调用。
+2. **分镜决策**（新增 `prompting.build_scene_decision_prompt()`，词库驱动背景 + research.md R8 风格规则）:
 ```json
-{"decisions": [{"id":"s1","broll":"venue|experience|lesson|null","broll_duration":1.8,
-                "transition":0.4,"highlight_keywords":["..."],"reason":"一句话"}]}
+{"decisions": [{"id":"s1","part":"hook|body|cta","broll":"venue|experience|lesson|null",
+                "broll_duration":1.8,"transition":0.4,"reason":"一句话"}]}
 ```
-   后端校验裁剪：broll∈枚举∪null；duration≤句时长；transition∈[0,0.5]；词库确定性高亮兜底合并（复用 apply 逻辑）。
+   后端确定性校验裁剪（不信任 AI 单方输出）：
+   - `broll ∈ 枚举 ∪ null`；`broll_duration ≤ 句时长`；`transition ∈ [0, 0.5]`；
+   - **part=hook/cta 强制 broll=null**；**价格手势句（「这个数/这个价/这么多」正则族）强制 broll=null**；
+   - **不相邻连续切**：相邻句均为切时裁掉后句；**全片空镜占比 ≤40%**：超限按单处时长从大到小依次裁；
+   - 词库高亮兜底不在此调用（纠偏调用已合并）。

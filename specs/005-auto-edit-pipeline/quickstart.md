@@ -28,10 +28,11 @@
 
 ## V5 AI 分镜决策与转场（Story 5）
 
-1. 执行智能剪辑（enable_scene_decision=true），完成后查看时间轴。
-2. **期望**: 「自建五万平训练场」句出现 venue 空镜区间与理由；「点红心关注」句无空镜；转场时长 0~0.5s。
+1. 用真实口播固件（`tests/fixtures/` 萧山报价视频文本，含「不要这个数只要这个数」）执行智能剪辑（enable_scene_decision=true）。
+2. **期望**：开场钩子句不切（真人出镜）；「试学一节课」句出现 experience 空镜区间与理由；**「不要这个数，也不要这个数，只要这个数」句强制不切**（后端校验兜底）；「滴滴我」CTA 句不切；不相邻两句连续切；全片空镜占比 ≤40%（实测约 23%）。
 3. 策略切 `transition_style="fade"` 渲染 → 成片转场处叠化，**语音全程连续无断裂**（音轨来自口播原片）。
-4. 单测固定样本：`pytest tests/test_scene_decision.py` 验证 JSON 裁剪（duration 越界、非法分类）。
+4. 时间轴展示 hook/body/cta 叙事分段着色，空镜可手动改分类/换素材/调时长。
+5. 单测固定样本：`pytest tests/test_scene_decision.py` 验证 JSON 裁剪（duration 越界、非法分类、手势句误判被裁）。
 
 ## V6 批量剪辑与工作台联动（Story 6）
 
