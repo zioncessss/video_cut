@@ -117,12 +117,12 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
         # 预加载各类空镜素材
         venue_materials = storage_service.list_materials(MaterialCategory.VENUE)
-        medical_materials = storage_service.list_materials(MaterialCategory.MEDICAL)
+        experience_materials = storage_service.list_materials(MaterialCategory.EXPERIENCE)
         lesson_materials = storage_service.list_materials(MaterialCategory.LESSON)
 
         cat_map = {
             MaterialCategory.VENUE: venue_materials,
-            MaterialCategory.MEDICAL: medical_materials,
+            MaterialCategory.EXPERIENCE: experience_materials,
             MaterialCategory.LESSON: lesson_materials
         }
 

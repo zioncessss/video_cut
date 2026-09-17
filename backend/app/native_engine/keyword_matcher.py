@@ -5,18 +5,20 @@ def match_keywords_in_segment(text: str) -> Dict[str, Any]:
     """
     基于词库（storage/glossary.json keywords）分析当前字幕命中的空镜分类与具体关键词，
     每次调用实时装载词库，编辑词库后立即生效。
-    优先级策略：体检 (medical) -> 场地 (venue) -> 教学 (lesson)。
+    优先级策略：体验 (experience) -> 场地 (venue) -> 教学 (lesson)。
     同时跨所有类别扫描所有命中的专有词与强调词，用于字词行内高亮。
+    兼容：词库键迁移期（medical -> experience）两键均可命中。
     """
     keywords = get_driving_school_keywords()
     matched_cat: Optional[str] = None
     all_matched_words: List[str] = []
 
-    # 1. 判定空镜主分类（体检 > 场地 > 教学）
-    for kw in keywords.get("medical", []):
+    # 1. 判定空镜主分类（体验 > 场地 > 教学）
+    experience_kws = keywords.get("experience") or keywords.get("medical") or []
+    for kw in experience_kws:
         if kw in text:
             if not matched_cat:
-                matched_cat = "medical"
+                matched_cat = "experience"
             if kw not in all_matched_words:
                 all_matched_words.append(kw)
 

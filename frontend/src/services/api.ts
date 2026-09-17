@@ -12,7 +12,7 @@ export const getMediaUrl = (filepath: string): string => {
 
 export interface Material {
   id: string;
-  category: 'talking_head' | 'venue' | 'medical' | 'lesson';
+  category: 'talking_head' | 'venue' | 'experience' | 'medical' | 'lesson';
   filename: string;
   filepath: string;
   duration: number;

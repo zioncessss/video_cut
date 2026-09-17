@@ -105,10 +105,10 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Implementation for User Story 4
 
-- [ ] T014 [US4] 后端枚举与映射同步：backend/app/models/entities.py `MaterialCategory.MEDICAL="medical"` 改为 `EXPERIENCE="experience"`；backend/app/core/config.py `CATEGORIES` 与 `CATEGORY_DIRS`（磁盘目录 storage/materials/medical → experience）；backend/app/native_engine/keyword_matcher.py `keywords.get("medical")` → `get("experience")`；backend/app/api/editor.py `MaterialCategory.MEDICAL` → `EXPERIENCE`（cat_map 约 141~147 行）；backend/app/db/schema.sql materials 表 CHECK 约束改为 `('talking_head','venue','experience','lesson')`（新建库生效）
-- [ ] T015 [P] [US4] 新建 scripts/migrate_005.py 幂等迁移脚本（对齐 apply_glossary.py 惯例：默认试运行打印 diff、`--apply` 写回、后端运行中拒绝执行）：① SQLite materials 表 CHECK 重建（建新表→CASE WHEN category='medical' THEN 'experience' 拷贝→drop/rename→重建索引，全程事务）；② 磁盘目录 medical→experience 改名（存在才迁）；③ glossary.json `keywords.medical` → `keywords.experience`（原文件备份至 storage/legacy/）
-- [ ] T016 [P] [US4] 前端标签更新：frontend/src/pages/AssetLibrary.tsx 分类卡（第 8 行）`{ key: 'medical', label: '体检空镜', desc: '体检大厅、视力检测、拍照' }` 改为 `{ key: 'experience', label: '体验空镜', desc: '报名咨询、体检拍照、试学体验、拿证' }`；frontend/src/components/SubtitleList.tsx 徽标映射（约 43~47 行）medical→experience、文案「体检空镜」→「体验空镜」
-- [ ] T017 [US4] 新建 tests/test_migration_005.py：临时库插入 medical 行执行迁移断言变 experience、旧 glossary 键迁移且备份存在、**重复执行第二遍为 no-op**；并跑 `pytest tests/test_all_flows.py` 验证 experience 分类全链路（上传→匹配→空镜）无回归（依赖 T014、T015）
+- [x] T014 [US4] 后端枚举与映射同步：backend/app/models/entities.py `MaterialCategory.MEDICAL="medical"` 改为 `EXPERIENCE="experience"`；backend/app/core/config.py `CATEGORIES` 与 `CATEGORY_DIRS`（磁盘目录 storage/materials/medical → experience）；backend/app/native_engine/keyword_matcher.py `keywords.get("medical")` → `get("experience")`；backend/app/api/editor.py `MaterialCategory.MEDICAL` → `EXPERIENCE`（cat_map 约 141~147 行）；backend/app/db/schema.sql materials 表 CHECK 约束改为 `('talking_head','venue','experience','lesson')`（新建库生效）
+- [x] T015 [P] [US4] 新建 scripts/migrate_005.py 幂等迁移脚本（对齐 apply_glossary.py 惯例：默认试运行打印 diff、`--apply` 写回、后端运行中拒绝执行）：① SQLite materials 表 CHECK 重建（建新表→CASE WHEN category='medical' THEN 'experience' 拷贝→drop/rename→重建索引，全程事务）；② 磁盘目录 medical→experience 改名（存在才迁）；③ glossary.json `keywords.medical` → `keywords.experience`（原文件备份至 storage/legacy/）
+- [x] T016 [P] [US4] 前端标签更新：frontend/src/pages/AssetLibrary.tsx 分类卡（第 8 行）`{ key: 'medical', label: '体检空镜', desc: '体检大厅、视力检测、拍照' }` 改为 `{ key: 'experience', label: '体验空镜', desc: '报名咨询、体检拍照、试学体验、拿证' }`；frontend/src/components/SubtitleList.tsx 徽标映射（约 43~47 行）medical→experience、文案「体检空镜」→「体验空镜」
+- [x] T017 [US4] 新建 tests/test_migration_005.py：临时库插入 medical 行执行迁移断言变 experience、旧 glossary 键迁移且备份存在、**重复执行第二遍为 no-op**；并跑 `pytest tests/test_all_flows.py` 验证 experience 分类全链路（上传→匹配→空镜）无回归（依赖 T014、T015）
 
 **Checkpoint**: 素材库四类「口播分镜/场地空镜/体验空镜/教学学车空镜」，历史数据无损 → US4 独立可验收
 

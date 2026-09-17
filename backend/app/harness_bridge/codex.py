@@ -424,7 +424,7 @@ class CodexHarnessBridge(BaseHarnessBridge):
             f"可用素材库列表：\n{json.dumps(materials, ensure_ascii=False)}\n\n"
             "请严格以纯 JSON 格式输出修改结果，不要包含任何 markdown 或其他文本。格式如下：\n"
             "{\n"
-            '  "explanation": "简明扼要的操作说明（例如：已将第1句文案修改为热情欢迎语，并将第2句关联的空镜头替换为体检分类素材）",\n'
+            '  "explanation": "简明扼要的操作说明（例如：已将第1句文案修改为热情欢迎语，并将第2句关联的空镜头替换为体验分类素材）",\n'
             '  "updated_subtitles": [ ...更新后的完整字幕列表，若未变动请保留原有项... ],\n'
             '  "updated_brolls": [ ...更新后的完整空镜列表，若未变动请保留原有项... ]\n'
             "}"

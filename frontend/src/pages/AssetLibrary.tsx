@@ -3,9 +3,9 @@ import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, Ma
 import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink } from 'lucide-react';
 
 const CATEGORIES = [
-  { key: 'talking_head', label: '口播主视频', desc: '用于声音主轨与人像切出', icon: Film, color: 'text-blue-600 bg-blue-50' },
+  { key: 'talking_head', label: '口播分镜', desc: '剪辑主视频，声音主轨与人像主体', icon: Film, color: 'text-blue-600 bg-blue-50' },
   { key: 'venue', label: '场地空镜', desc: '训练场、校区、考场等实景', icon: MapPin, color: 'text-emerald-600 bg-emerald-50' },
-  { key: 'medical', label: '体检空镜', desc: '体检大厅、视力检测、拍照', icon: Activity, color: 'text-amber-600 bg-amber-50' },
+  { key: 'experience', label: '体验空镜', desc: '报名咨询、体检拍照、试学体验、拿证', icon: Activity, color: 'text-amber-600 bg-amber-50' },
   { key: 'lesson', label: '教学学车空镜', desc: '倒库、侧方、科目二/三练车', icon: Award, color: 'text-indigo-600 bg-indigo-50' },
 ];
 

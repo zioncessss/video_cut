@@ -11,8 +11,8 @@ OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
 DB_PATH = Path(os.getenv("VIDEOCUT_DB_PATH", str(STORAGE_DIR / "videocut.db")))
 
-# 素材分类定义
-CATEGORIES: List[str] = ["talking_head", "venue", "medical", "lesson"]
+# 素材分类定义（experience 为原 medical 体检分类的扩展升级：学员全流程体验空镜）
+CATEGORIES: List[str] = ["talking_head", "venue", "experience", "lesson"]
 CATEGORY_DIRS: Dict[str, Path] = {
     cat: MATERIALS_DIR / cat for cat in CATEGORIES
 }

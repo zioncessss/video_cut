@@ -7,7 +7,7 @@ import time
 class MaterialCategory(str, Enum):
     TALKING_HEAD = "talking_head"
     VENUE = "venue"
-    MEDICAL = "medical"
+    EXPERIENCE = "experience"   # 体验空镜（原 medical 体检，扩展为学员全流程体验）
     LESSON = "lesson"
 
 class HighlightWordSource(str, Enum):

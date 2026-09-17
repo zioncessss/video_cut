@@ -2,10 +2,10 @@
 
 PRAGMA foreign_keys = ON;
 
--- 素材元数据表
+-- 素材元数据表（experience 为原 medical 的更名升级，旧库由 scripts/migrate_005.py 平滑迁移）
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
-    category TEXT NOT NULL CHECK(category IN ('talking_head', 'venue', 'medical', 'lesson')),
+    category TEXT NOT NULL CHECK(category IN ('talking_head', 'venue', 'experience', 'lesson')),
     filename TEXT NOT NULL,
     filepath TEXT NOT NULL,
     duration REAL NOT NULL DEFAULT 0.0,

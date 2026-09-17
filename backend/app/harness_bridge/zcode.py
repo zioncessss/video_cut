@@ -202,7 +202,7 @@ class ZCodeHarnessBridge(BaseHarnessBridge):
             "你是一个短视频剪辑助手。用户在剪辑工作台中输入了一条微调指令，请你理解意图并给出剪辑工程的修改方案。\n"
             f"【用户指令】：{user_instr}\n"
             f"【当前字幕与镜头安排】：\n{json.dumps(simple_subs, ensure_ascii=False)}\n"
-            "【可选镜头分类】：venue (场地/考场), medical (体检/拍照), lesson (练车/教学), null (保留口播真人画面，无空镜)\n\n"
+            "【可选镜头分类】：venue (场地/考场), experience (体验/体检/拍照/试学), lesson (练车/教学), null (保留口播真人画面，无空镜)\n\n"
             "请以严格的合法 JSON 格式输出，格式规范如下：\n"
             "{\n"
             '  "explanation": "简短告诉用户你执行了什么调整（例如：已将第2句空镜替换为场地素材，并润色了文案）",\n'
