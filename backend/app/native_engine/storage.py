@@ -139,10 +139,14 @@ class StorageService:
             fps=metadata["fps"]
         )
         self._cache[material.id] = material
+        # 真实执行铁律：入库失败必须如实报错（如旧库 CHECK 未迁移），严禁文件已落盘却假装成功
         try:
             self.repo.save(material)
         except Exception as e:
-            print(f"Error saving to SQLite: {e}")
+            self._cache.pop(material.id, None)
+            raise RuntimeError(
+                f"素材写入权威库失败（若为旧版分类约束导致，请重启应用自动完成 005 分类迁移）: {e}"
+            ) from e
         self._save_meta()
         return material
 
