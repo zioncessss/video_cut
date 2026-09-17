@@ -10,6 +10,7 @@ from app.models.entities import (
     CutProject,
     CutProjectStatus,
     SubtitleSegment,
+    HighlightWord,
     BrollReplacement,
     MaterialCategory,
     EditingStrategy,
@@ -150,6 +151,10 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 corrected_text=c_text,
                 matched_category=matched_cat,
                 matched_keywords=kw_info.get("matched_keywords", []),
+                highlight_words=[
+                    HighlightWord(**w) for w in (item.get("highlight_words") or [])
+                    if isinstance(w, dict) and w.get("word")
+                ],
                 broll_material_id=assigned_broll_id
             ))
 

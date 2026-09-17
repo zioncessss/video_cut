@@ -1,0 +1,99 @@
+-- SQLite Schema for VideoCut Desktop Application
+
+PRAGMA foreign_keys = ON;
+
+-- 素材元数据表
+CREATE TABLE IF NOT EXISTS materials (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL CHECK(category IN ('talking_head', 'venue', 'medical', 'lesson')),
+    filename TEXT NOT NULL,
+    filepath TEXT NOT NULL,
+    duration REAL NOT NULL DEFAULT 0.0,
+    width INTEGER NOT NULL DEFAULT 1080,
+    height INTEGER NOT NULL DEFAULT 1920,
+    fps REAL NOT NULL DEFAULT 30.0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category);
+
+-- 剪辑工程元数据表
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    talking_head_id TEXT NOT NULL,
+    aspect_ratio TEXT NOT NULL DEFAULT '9:16',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'processing', 'completed', 'failed')),
+    output_video_path TEXT,
+    raw_asr_json TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(talking_head_id) REFERENCES materials(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_projects_th ON projects(talking_head_id);
+
+-- 字幕片段与语义空镜映射表
+CREATE TABLE IF NOT EXISTS subtitles (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    sort_index INTEGER NOT NULL,
+    start_time REAL NOT NULL,
+    end_time REAL NOT NULL,
+    raw_text TEXT NOT NULL,
+    corrected_text TEXT NOT NULL,
+    matched_category TEXT,
+    matched_keywords_json TEXT DEFAULT '[]',
+    broll_material_id TEXT,
+    is_manual_edited INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_subtitles_project ON subtitles(project_id, sort_index);
+
+-- 剪辑策略工坊参数表
+CREATE TABLE IF NOT EXISTS strategies (
+    project_id TEXT PRIMARY KEY,
+    subtitle_theme TEXT NOT NULL DEFAULT 'glow_gold',
+    font_size TEXT NOT NULL DEFAULT 'medium',
+    subtitle_font_size INTEGER,
+    show_subtitles INTEGER NOT NULL DEFAULT 1,
+    subtitle_position_y INTEGER NOT NULL DEFAULT 82,
+    subtitle_position_x INTEGER NOT NULL DEFAULT 50,
+    enable_highlight INTEGER NOT NULL DEFAULT 1,
+    highlight_color TEXT NOT NULL DEFAULT '#FACC15',
+    highlight_scale INTEGER NOT NULL DEFAULT 1,
+    custom_highlight_words_json TEXT DEFAULT '[]',
+    enable_top_banner INTEGER NOT NULL DEFAULT 1,
+    banner_main_title TEXT NOT NULL DEFAULT '科目二一把过秘籍',
+    banner_sub_title TEXT DEFAULT '教练手把手教学',
+    banner_style TEXT NOT NULL DEFAULT 'capsule',
+    banner_size TEXT NOT NULL DEFAULT 'medium',
+    banner_font_size INTEGER,
+    banner_position_x INTEGER NOT NULL DEFAULT 50,
+    banner_position_y INTEGER NOT NULL DEFAULT 6,
+    enable_watermark INTEGER NOT NULL DEFAULT 1,
+    watermark_text TEXT NOT NULL DEFAULT '@顺达驾校官方教学',
+    watermark_position TEXT NOT NULL DEFAULT 'top_right',
+    watermark_size TEXT NOT NULL DEFAULT 'medium',
+    watermark_font_size INTEGER,
+    watermark_position_x INTEGER,
+    watermark_position_y INTEGER DEFAULT 4,
+    watermark_opacity REAL NOT NULL DEFAULT 0.45,
+    broll_pacing TEXT NOT NULL DEFAULT 'standard',
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- 全局设置表
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+-- 批量混剪作业队列表
+CREATE TABLE IF NOT EXISTS batch_jobs (
+    id TEXT PRIMARY KEY,
+    total_count INTEGER NOT NULL,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    concurrency INTEGER NOT NULL DEFAULT 2,
+    status TEXT NOT NULL DEFAULT 'queued',
+    created_at REAL NOT NULL
+);

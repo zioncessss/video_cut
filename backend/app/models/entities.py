@@ -10,6 +10,24 @@ class MaterialCategory(str, Enum):
     MEDICAL = "medical"
     LESSON = "lesson"
 
+class HighlightWordSource(str, Enum):
+    GLOSSARY = "glossary"
+    AI = "ai"
+    MANUAL = "manual"
+
+class HighlightWord(BaseModel):
+    word: str
+    source: str = "glossary"  # glossary | ai | manual
+
+class SceneDecision(BaseModel):
+    """AI 分镜决策结果：part 用于叙事分段与不切区校验，broll_category=None 表示不切"""
+    part: str = "body"  # hook | body | cta
+    broll_category: Optional[MaterialCategory] = None
+    broll_duration: float = 0.0
+    transition_seconds: float = 0.0
+    material_id: Optional[str] = None
+    reason: str = ""
+
 class Material(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     category: MaterialCategory
@@ -29,6 +47,8 @@ class SubtitleSegment(BaseModel):
     corrected_text: str
     matched_category: Optional[MaterialCategory] = None
     matched_keywords: List[str] = Field(default_factory=list)
+    highlight_words: List[HighlightWord] = Field(default_factory=list)
+    scene_decision: Optional[SceneDecision] = None
     broll_material_id: Optional[str] = None
     is_manual_edited: bool = False
 
@@ -52,6 +72,7 @@ class EditingStrategy(BaseModel):
     highlight_color: str = "#FACC15"
     highlight_scale: bool = True
     custom_highlight_words: List[str] = Field(default_factory=list)
+    transition_style: str = "cut"       # cut(硬切) | fade(叠化 0.3~0.5s，时长取各句 scene_decision)
     
     enable_top_banner: bool = True
     banner_main_title: str = "科目二一把过秘籍"

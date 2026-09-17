@@ -109,7 +109,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [folderOpened, setFolderOpened] = useState<boolean>(false);
   const [aiInstruction, setAiInstruction] = useState<string>('');
   const [applyingInstruction, setApplyingInstruction] = useState<boolean>(false);
-  const [correcting, setCorrecting] = useState<boolean>(false);
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
   const [activeEngine, setActiveEngine] = useState<string>('codex');
   const [activeModel, setActiveModel] = useState<string>('GLM-5.3-Flash');
@@ -236,15 +235,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       }
       if (res.corrections_summary && res.corrections_summary.length > 0) {
         setCorrectionsSummary(res.corrections_summary);
-        setAiFeedback(`一键智能初剪与纠偏完成！已通过 ${res.last_engine_used || activeEngine} 智能修正 ${res.corrections_summary.length} 处专有词并自动保存。`);
+        setAiFeedback(`智能剪辑完成！已通过 ${res.last_engine_used || activeEngine} 智能修正 ${res.corrections_summary.length} 处专有词并自动保存。`);
       } else {
         const costStr = res.correction_latency_ms ? `，耗时 ${Math.round(res.correction_latency_ms)}ms` : '';
-        setAiFeedback(`一键智能初剪与纠偏完成（未发现明显错别字${costStr}）。`);
+        setAiFeedback(`智能剪辑完成（未发现明显错别字${costStr}）。`);
       }
 
       setPreviewMode('interactive');
     } catch (err) {
-      alert('一键智能初剪与纠偏失败，请确保后端服务正常运行');
+      alert('智能剪辑失败，请确保后端服务正常运行');
     } finally {
       setAnalyzing(false);
       setOneClickStage('');
@@ -266,39 +265,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   }, [externalStrategyPlan, projectId]);
 
-  const handleCorrectSubtitles = async () => {
-    if (subtitles.length === 0) {
-      alert('当前没有字幕，请先进行初剪识别');
-      return;
-    }
-    setCorrecting(true);
-    setCorrectionsSummary(null);
-    try {
-      const res = await axios.post(`${API_BASE}/editor/correct`, {
-        subtitles: subtitles,
-        domain: 'driving_school'
-      });
-      const data = res.data.data;
-      if (data.subtitles) {
-        setSubtitles(data.subtitles);
-        if (projectId) {
-          await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data.subtitles });
-        }
-      }
-      setLastEngineUsed(data.harness_engine_used);
-      if (data.corrections && data.corrections.length > 0) {
-        setCorrectionsSummary(data.corrections);
-        setAiFeedback(`智能纠错完成（发现并修正 ${data.corrections.length} 处错别字），已立即自动固化至工程！`);
-      } else {
-        setAiFeedback(`智能纠错完成（耗时 ${data.latency_ms}ms），未发现明显错别字。`);
-      }
-    } catch (err) {
-      alert('智能纠错请求失败');
-    } finally {
-      setCorrecting(false);
-    }
-  };
-
   const subtitleSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const handleTextChange = (idx: number, newText: string) => {
     if (previewMode === 'rendered') {
@@ -316,6 +282,27 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated });
       } catch (e) {
         console.error('Auto save subtitle failed', e);
+      }
+    }, 500);
+  };
+
+  // 高亮词增删（手动来源标记 manual），与文本编辑共用同一条防抖持久化链路
+  const handleHighlightWordsChange = (idx: number, words: { word: string; source: 'glossary' | 'ai' | 'manual' }[]) => {
+    if (previewMode === 'rendered') {
+      setPreviewMode('interactive');
+    }
+    const updated = [...subtitles];
+    updated[idx] = { ...updated[idx], highlight_words: words, is_manual_edited: true };
+    setSubtitles(updated);
+    if (!projectId) return;
+    if (subtitleSaveTimeoutRef.current) {
+      clearTimeout(subtitleSaveTimeoutRef.current);
+    }
+    subtitleSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated });
+      } catch (e) {
+        console.error('Auto save highlight words failed', e);
       }
     }, 500);
   };
@@ -359,7 +346,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   const handleSaveStrategy = async () => {
     if (!projectId) {
-      alert('请先进行 AI 初剪创建工程，再保存策略');
+      alert('请先执行智能剪辑创建工程，再保存策略');
       return;
     }
     setSavingStrategy(true);
@@ -469,7 +456,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   return (
     <div className="flex flex-col h-full max-h-full max-w-7xl mx-auto p-3 overflow-hidden">
-      {/* 顶部操作条：口播素材选择、引擎状态徽章、纠错与初剪触发 */}
+      {/* 顶部操作条：口播素材选择、引擎状态徽章、智能剪辑触发 */}
       <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs mb-2.5 gap-2 flex-shrink-0">
         <div className="flex items-center space-x-2.5">
           <label className="text-xs font-semibold text-gray-700">口播主视频:</label>
@@ -526,18 +513,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             )}
           </div>
 
-          {/* 智能纠错单独微调按钮（保留独立单步通道） */}
-          <button
-            onClick={handleCorrectSubtitles}
-            disabled={correcting || analyzing || subtitles.length === 0}
-            className="flex items-center space-x-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 text-xs font-medium px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40 cursor-pointer"
-            title="对已提取/手改字幕单独发起专有词语义纠偏"
-          >
-            {correcting ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-700" /> : <Sparkles className="w-3.5 h-3.5 text-amber-600" />}
-            <span>{correcting ? '专词纠偏中...' : '单步纠错'}</span>
-          </button>
-
-          {/* 一键智能初剪与纠偏（主动作按钮） */}
+          {/* 智能剪辑主动作按钮 */}
           {loadingProject ? (
             <div className="flex items-center space-x-1.5 bg-gray-100 text-gray-500 text-xs font-medium px-3.5 py-2 rounded-xl">
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-400" />
@@ -551,23 +527,23 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               </span>
               <button
                 onClick={() => handleOneClickCutAndCorrect(true)}
-                disabled={analyzing || correcting || !selectedThId}
+                disabled={analyzing || !selectedThId}
                 className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-                title="重新执行：音频重抽 -> ASR 黄金片段切分合并 -> 大模型专词纠偏一体化全流程"
+                title="重跑全流程：音频抽取 -> ASR 黄金片段切分合并 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
               >
                 {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-                <span>{analyzing ? (oneClickStage || '处理中...') : '重新一键智能初剪'}</span>
+                <span>{analyzing ? (oneClickStage || '处理中...') : '智能剪辑'}</span>
               </button>
             </div>
           ) : (
             <button
               onClick={() => handleOneClickCutAndCorrect(false)}
-              disabled={analyzing || correcting || !selectedThId}
+              disabled={analyzing || !selectedThId}
               className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 cursor-pointer"
-              title="一键全自动：音频提取 -> faster-whisper 识别与黄金片段切分合并 -> 大模型专词纠偏一体化全链路"
+              title="一键全自动：音频提取 -> faster-whisper 识别与黄金片段切分合并 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
             >
               {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
-              <span>{analyzing ? (oneClickStage || 'AI 智能初剪与纠偏中...') : '⚡ 一键智能初剪与纠偏 (Auto AI Cut)'}</span>
+              <span>{analyzing ? (oneClickStage || 'AI 智能剪辑中...') : '⚡ 智能剪辑 (AI Auto Cut)'}</span>
             </button>
           )}
         </div>
@@ -705,6 +681,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                 currentTime={currentTime}
                 onSelectTime={setCurrentTime}
                 onTextChange={handleTextChange}
+                onHighlightWordsChange={handleHighlightWordsChange}
               />
             ) : (
               <StrategyStudio

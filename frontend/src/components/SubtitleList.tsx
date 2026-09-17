@@ -1,5 +1,6 @@
-import React from 'react';
-import { Tag, PlayCircle, MapPin, Activity, Award } from 'lucide-react';
+import React, { useState } from 'react';
+import { Tag, PlayCircle, MapPin, Activity, Award, X, Plus, Sparkles, BookOpen } from 'lucide-react';
+import { HighlightWord } from '../services/api';
 
 export interface SubtitleItem {
   id: string;
@@ -7,9 +8,11 @@ export interface SubtitleItem {
   end_time: number;
   raw_text: string;
   corrected_text: string;
-  matched_category?: 'venue' | 'medical' | 'lesson' | null;
+  matched_category?: 'venue' | 'medical' | 'experience' | 'lesson' | null;
   matched_keywords?: string[];
+  highlight_words?: HighlightWord[];
   broll_material_id?: string | null;
+  is_manual_edited?: boolean;
 }
 
 interface SubtitleListProps {
@@ -17,14 +20,25 @@ interface SubtitleListProps {
   currentTime: number;
   onSelectTime: (time: number) => void;
   onTextChange: (index: number, newText: string) => void;
+  onHighlightWordsChange: (index: number, words: HighlightWord[]) => void;
 }
+
+const SOURCE_META: Record<string, { label: string; cls: string }> = {
+  glossary: { label: '词库', cls: 'bg-gray-100 text-gray-700 border-gray-300' },
+  ai: { label: 'AI', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
+  manual: { label: '手动', cls: 'bg-blue-50 text-blue-700 border-blue-200' }
+};
 
 export const SubtitleList: React.FC<SubtitleListProps> = ({
   subtitles,
   currentTime,
   onSelectTime,
-  onTextChange
+  onTextChange,
+  onHighlightWordsChange
 }) => {
+  const [addingFor, setAddingFor] = useState<string | null>(null);
+  const [newWord, setNewWord] = useState('');
+
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
     const s = Math.floor(secs % 60).toString().padStart(2, '0');
@@ -40,11 +54,11 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
         </span>
       );
     }
-    if (cat === 'medical') {
+    if (cat === 'medical' || cat === 'experience') {
       return (
         <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
           <Activity className="w-3 h-3" />
-          <span>体检空镜</span>
+          <span>体验空镜</span>
         </span>
       );
     }
@@ -52,11 +66,30 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
       return (
         <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
           <Award className="w-3 h-3" />
-          <span>练车空镜</span>
+          <span>教学学车空镜</span>
         </span>
       );
     }
     return null;
+  };
+
+  const removeWord = (idx: number, sub: SubtitleItem, word: string) => {
+    const rest = (sub.highlight_words || []).filter(w => w.word !== word);
+    onHighlightWordsChange(idx, rest);
+  };
+
+  const addWord = (idx: number, sub: SubtitleItem) => {
+    const w = newWord.trim();
+    if (!w) return;
+    const exists = (sub.highlight_words || []).some(x => x.word === w);
+    if (exists) {
+      setAddingFor(null);
+      setNewWord('');
+      return;
+    }
+    onHighlightWordsChange(idx, [...(sub.highlight_words || []), { word: w, source: 'manual' }]);
+    setNewWord('');
+    setAddingFor(null);
   };
 
   return (
@@ -69,11 +102,14 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
       <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
         {subtitles.length === 0 ? (
           <div className="py-12 text-center text-gray-400 text-xs">
-            暂无字幕片段，请先点击【AI 智能识别与初剪】
+            暂无字幕片段，请先点击【智能剪辑】
           </div>
         ) : (
           subtitles.map((sub, idx) => {
             const isActive = currentTime >= sub.start_time && currentTime <= sub.end_time;
+            const words: HighlightWord[] = sub.highlight_words
+              ? sub.highlight_words
+              : (sub.matched_keywords || []).map(w => ({ word: w, source: 'glossary' as const }));
             return (
               <div
                 key={sub.id || idx}
@@ -101,14 +137,70 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                   rows={2}
                 />
 
-                {sub.matched_keywords && sub.matched_keywords.length > 0 && (
-                  <div className="flex items-center space-x-1.5 mt-1.5">
-                    <Tag className="w-3 h-3 text-gray-400" />
-                    <span className="text-[10px] text-gray-400">
-                      命中词: {sub.matched_keywords.join(', ')}
+                {/* 高亮词 chip：来源徽标（词库/AI/手动）+ 删除；输入框添加新词 */}
+                <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
+                  <Tag className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                  {words.length === 0 && (
+                    <span className="text-[10px] text-gray-400">暂无高亮词</span>
+                  )}
+                  {words.map(w => {
+                    const meta = SOURCE_META[w.source] || SOURCE_META.glossary;
+                    return (
+                      <span
+                        key={w.word}
+                        className={`inline-flex items-center space-x-1 pl-1.5 pr-1 py-0.5 rounded-md text-[10px] font-medium border ${meta.cls}`}
+                        title={`来源：${meta.label}`}
+                      >
+                        {w.source === 'ai' ? (
+                          <Sparkles className="w-2.5 h-2.5" />
+                        ) : w.source === 'manual' ? (
+                          <BookOpen className="w-2.5 h-2.5" />
+                        ) : (
+                          <Tag className="w-2.5 h-2.5" />
+                        )}
+                        <span>{w.word}</span>
+                        <button
+                          onClick={() => removeWord(idx, sub, w.word)}
+                          className="hover:bg-black/10 rounded-sm p-0.5 transition-colors"
+                          title={`删除高亮词「${w.word}」`}
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  {addingFor === sub.id ? (
+                    <span className="inline-flex items-center space-x-1">
+                      <input
+                        autoFocus
+                        value={newWord}
+                        onChange={e => setNewWord(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') addWord(idx, sub);
+                          if (e.key === 'Escape') { setAddingFor(null); setNewWord(''); }
+                        }}
+                        placeholder="新词后回车"
+                        className="w-24 text-[10px] border border-blue-300 rounded-md px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <button
+                        onClick={() => { setAddingFor(null); setNewWord(''); }}
+                        className="text-gray-400 hover:text-gray-600"
+                        title="取消"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
                     </span>
-                  </div>
-                )}
+                  ) : (
+                    <button
+                      onClick={() => { setAddingFor(sub.id); setNewWord(''); }}
+                      className="inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded-md text-[10px] text-gray-500 border border-dashed border-gray-300 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                      title="添加手动高亮词"
+                    >
+                      <Plus className="w-2.5 h-2.5" />
+                      <span>加词</span>
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })

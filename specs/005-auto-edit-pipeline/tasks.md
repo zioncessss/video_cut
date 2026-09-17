@@ -23,7 +23,7 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 **Purpose**: 基线确认，确保改动前系统处于绿色状态
 
-- [ ] T001 在 005-auto-edit-pipeline 分支运行基线测试 `.venv/Scripts/python.exe -m pytest tests/ -q`，确认存量 66 用例全部通过；如有失败先修复再进入后续阶段
+- [x] T001 在 005-auto-edit-pipeline 分支运行基线测试 `.venv/Scripts/python.exe -m pytest tests/ -q`，确认存量 66 用例全部通过；如有失败先修复再进入后续阶段
 
 **Checkpoint**: 基线绿色，可以开始实现
 
@@ -35,10 +35,10 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 **⚠️ CRITICAL**: 任何用户故事开始前必须完成本阶段
 
-- [ ] T002 在 backend/app/models/entities.py 新增共享模型：`HighlightWord{word, source: Literal["glossary","ai","manual"]}`、`SceneDecision{part: Literal["hook","body","cta"]="body", broll_category: Optional[MaterialCategory], broll_duration: float=0.0, transition_seconds: float=0.0, material_id: Optional[str]=None, reason: str=""}`；为 `SubtitleSegment` 增加 `highlight_words: List[HighlightWord]=[]` 与 `scene_decision: Optional[SceneDecision]=None`（保留 matched_keywords/matched_category 不删）；为 `EditingStrategy` 增加 `transition_style: str="cut"`（"cut"|"fade"）
-- [ ] T003 [P] 修复 backend/app/harness_bridge/codex.py `_run_codex_cli` 中 CLI 回退分支引用未定义变量 `active_model` 的 NameError：改为 `active_model = (model_override or config.get_codex_configured_model() or config.LLM_MODEL or "glm-5.3-flash").strip()` 后再 `cmd.extend(["-m", active_model])`（research.md R6-1）
-- [ ] T004 [P] 修改 backend/app/harness_bridge/llm_client.py `_chat_via_provider`：备用 `/responses` 端点仅当 provider 来源为 codex 本地代理（base_url 含 127.0.0.1 或 source 含 "codex"）时才尝试，远端供应商（如 open.bigmodel.cn）404 直接返回首因错误，杜绝双倍超时浪费（research.md R2/R6-2）
-- [ ] T005 同步 frontend/src/services/api.ts 的类型定义：SubtitleSegment 增加 `highlight_words?: {word:string; source:'glossary'|'ai'|'manual'}[]`、`scene_decision?: {part:'hook'|'body'|'cta'; broll_category:string|null; broll_duration:number; transition_seconds:number; material_id:string|null; reason:string}`、EditingStrategy 增加 `transition_style:'cut'|'fade'`（依赖 T002 模型定稿）
+- [x] T002 在 backend/app/models/entities.py 新增共享模型：`HighlightWord{word, source: Literal["glossary","ai","manual"]}`、`SceneDecision{part: Literal["hook","body","cta"]="body", broll_category: Optional[MaterialCategory], broll_duration: float=0.0, transition_seconds: float=0.0, material_id: Optional[str]=None, reason: str=""}`；为 `SubtitleSegment` 增加 `highlight_words: List[HighlightWord]=[]` 与 `scene_decision: Optional[SceneDecision]=None`（保留 matched_keywords/matched_category 不删）；为 `EditingStrategy` 增加 `transition_style: str="cut"`（"cut"|"fade"）
+- [x] T003 [P] 修复 backend/app/harness_bridge/codex.py `_run_codex_cli` 中 CLI 回退分支引用未定义变量 `active_model` 的 NameError：改为 `active_model = (model_override or config.get_codex_configured_model() or config.LLM_MODEL or "glm-5.3-flash").strip()` 后再 `cmd.extend(["-m", active_model])`（research.md R6-1）
+- [x] T004 [P] 修改 backend/app/harness_bridge/llm_client.py `_chat_via_provider`：备用 `/responses` 端点仅当 provider 来源为 codex 本地代理（base_url 含 127.0.0.1 或 source 含 "codex"）时才尝试，远端供应商（如 open.bigmodel.cn）404 直接返回首因错误，杜绝双倍超时浪费（research.md R2/R6-2）
+- [x] T005 同步 frontend/src/services/api.ts 的类型定义：SubtitleSegment 增加 `highlight_words?: {word:string; source:'glossary'|'ai'|'manual'}[]`、`scene_decision?: {part:'hook'|'body'|'cta'; broll_category:string|null; broll_duration:number; transition_seconds:number; material_id:string|null; reason:string}`、EditingStrategy 增加 `transition_style:'cut'|'fade'`（依赖 T002 模型定稿）
 
 **Checkpoint**: 模型基座与缺陷修复完成，用户故事可并行开始
 
@@ -52,7 +52,7 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Implementation for User Story 1
 
-- [ ] T006 [US1] 重构 frontend/src/pages/VideoEditor.tsx 顶部工具栏（约 529~572 行区域）：① 删除「单步纠错」按钮块及 `handleCorrectSubtitles` 函数与 `correcting` state（后端 /api/editor/correct 不动）；② 「重新一键智能初剪」按钮（isCachedProject 分支）文案改为「智能剪辑」，title 去掉「重新执行」字样但保留 force=true 重跑行为；③ 未缓存分支按钮文案「⚡ 一键智能初剪与纠偏 (Auto AI Cut)」改为「⚡ 智能剪辑 (AI Auto Cut)」；④ 同步更新 aiFeedback 文案中所有「一键智能初剪与纠偏」为「智能剪辑」
+- [x] T006 [US1] 重构 frontend/src/pages/VideoEditor.tsx 顶部工具栏（约 529~572 行区域）：① 删除「单步纠错」按钮块及 `handleCorrectSubtitles` 函数与 `correcting` state（后端 /api/editor/correct 不动）；② 「重新一键智能初剪」按钮（isCachedProject 分支）文案改为「智能剪辑」，title 去掉「重新执行」字样但保留 force=true 重跑行为；③ 未缓存分支按钮文案「⚡ 一键智能初剪与纠偏 (Auto AI Cut)」改为「⚡ 智能剪辑 (AI Auto Cut)」；④ 同步更新 aiFeedback 文案中所有「一键智能初剪与纠偏」为「智能剪辑」
 
 **Checkpoint**: 打开页面 → 仅一个「智能剪辑」按钮、无「单步纠错」；点击可重跑全流程 → US1 独立可验收
 
@@ -66,13 +66,13 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Tests for User Story 2 ⚠️（先写，确认 FAIL）
 
-- [ ] T007 [P] [US2] 新建 tests/test_highlight_words.py：① 固定 embedded 词库引擎跑纠偏，断言含词库关键词（如「一把过」）的句子返回 `highlight_words` 且 source="glossary"；② mock LLM 响应（含 `highlight_keywords:["九月份"]`）走 api_engine `_assemble_response`，断言 AI 词 source="ai" 且与词库词去重合并、matched_keywords 兼容保留
+- [x] T007 [P] [US2] 新建 tests/test_highlight_words.py：① 固定 embedded 词库引擎跑纠偏，断言含词库关键词（如「一把过」）的句子返回 `highlight_words` 且 source="glossary"；② mock LLM 响应（含 `highlight_keywords:["九月份"]`）走 api_engine `_assemble_response`，断言 AI 词 source="ai" 且与词库词去重合并、matched_keywords 兼容保留
 
 ### Implementation for User Story 2
 
-- [ ] T008 [US2] 在 backend/app/native_engine/keyword_matcher.py 新增 `build_highlight_words(text: str, ai_keywords: list[str]) -> list[dict]`：词库命中（全部类别关键词）标记 source="glossary"，AI 词标记 source="ai"，按词长度优先去重合并；并在 backend/app/api/editor.py `analyze_and_cut` 组装 SubtitleSegment 时（约 145 行区域）调用它写入 `highlight_words`（依赖 T007 FAIL）
-- [ ] T009 [P] [US2] 修改两个桥接器的回填逻辑：backend/app/harness_bridge/api_engine.py `_assemble_response` 与 backend/app/harness_bridge/codex.py `correct_subtitles` 中 AI `highlight_keywords` 合并段（api_engine 约 101~104 行、codex 约 378~382 行），除写 matched_keywords 外同步生成 `highlight_words`（AI 词 source="ai"，词库兜底 source="glossary"），保持幂等不重复
-- [ ] T010 [US2] 运行 `pytest tests/test_highlight_words.py` 全绿，并跑 `pytest tests/test_editor_api.py tests/test_subtitle_strategy.py` 确认无回归（依赖 T008、T009）
+- [x] T008 [US2] 在 backend/app/native_engine/keyword_matcher.py 新增 `build_highlight_words(text: str, ai_keywords: list[str]) -> list[dict]`：词库命中（全部类别关键词）标记 source="glossary"，AI 词标记 source="ai"，按词长度优先去重合并；并在 backend/app/api/editor.py `analyze_and_cut` 组装 SubtitleSegment 时（约 145 行区域）调用它写入 `highlight_words`（依赖 T007 FAIL）
+- [x] T009 [P] [US2] 修改两个桥接器的回填逻辑：backend/app/harness_bridge/api_engine.py `_assemble_response` 与 backend/app/harness_bridge/codex.py `correct_subtitles` 中 AI `highlight_keywords` 合并段（api_engine 约 101~104 行、codex 约 378~382 行），除写 matched_keywords 外同步生成 `highlight_words`（AI 词 source="ai"，词库兜底 source="glossary"），保持幂等不重复
+- [x] T010 [US2] 运行 `pytest tests/test_highlight_words.py` 全绿，并跑 `pytest tests/test_editor_api.py tests/test_subtitle_strategy.py` 确认无回归（依赖 T008、T009）
 
 **Checkpoint**: 智能剪辑产物中每句字幕带来源标记的高亮词 → US2 独立可验收
 
@@ -86,12 +86,12 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Tests for User Story 3 ⚠️（先写，确认 FAIL）
 
-- [ ] T011 [P] [US3] 在 tests/test_subtitle_strategy.py 新增用例：`generate_ass_file` 优先读取 `highlight_words[].word` 做行内高亮，字段缺失时回退 `matched_keywords`（构造两种输入断言 ASS 输出中 `{\c&H...&}` 标记出现/不出现）
+- [x] T011 [P] [US3] 在 tests/test_subtitle_strategy.py 新增用例：`generate_ass_file` 优先读取 `highlight_words[].word` 做行内高亮，字段缺失时回退 `matched_keywords`（构造两种输入断言 ASS 输出中 `{\c&H...&}` 标记出现/不出现）
 
 ### Implementation for User Story 3
 
-- [ ] T012 [US3] 修改 backend/app/native_engine/subtitle_styler.py `generate_ass_file`（约 140~156 行区域）：高亮词数据源从 `matched_keywords + custom_words` 切换为 `highlight_words[].word`（无该字段时回退 matched_keywords 保持兼容），策略 `custom_highlight_words` 仍叠加且 source 按 manual 处理（依赖 T11 FAIL）
-- [ ] T013 [US3] 重构 frontend/src/components/SubtitleList.tsx（约 104~108 行「命中词」纯文本展示处）：改为可交互 chip 列表——每个高亮词一个小标签（glossary=灰/AI=紫/manual=蓝 徽标 + hover × 删除），句尾「+」输入框添加新词（source="manual"）；增删即时调用现有 `PUT /api/projects/{id}/subtitles` 持久化并回调父组件刷新
+- [x] T012 [US3] 修改 backend/app/native_engine/subtitle_styler.py `generate_ass_file`（约 140~156 行区域）：高亮词数据源从 `matched_keywords + custom_words` 切换为 `highlight_words[].word`（无该字段时回退 matched_keywords 保持兼容），策略 `custom_highlight_words` 仍叠加且 source 按 manual 处理（依赖 T11 FAIL）
+- [x] T013 [US3] 重构 frontend/src/components/SubtitleList.tsx（约 104~108 行「命中词」纯文本展示处）：改为可交互 chip 列表——每个高亮词一个小标签（glossary=灰/AI=紫/manual=蓝 徽标 + hover × 删除），句尾「+」输入框添加新词（source="manual"）；增删即时调用现有 `PUT /api/projects/{id}/subtitles` 持久化并回调父组件刷新
 
 **Checkpoint**: US1+US2+US3 完成 = **可交付 MVP**（智能剪辑 + 双引擎高亮 + 时间轴调整闭环）
 

@@ -42,3 +42,36 @@ def match_keywords_in_segment(text: str) -> Dict[str, Any]:
 
     return {"matched_category": matched_cat, "matched_keywords": all_matched_words}
 
+
+def build_highlight_words(text: str, ai_keywords: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    """
+    高亮词三源合并工具（词库 ∪ AI；manual 由用户编辑持久层追加）：
+    - 词库命中的词确定性兜底且来源优先标 glossary（跨所有类别扫描，含 location/emphasis）；
+    - AI 判定词补位词库覆盖不到的自由表达（时间/数字/卖点），来源标 ai；
+    - 长词优先、按词去重；同一词词库与 AI 同时命中时保留 glossary 来源。
+    返回 [{"word": "...", "source": "glossary|ai"}, ...]
+    """
+    merged: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(word: str, source: str):
+        w = (word or "").strip()
+        if not w or w in seen:
+            return
+        seen.add(w)
+        merged.append({"word": w, "source": source})
+
+    keywords = get_driving_school_keywords()
+    glossary_hits: List[str] = []
+    for kws in keywords.values():
+        if not isinstance(kws, list):
+            continue
+        for kw in kws:
+            if isinstance(kw, str) and kw and kw in text:
+                glossary_hits.append(kw)
+    for w in sorted(glossary_hits, key=len, reverse=True):
+        _add(w, "glossary")
+    for w in sorted({k.strip() for k in (ai_keywords or []) if isinstance(k, str) and k.strip()}, key=len, reverse=True):
+        _add(w, "ai")
+    return merged
+

@@ -1,0 +1,158 @@
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Generator, Optional
+from app.core.config import DB_PATH
+
+SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
+
+def init_db(db_path: Optional[Path] = None):
+    """初始化数据库并应用 schema.sql"""
+    target_path = db_path or DB_PATH
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(str(target_path)) as conn:
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
+        if SCHEMA_PATH.exists():
+            with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+                conn.executescript(f.read())
+
+        # 平滑迁移 strategies 新字段（全部为静态字面量 DDL，已存在的列因重复添加失败被安全忽略）
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_size TEXT NOT NULL DEFAULT 'medium';")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_y INTEGER NOT NULL DEFAULT 6;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_x INTEGER NOT NULL DEFAULT 50;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_size TEXT NOT NULL DEFAULT 'medium';")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_y INTEGER DEFAULT 4;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_x INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_width_percent INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+
+        # 平滑迁移 projects AI 纠错状态字段
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN last_engine_used TEXT DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN corrections_summary_json TEXT DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN correction_latency_ms REAL DEFAULT NULL;")
+        except Exception:
+            pass
+        conn.commit()
+
+@contextmanager
+def get_db_connection(db_path: Optional[Path] = None) -> Generator[sqlite3.Connection, None, None]:
+    """获取配置好 WAL 模式与外键约束的 SQLite 连接"""
+    target_path = db_path or DB_PATH
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(target_path), timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+
+    # 防御性自愈：如果数据库未建表（如单测独立调用场景），自动应用 schema
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='materials';")
+    if not cursor.fetchone():
+        if SCHEMA_PATH.exists():
+            with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+                conn.executescript(f.read())
+            conn.commit()
+    else:
+        # 兼容旧库补全 strategies 新字段（静态字面量 DDL）
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_size TEXT NOT NULL DEFAULT 'medium';")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_y INTEGER NOT NULL DEFAULT 6;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_x INTEGER NOT NULL DEFAULT 50;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_size TEXT NOT NULL DEFAULT 'medium';")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_y INTEGER DEFAULT 4;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_x INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_size INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN banner_width_percent INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
+        except Exception:
+            pass
+        conn.commit()
+    cursor.close()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

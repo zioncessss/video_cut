@@ -115,6 +115,7 @@ class CodexHarnessBridge(BaseHarnessBridge):
             "-o", temp_file_path
         ]
 
+        active_model = (model_override or config.get_codex_configured_model() or config.LLM_MODEL or "glm-5.3-flash").strip()
         if active_model:
             cmd.extend(["-m", active_model])
 
@@ -365,6 +366,7 @@ class CodexHarnessBridge(BaseHarnessBridge):
 
                     # 安全回填进完整字幕数据结构，完全保留原始精确物理时间戳；
                     # 大模型返回后再过一遍词库确定性纠偏兜底（幂等），防止模型漏纠或改错
+                    from app.native_engine.keyword_matcher import build_highlight_words
                     final_subtitles = []
                     for orig in request.raw_subtitles:
                         seg = dict(orig)
@@ -374,11 +376,14 @@ class CodexHarnessBridge(BaseHarnessBridge):
                         else:
                             seg["corrected_text"] = seg.get("corrected_text") or seg.get("raw_text", "")
                         seg["corrected_text"], _ = apply_glossary_corrections(str(seg["corrected_text"]))
-                        
+
+                        ai_words = hl_map.get(sid) if isinstance(hl_map.get(sid), list) else []
                         if sid in hl_map and isinstance(hl_map[sid], list):
                             existing_kw = seg.get("matched_keywords", []) or []
                             combined_kw = existing_kw + hl_map[sid]
                             seg["matched_keywords"] = list(dict.fromkeys(combined_kw))
+                        # 三源高亮：词库命中（glossary 优先）∪ AI 判定（ai），幂等去重
+                        seg["highlight_words"] = build_highlight_words(str(seg["corrected_text"]), ai_words)
                         final_subtitles.append(seg)
 
                     return HarnessCorrectionResponse(

@@ -198,6 +198,35 @@ export interface EditingStrategy {
   watermark_position_x?: number; // 水平百分比 2~98
   watermark_position_y?: number; // 垂直百分比 2~98
   broll_pacing: 'fast' | 'standard' | 'talking_only';
+  transition_style?: 'cut' | 'fade'; // 转场风格：硬切 / 叠化(时长取各句 scene_decision)
+}
+
+export interface HighlightWord {
+  word: string;
+  source: 'glossary' | 'ai' | 'manual';
+}
+
+export interface SceneDecision {
+  part: 'hook' | 'body' | 'cta';
+  broll_category: 'venue' | 'experience' | 'lesson' | null;
+  broll_duration: number;
+  transition_seconds: number;
+  material_id: string | null;
+  reason: string;
+}
+
+export interface SubtitleSegment {
+  id: string;
+  start_time: number;
+  end_time: number;
+  raw_text: string;
+  corrected_text: string;
+  matched_category?: 'venue' | 'experience' | 'medical' | 'lesson' | null;
+  matched_keywords?: string[];
+  highlight_words?: HighlightWord[];
+  scene_decision?: SceneDecision | null;
+  broll_material_id?: string | null;
+  is_manual_edited?: boolean;
 }
 
 export const updateProjectStrategy = async (

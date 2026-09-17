@@ -135,8 +135,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end = format_timestamp_ass(sub.get("end_time", 0.0))
         text = sub.get("corrected_text") or sub.get("raw_text") or ""
         
-        # 提取当前片段要高亮的关键词列表
-        matched = list(sub.get("matched_keywords", [])) + list(custom_words)
+        # 提取当前片段要高亮的关键词列表：优先三源 highlight_words（glossary/ai/manual），
+        # 旧数据缺失该字段时回退 matched_keywords 兼容
+        hl_items = sub.get("highlight_words")
+        if hl_items:
+            matched = [w.get("word", "") for w in hl_items if isinstance(w, dict) and w.get("word")]
+        else:
+            matched = list(sub.get("matched_keywords", []))
+        matched = matched + list(custom_words)
         matched = [w.strip() for w in matched if w.strip()]
 
         styled_text = text

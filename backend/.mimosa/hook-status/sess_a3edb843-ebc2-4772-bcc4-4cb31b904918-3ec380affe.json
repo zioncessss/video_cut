@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-17T05:30:48.966Z",
+  "sessionId": "sess_a3edb843-ebc2-4772-bcc4-4cb31b904918",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "D:\\project\\video_cut\\tests\\test_api_engine.py",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 8,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

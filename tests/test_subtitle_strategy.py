@@ -129,3 +129,37 @@ def test_generate_ass_file_2d_position_and_flexible_font(tmp_path):
     assert "Microsoft YaHei,68," in content
     # 验证 2D 坐标 (1080 * 0.42 = 453, 1920 * 0.70 = 1344)
     assert r"\an5\pos(453,1344)" in content
+
+def test_generate_ass_reads_highlight_words_source(tmp_path):
+    """高亮渲染数据源切换：优先 highlight_words（三源结构），缺失时回退 matched_keywords。
+    断言的是行内高亮标记（{\\c&H..&\\b1\\fscx110\\fscy110}词）而非词本身。"""
+    base_text = "从今年九月份开始湖州驾校迎来大改革"
+    strat = {"subtitle_theme": "glow_gold", "enable_highlight": True, "highlight_color": "#FACC15", "highlight_scale": True}
+    hl_marker = r"{\c&H0015CCFA&\b1\fscx110\fscy110}"
+
+    # 1) highlight_words 存在：不在 matched_keywords 里的 AI/手动词也被高亮
+    subs_new = [{
+        "start_time": 0.0, "end_time": 3.0,
+        "raw_text": base_text, "corrected_text": base_text,
+        "matched_keywords": ["湖州驾校"],
+        "highlight_words": [
+            {"word": "九月份", "source": "ai"},
+            {"word": "大改革", "source": "manual"},
+            {"word": "湖州驾校", "source": "glossary"}
+        ]
+    }]
+    out = generate_ass_file(subs_new, tmp_path / "new.ass", strategy=strat)
+    content = out.read_text(encoding="utf-8")
+    for w in ("九月份", "大改革", "湖州驾校"):
+        assert hl_marker + w in content, f"highlight_words 来源的词应被行内高亮: {w}"
+
+    # 2) highlight_words 缺失：回退 matched_keywords 兼容旧数据
+    subs_old = [{
+        "start_time": 0.0, "end_time": 3.0,
+        "raw_text": base_text, "corrected_text": base_text,
+        "matched_keywords": ["湖州驾校"]
+    }]
+    out2 = generate_ass_file(subs_old, tmp_path / "old.ass", strategy=strat)
+    content2 = out2.read_text(encoding="utf-8")
+    assert hl_marker + "湖州驾校" in content2
+    assert hl_marker + "九月份" not in content2, "回退模式下 AI 词不应被高亮"
