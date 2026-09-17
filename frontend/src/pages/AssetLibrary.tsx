@@ -46,6 +46,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
   const [batchItems, setBatchItems] = useState<BatchJobItem[]>([]);
   const [batchStatus, setBatchStatus] = useState<string>('');
   const [batchSubmitting, setBatchSubmitting] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string>('');
 
   // 当预览素材变更时重置播放状态
   useEffect(() => {
@@ -152,10 +153,18 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
 
   const loadData = async (cat: string) => {
     setLoading(true);
+    setLoadError('');
     try {
       const data = await fetchMaterials(cat);
       setMaterials(data);
-    } catch (err) {
+    } catch (err: any) {
+      // 请求失败必须清空残留列表并明示错误：严禁展示上一分类的数据造成"共用库"假象
+      setMaterials([]);
+      const detail = err?.response?.data?.detail;
+      const hint = Array.isArray(detail)
+        ? `后端不认识分类「${cat}」，请重启应用以加载最新版本`
+        : (typeof detail === 'string' ? detail : '');
+      setLoadError(hint || `【${currentCategoryInfo?.label || cat}】素材列表加载失败，请确认后端服务已更新并重启`);
       console.error('Failed to load materials:', err);
     } finally {
       setLoading(false);
@@ -163,6 +172,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
   };
 
   useEffect(() => {
+    setMaterials([]);
     loadData(activeTab);
   }, [activeTab]);
 
@@ -476,6 +486,11 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
 
         {loading ? (
           <div className="py-12 text-center text-gray-400 text-sm">加载中...</div>
+        ) : loadError ? (
+          <div className="py-10 text-center border border-red-200 bg-red-50/70 rounded-2xl">
+            <AlertCircle className="w-6 h-6 text-red-500 mx-auto mb-2" />
+            <p className="text-sm text-red-700 font-medium">{loadError}</p>
+          </div>
         ) : materials.length === 0 ? (
           <div className="py-16 text-center text-gray-400 border border-gray-100 rounded-2xl bg-white">
             该分类下暂无视频素材，请将视频拖入上方区域上传

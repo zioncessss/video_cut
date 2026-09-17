@@ -178,12 +178,22 @@ class StorageService:
         self._save_meta()
 
         if m:
-            full_path = STORAGE_DIR.parent / m.filepath
-            if full_path.exists():
-                try:
-                    full_path.unlink()
-                except Exception:
-                    pass
+            # 物理文件仅在无其他素材记录引用同一文件时才删除（防御历史重复登记导致另一分类"消失"）
+            still_referenced = any(
+                x.filepath == m.filepath
+                for x in list(self._cache.values())
+                if x.id != material_id
+            ) or any(
+                x.filepath == m.filepath and x.id != material_id
+                for x in self.repo.list_all()
+            )
+            if not still_referenced:
+                full_path = STORAGE_DIR.parent / m.filepath
+                if full_path.exists():
+                    try:
+                        full_path.unlink()
+                    except Exception:
+                        pass
 
         # 级联清理关联剪辑工程持久化文件与内存缓存
         try:
