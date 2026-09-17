@@ -61,3 +61,6 @@ storage/legacy/
 out/
 dist/
 test_banner.png
+
+# Mimosa 安全扫描工具本地状态
+.mimosa/
