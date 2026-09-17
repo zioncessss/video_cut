@@ -72,7 +72,9 @@ def test_editing_strategy_model():
 
     project = CutProject(title="测试工程", talking_head_id="th-123")
     assert project.strategy.subtitle_theme == "glow_gold"
-    assert project.strategy.enable_top_banner is True
+    # 005 起：新建工程默认关闭横幅与水印（成片评审后可手动开启）
+    assert project.strategy.enable_top_banner is False
+    assert project.strategy.enable_watermark is False
     assert project.strategy.banner_size == "medium"
 
 def test_banner_and_watermark_custom_strategy():

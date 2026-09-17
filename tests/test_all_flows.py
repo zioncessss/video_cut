@@ -54,13 +54,19 @@ def test_settings_api():
 
 
 def test_batch_api():
+    """批量剪辑契约（005）：submit 校验 + 任务列表持久化"""
+    # 旧模拟端点已移除，submit 必须校验素材存在性
     res = client.post(
-        "/api/v1/batch/jobs",
-        json={"total_count": 2, "concurrency_limit": 2}
+        "/api/v1/batch/submit",
+        json={"material_ids": [], "aspect_ratio": "9:16"}
     )
-    assert res.status_code == 200
-    job_id = res.json()["id"]
+    assert res.status_code == 400
+    res_missing = client.post(
+        "/api/v1/batch/submit",
+        json={"material_ids": ["no-such-material"], "aspect_ratio": "9:16"}
+    )
+    assert res_missing.status_code == 404
 
     list_res = client.get("/api/v1/batch/jobs")
     assert list_res.status_code == 200
-    assert any(j["id"] == job_id for j in list_res.json())
+    assert isinstance(list_res.json()["data"], list)

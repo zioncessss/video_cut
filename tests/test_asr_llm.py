@@ -17,10 +17,10 @@ def test_keyword_matcher():
     assert res1["matched_category"] == "venue"
     assert "训练场" in res1["matched_keywords"] or "五万平" in res1["matched_keywords"]
 
-    # 测试体检关键词匹配
+    # 测试体验（原体检）关键词匹配：005 起 medical 分类更名为 experience
     seg2 = {"raw_text": "报名后可以直接在一站式体检大厅体检", "corrected_text": "报名后可以直接在一站式体检大厅体检"}
     res2 = match_keywords_in_segment(seg2["corrected_text"])
-    assert res2["matched_category"] == "medical"
+    assert res2["matched_category"] == "experience"
     assert "体检" in res2["matched_keywords"]
 
     # 测试练车/教练关键词匹配

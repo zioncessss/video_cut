@@ -26,7 +26,7 @@ def test_editor_analyze_and_render_flow(tmp_path):
     # 2. 调用 /analyze-and-cut
     res = client.post(
         "/api/v1/projects/analyze-and-cut",
-        json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": True}
+        json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": True, "enable_scene_decision": False}
     )
     assert res.status_code == 200
     proj_data = res.json()
@@ -74,16 +74,31 @@ def test_editor_correct_endpoint(monkeypatch):
     assert len(data["data"]["subtitles"]) == 1
     assert "科目二" in data["data"]["subtitles"][0]["corrected_text"]
 
-def test_instruction_apply_endpoint(tmp_path):
+def test_instruction_apply_endpoint(tmp_path, monkeypatch):
     fake_th_file = tmp_path / "th_inst.mp4"
     fake_th_file.write_bytes(b"stream")
     th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_inst.mp4", fake_th_file)
 
     res = client.post(
         "/api/v1/projects/analyze-and-cut",
-        json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": True}
+        json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": True, "enable_scene_decision": False}
     )
     project_id = res.json()["id"]
+
+    # 测试边界（AGENTS.md）：Tier B 指令理解必须 mock，禁止真实 codex/zcode 联网调用
+    from app.harness_bridge.base import HarnessInstructionRequest, HarnessPlanResponse
+
+    class FakeTierB:
+        async def apply_natural_instruction(self, req: HarnessInstructionRequest):
+            return HarnessPlanResponse(
+                explanation="已将第1句文案润色为热烈开场（mock）",
+                updated_subtitles=None,
+                updated_brolls=None,
+                harness_engine_used="mock-tier-b",
+                latency_ms=1.0
+            )
+
+    monkeypatch.setattr("app.api.instruction.get_tier_b_harness", lambda: FakeTierB())
 
     inst_res = client.post(
         "/api/v1/instruction/apply",
@@ -110,7 +125,7 @@ def test_project_storage_and_material_binding(tmp_path):
         # 2. 执行初剪与 ASR 生成工程
         cut_res = client.post(
             "/api/v1/projects/analyze-and-cut",
-            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False}
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
         )
         assert cut_res.status_code == 200
         proj_data = cut_res.json()
@@ -127,7 +142,7 @@ def test_project_storage_and_material_binding(tmp_path):
         # 4. 非强制重算时，直接返回已有工程
         cut_res_cached = client.post(
             "/api/v1/projects/analyze-and-cut",
-            json={"talking_head_id": th.id, "force_retranscribe": False}
+            json={"talking_head_id": th.id, "force_retranscribe": False, "enable_scene_decision": False}
         )
         assert cut_res_cached.status_code == 200
         assert cut_res_cached.json()["id"] == proj_data["id"]
@@ -146,7 +161,7 @@ def test_versioned_render_replacement_and_progress(tmp_path):
         # 1. 触发初剪并验证进度接口
         cut_res = client.post(
             "/api/v1/projects/analyze-and-cut",
-            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False}
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
         )
         assert cut_res.status_code == 200
         proj = cut_res.json()

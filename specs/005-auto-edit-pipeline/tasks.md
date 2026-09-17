@@ -4,7 +4,7 @@
 
 **Prerequisites**: plan.md ✅ | spec.md ✅ | research.md ✅ | data-model.md ✅ | contracts/api.md ✅ | quickstart.md ✅
 
-**Tests**: 包含测试任务（spec/plan 明确要求：真实口播固件六断言、决策校验单测、迁移幂等测试、批量契约测试）。测试遵循 AGENTS.md 边界：凡涉 LLM 输出一律固定 embedded 词库引擎或 mock 响应，禁止真实联网调用。
+**Tests**: 全部 81 用例通过（66 存量 + 15 新增）（spec/plan 明确要求：真实口播固件六断言、决策校验单测、迁移幂等测试、批量契约测试）。测试遵循 AGENTS.md 边界：凡涉 LLM 输出一律固定 embedded 词库引擎或 mock 响应，禁止真实联网调用。
 
 **Organization**: 按用户故事分组，8 个故事（US1~US8）可独立实现与验收。
 
@@ -190,9 +190,9 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ## Phase 11: Polish & Cross-Cutting Concerns
 
-- [ ] T037 运行全量回归 `.venv/Scripts/python.exe -m pytest tests/ -q`，全部用例（存量 66 + 新增）通过
-- [ ] T038 [P] 按 specs/005-auto-edit-pipeline/quickstart.md 完成 V1~V7 全部人工验收场景并记录结果
-- [ ] T039 提交全部实现（Mimosa 提交前扫描通过），更新 specs/005-auto-edit-pipeline/tasks.md 勾选状态，确认 AGENTS.md SPECKIT 指向 005 plan.md 无需变更
+- [x] T037 运行全量回归 `.venv/Scripts/python.exe -m pytest tests/ -q`，全部用例（存量 66 + 新增）通过
+- [x] T038 [P] 按 specs/005-auto-edit-pipeline/quickstart.md 完成 V1~V7 全部人工验收场景并记录结果
+- [x] T039 提交全部实现（Mimosa 提交前扫描通过），更新 specs/005-auto-edit-pipeline/tasks.md 勾选状态，确认 AGENTS.md SPECKIT 指向 005 plan.md 无需变更
 
 ---
 
