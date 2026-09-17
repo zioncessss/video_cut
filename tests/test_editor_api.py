@@ -55,7 +55,12 @@ def test_editor_analyze_and_render_flow(tmp_path):
     storage_service.delete_material(th.id)
     storage_service.delete_material(venue.id)
 
-def test_editor_correct_endpoint():
+def test_editor_correct_endpoint(monkeypatch):
+    # 端点测试固定走 embedded 词库引擎：确定性断言，不依赖真实 codex CLI 的 LLM 输出波动
+    from app.harness_bridge.embedded import EmbeddedHarnessBridge
+    import app.api.editor as editor_module
+    monkeypatch.setattr(editor_module, "get_active_harness", lambda: EmbeddedHarnessBridge())
+
     subs = [
         {"id": "sub-1", "start_time": 0.0, "end_time": 2.5, "raw_text": "练科尔到库技巧", "corrected_text": "练科尔到库技巧"}
     ]
@@ -130,4 +135,63 @@ def test_project_storage_and_material_binding(tmp_path):
     finally:
         project_storage_service.delete_project_by_material(th.id)
         storage_service.delete_material(th.id)
+
+def test_versioned_render_replacement_and_progress(tmp_path):
+    from app.native_engine.project_storage import project_storage_service
+    fake_th = tmp_path / "th_versioned.mp4"
+    fake_th.write_bytes(b"stream_versioned")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_versioned.mp4", fake_th)
+
+    try:
+        # 1. 触发初剪并验证进度接口
+        cut_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False}
+        )
+        assert cut_res.status_code == 200
+        proj = cut_res.json()
+        project_id = proj["id"]
+
+        # 2. 查询进度
+        prog_res = client.get(f"/api/v1/projects/{project_id}/progress")
+        assert prog_res.status_code == 200
+        prog = prog_res.json()
+        assert prog["percent"] == 100
+        assert prog["stage"] == "completed"
+
+        # 3. 第一次渲染
+        render1 = client.post(f"/api/v1/projects/{project_id}/render")
+        assert render1.status_code == 200
+        r1_data = render1.json()
+        file1 = r1_data["output_filename"]
+        assert file1.startswith(f"output_{project_id}")
+        assert r1_data["output_file_size_mb"] >= 0
+
+        # 4. 第二次修改字幕并重新渲染，验证新生成产物替代前序版本
+        subtitles = r1_data["subtitles"]
+        subtitles[0]["corrected_text"] = "第二次编辑字幕"
+        client.put(f"/api/v1/projects/{project_id}/subtitles", json={"subtitles": subtitles})
+
+        import time
+        time.sleep(1.05) # 确保时间戳发生单调递增跳变
+
+        render2 = client.post(f"/api/v1/projects/{project_id}/render")
+        assert render2.status_code == 200
+        r2_data = render2.json()
+        file2 = r2_data["output_filename"]
+        assert file2 != file1
+        assert file2.startswith(f"output_{project_id}")
+
+        # 5. 测试 open-folder 接口
+        folder_res = client.post(
+            "/api/v1/projects/open-folder",
+            json={"path": r2_data["output_video_path"]}
+        )
+        assert folder_res.status_code == 200
+        assert folder_res.json()["code"] == 0
+
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+
 

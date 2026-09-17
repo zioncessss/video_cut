@@ -1,6 +1,7 @@
 {
-  "active_harness": "codex",
-  "llm_api_key": "",
-  "llm_base_url": "http://127.0.0.1:15721/v1",
-  "llm_model": "glm-5.3-flash"
+  "active_harness": "api",
+  "llm_api_key": "aee37d953164453ca31fd77f07687ff9.RPXUCkROaLo3Oaey",
+  "llm_base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+  "llm_model": "glm-5.3-flash",
+  "llm_protocol": "openai"
 }

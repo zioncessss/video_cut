@@ -4,10 +4,11 @@ import { VideoEditor } from './pages/VideoEditor';
 import { BatchCut } from './pages/BatchCut';
 import { Settings } from './pages/Settings';
 import { HarnessChatDrawer } from './components/HarnessChatDrawer';
-import { Folder, Film, Layers, Settings as SettingsIcon, Sparkles } from 'lucide-react';
+import { Folder, Film, Layers, Settings as SettingsIcon, Sparkles, Minus, Square, X } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
+  const [selectedTalkingHeadId, setSelectedTalkingHeadId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [strategyPlan, setStrategyPlan] = useState<{
     explanation: string;
@@ -45,7 +46,7 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-gray-900 flex flex-col font-sans antialiased selection:bg-blue-100 selection:text-blue-900">
+    <div className="h-screen bg-[#F8FAFC] text-gray-900 flex flex-col font-sans antialiased selection:bg-blue-100 selection:text-blue-900 overflow-hidden">
       {/* 顶部现代化浅色导航栏 */}
       <header className="h-16 bg-white/80 backdrop-blur-md border-b border-gray-200/80 sticky top-0 z-50 px-6 flex items-center justify-between">
         <div className="flex items-center space-x-3">
@@ -80,17 +81,56 @@ export const App: React.FC = () => {
           })}
         </nav>
 
-        <div className="flex items-center space-x-2 text-xs text-gray-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="font-mono text-[11px] text-gray-500">Engine Ready</span>
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2 text-xs text-gray-400 mr-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="font-mono text-[11px] text-gray-500">
+              {window.electronAPI ? 'Desktop Engine Ready' : 'Web Engine Ready'}
+            </span>
+          </div>
+
+          {/* Electron 原生窗口控制按钮组 */}
+          {window.electronAPI && (
+            <div className="flex items-center space-x-1 border-l border-gray-200 pl-3">
+              <button
+                onClick={() => window.electronAPI?.minimizeWindow()}
+                title="最小化"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => window.electronAPI?.maximizeWindow()}
+                title="最大化 / 还原"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+              >
+                <Square className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => window.electronAPI?.closeWindow()}
+                title="关闭"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
       {/* 主体页面渲染 */}
-      <main className="flex-1 overflow-auto">
-        {currentTab === 'library' && <AssetLibrary />}
+      <main className={`flex-1 ${currentTab === 'editor' ? 'overflow-hidden' : 'overflow-auto'}`}>
+        {currentTab === 'library' && (
+          <AssetLibrary
+            onSelectForEditor={(matId) => {
+              setSelectedTalkingHeadId(matId);
+              setCurrentTab('editor');
+            }}
+          />
+        )}
         {currentTab === 'editor' && (
           <VideoEditor
+            initialSelectedTalkingHeadId={selectedTalkingHeadId}
             onProjectLoaded={(pid) => setActiveProjectId(pid)}
             externalStrategyPlan={strategyPlan}
           />

@@ -1,13 +1,24 @@
 {
-  "id": "1befb52f-7b9f-49bb-bcbb-af725439ac36",
+  "id": "0a1f79c8-070d-41f9-9bae-a671dc956e30",
   "title": "剪辑_4ddcb473b604937f6ce7ac36cb897a31",
   "talking_head_id": "f9122796-5629-49a3-b22a-2e52006dc393",
   "aspect_ratio": "9:16",
   "subtitles": [
     {
-      "id": "e03155a6-ab19-4f24-8c8e-fcacf03ddb89",
-      "start_time": 0.0,
-      "end_time": 1.903,
+      "id": "a1dcd010-4fae-4848-a2f4-7d20cd6bc001",
+      "start_time": 0.54,
+      "end_time": 3.46,
+      "raw_text": "从今年九月份开始福州价效",
+      "corrected_text": "从今年九月份开始湖州驾校",
+      "matched_category": null,
+      "matched_keywords": [],
+      "broll_material_id": null,
+      "is_manual_edited": false
+    },
+    {
+      "id": "85021021-ce0a-4a8e-8f7c-ef575cb8bc5e",
+      "start_time": 3.68,
+      "end_time": 4.98,
       "raw_text": "从今年九月份开始",
       "corrected_text": "从今年九月份开始",
       "matched_category": null,
@@ -16,42 +27,20 @@
       "is_manual_edited": false
     },
     {
-      "id": "c54fbcbe-6f53-4d6a-a4ba-645c32474343",
-      "start_time": 1.903,
-      "end_time": 2.854,
-      "raw_text": "福州价效",
-      "corrected_text": "福州价效",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "034bb11f-f759-445a-b4c0-b763e8d31d41",
-      "start_time": 2.854,
-      "end_time": 4.757,
-      "raw_text": "从今年九月份开始",
-      "corrected_text": "从今年九月份开始",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "64c84fb0-10c3-4d04-91c6-2a5958a97008",
-      "start_time": 4.757,
-      "end_time": 6.898,
+      "id": "7628ad5c-5318-4c07-8893-6ca1ff52a5e3",
+      "start_time": 5.2,
+      "end_time": 6.72,
       "raw_text": "福州价效迎来大改革",
-      "corrected_text": "福州价效迎来大改革",
+      "corrected_text": "湖州驾校迎来大改革",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "0e17319b-9e84-4184-9006-d885c2522be9",
-      "start_time": 6.898,
-      "end_time": 9.514,
+      "id": "b9158ec1-0250-4253-b5bb-ffe8bc978c96",
+      "start_time": 6.98,
+      "end_time": 9.08,
       "raw_text": "我们现在学车通通一口价",
       "corrected_text": "我们现在学车通通一口价",
       "matched_category": null,
@@ -60,302 +49,247 @@
       "is_manual_edited": false
     },
     {
-      "id": "001cfb94-90d0-4386-ada7-748c5f1575c0",
-      "start_time": 9.514,
-      "end_time": 10.704,
+      "id": "b68d9a9c-d8d4-4a9f-8755-8392a9b893fe",
+      "start_time": 9.36,
+      "end_time": 10.38,
       "raw_text": "不收链车费",
-      "corrected_text": "不收链车费",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
+      "corrected_text": "不收练车费",
+      "matched_category": "lesson",
+      "matched_keywords": [
+        "练车"
+      ],
+      "broll_material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
       "is_manual_edited": false
     },
     {
-      "id": "2c365076-6655-4307-9526-9b7a7d9a849a",
-      "start_time": 10.704,
-      "end_time": 11.893,
+      "id": "246847c5-eef7-46c8-bf3d-c256b498bbf9",
+      "start_time": 10.68,
+      "end_time": 11.72,
       "raw_text": "不收补讯费",
-      "corrected_text": "不收补讯费",
+      "corrected_text": "不收补训费",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "bd767611-86de-413e-ac2c-0e0ae0a8106f",
-      "start_time": 11.893,
-      "end_time": 13.082,
-      "raw_text": "不收燃油费",
-      "corrected_text": "不收燃油费",
+      "id": "373cc0f7-c10c-4dae-aac4-32cde36d1c9c",
+      "start_time": 12.08,
+      "end_time": 14.26,
+      "raw_text": "不收燃油费不收模拟费",
+      "corrected_text": "不收燃油费不收模拟费",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "6473f27f-2de3-4f06-8602-15ffa824991a",
-      "start_time": 13.082,
-      "end_time": 14.271,
-      "raw_text": "不收模拟费",
-      "corrected_text": "不收模拟费",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "2bfd21ad-6202-4a3f-b3f1-a9936f2f7169",
-      "start_time": 14.271,
-      "end_time": 15.699,
+      "id": "978e934e-003e-4459-9ea0-822268cad9ff",
+      "start_time": 14.58,
+      "end_time": 15.8,
       "raw_text": "从刻一到刻四",
-      "corrected_text": "从刻一到刻四",
+      "corrected_text": "从科一到科四",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "3469e398-c4a9-49b7-997e-43928cdd8249",
-      "start_time": 15.699,
-      "end_time": 18.315,
+      "id": "64a4eac0-1749-47ef-9076-6b4f8287ecc7",
+      "start_time": 15.98,
+      "end_time": 17.96,
       "raw_text": "我们都有老师手把手教学",
       "corrected_text": "我们都有老师手把手教学",
-      "matched_category": null,
+      "matched_category": "lesson",
       "matched_keywords": [
+        "教练",
         "手把手"
       ],
-      "broll_material_id": null,
+      "broll_material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
       "is_manual_edited": false
     },
     {
-      "id": "9861c9d1-e286-47b7-980e-0caef82ca19a",
-      "start_time": 18.315,
-      "end_time": 21.169,
+      "id": "344b8a94-2923-40c3-85f3-c10d52a3032f",
+      "start_time": 18.24,
+      "end_time": 20.44,
       "raw_text": "如果想知道我们价效在哪里",
-      "corrected_text": "如果想知道我们价效在哪里",
+      "corrected_text": "如果想知道我们驾校在哪里",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "4a70622b-dc5a-4e92-87f8-142d029ced0f",
-      "start_time": 21.169,
-      "end_time": 22.596,
+      "id": "5653db24-b53d-4c47-884f-374c58607cc5",
+      "start_time": 20.66,
+      "end_time": 22.34,
+      "raw_text": "眼红心加关注我来",
+      "corrected_text": "点红心加关注，我来",
+      "matched_category": null,
+      "matched_keywords": [],
+      "broll_material_id": null,
+      "is_manual_edited": false
+    },
+    {
+      "id": "17e69f91-7fbe-4d89-81ae-8623d8f6a42c",
+      "start_time": 22.84,
+      "end_time": 24.7,
       "raw_text": "眼红心加关注",
-      "corrected_text": "眼红心加关注",
+      "corrected_text": "点红心加关注",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     },
     {
-      "id": "d47bb795-94aa-4ca7-a892-3761520811b0",
-      "start_time": 22.596,
-      "end_time": 23.072,
-      "raw_text": "我来",
-      "corrected_text": "我来",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "18343851-cc16-44f8-97aa-9fe5535fed81",
-      "start_time": 23.072,
-      "end_time": 24.499,
-      "raw_text": "眼红心加关注",
-      "corrected_text": "眼红心加关注",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "a8a84726-e601-41fe-90ae-2184e815c64c",
-      "start_time": 24.499,
-      "end_time": 25.213,
-      "raw_text": "评论区",
-      "corrected_text": "评论区",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "02b44a8a-1c5e-44d5-8855-2495fe4336ce",
-      "start_time": 25.213,
-      "end_time": 25.689,
-      "raw_text": "找我",
-      "corrected_text": "找我",
-      "matched_category": null,
-      "matched_keywords": [],
-      "broll_material_id": null,
-      "is_manual_edited": false
-    },
-    {
-      "id": "804c8cb6-3a4d-4869-aa41-5f67022d01f5",
-      "start_time": 25.689,
-      "end_time": 26.64,
-      "raw_text": "聊一下吧",
-      "corrected_text": "聊一下吧",
+      "id": "c3858560-fe34-4e4d-a1fe-4a27ba8e1075",
+      "start_time": 24.88,
+      "end_time": 26.32,
+      "raw_text": "评论区找我聊一下吧",
+      "corrected_text": "评论区找我聊一下吧",
       "matched_category": null,
       "matched_keywords": [],
       "broll_material_id": null,
       "is_manual_edited": false
     }
   ],
-  "broll_replacements": [],
+  "broll_replacements": [
+    {
+      "id": "3f5fc629-13fb-404a-a477-172f1362421e",
+      "start_time": 9.36,
+      "end_time": 10.38,
+      "material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
+      "material_category": "lesson",
+      "playback_mode": "fit"
+    },
+    {
+      "id": "110cde34-b215-434a-9985-23e9da775ecb",
+      "start_time": 15.98,
+      "end_time": 17.96,
+      "material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
+      "material_category": "lesson",
+      "playback_mode": "fit"
+    }
+  ],
   "strategy": {
     "subtitle_theme": "glow_gold",
     "font_size": "medium",
+    "subtitle_font_size": null,
     "show_subtitles": true,
     "subtitle_position_y": 82,
     "subtitle_position_x": 50,
+    "subtitle_width_percent": 96,
     "enable_highlight": true,
-    "highlight_color": "#FACC15",
+    "highlight_color": "#10B981",
     "highlight_scale": true,
     "custom_highlight_words": [],
     "enable_top_banner": true,
     "banner_main_title": "科目二一把过秘籍",
     "banner_sub_title": "教练手把手教学",
     "banner_style": "capsule",
+    "banner_size": "medium",
+    "banner_font_size": 55,
+    "banner_width_percent": null,
+    "banner_position_x": 50,
+    "banner_position_y": 9,
     "enable_watermark": true,
     "watermark_text": "@顺达驾校官方教学",
     "watermark_position": "top_right",
-    "watermark_opacity": 0.4,
+    "watermark_size": "medium",
+    "watermark_font_size": 34,
+    "watermark_position_x": null,
+    "watermark_position_y": null,
+    "watermark_opacity": 0.9,
     "broll_pacing": "standard"
   },
   "status": "draft",
   "output_video_path": null,
+  "output_absolute_path": null,
+  "output_filename": null,
+  "output_file_size_mb": null,
   "raw_asr_segments": [
     {
-      "start_time": 0.0,
-      "end_time": 1.903,
+      "start_time": 0.54,
+      "end_time": 3.46,
+      "raw_text": "从今年九月份开始福州价效",
+      "corrected_text": "从今年九月份开始福州价效"
+    },
+    {
+      "start_time": 3.68,
+      "end_time": 4.98,
       "raw_text": "从今年九月份开始",
-      "corrected_text": "从今年九月份开始",
-      "id": "seg_0"
+      "corrected_text": "从今年九月份开始"
     },
     {
-      "start_time": 1.903,
-      "end_time": 2.854,
-      "raw_text": "福州价效",
-      "corrected_text": "福州价效",
-      "id": "seg_1"
-    },
-    {
-      "start_time": 2.854,
-      "end_time": 4.757,
-      "raw_text": "从今年九月份开始",
-      "corrected_text": "从今年九月份开始",
-      "id": "seg_2"
-    },
-    {
-      "start_time": 4.757,
-      "end_time": 6.898,
+      "start_time": 5.2,
+      "end_time": 6.72,
       "raw_text": "福州价效迎来大改革",
-      "corrected_text": "福州价效迎来大改革",
-      "id": "seg_3"
+      "corrected_text": "福州价效迎来大改革"
     },
     {
-      "start_time": 6.898,
-      "end_time": 9.514,
+      "start_time": 6.98,
+      "end_time": 9.08,
       "raw_text": "我们现在学车通通一口价",
-      "corrected_text": "我们现在学车通通一口价",
-      "id": "seg_4"
+      "corrected_text": "我们现在学车通通一口价"
     },
     {
-      "start_time": 9.514,
-      "end_time": 10.704,
+      "start_time": 9.36,
+      "end_time": 10.38,
       "raw_text": "不收链车费",
-      "corrected_text": "不收链车费",
-      "id": "seg_5"
+      "corrected_text": "不收链车费"
     },
     {
-      "start_time": 10.704,
-      "end_time": 11.893,
+      "start_time": 10.68,
+      "end_time": 11.72,
       "raw_text": "不收补讯费",
-      "corrected_text": "不收补讯费",
-      "id": "seg_6"
+      "corrected_text": "不收补讯费"
     },
     {
-      "start_time": 11.893,
-      "end_time": 13.082,
-      "raw_text": "不收燃油费",
-      "corrected_text": "不收燃油费",
-      "id": "seg_7"
+      "start_time": 12.08,
+      "end_time": 14.26,
+      "raw_text": "不收燃油费不收模拟费",
+      "corrected_text": "不收燃油费不收模拟费"
     },
     {
-      "start_time": 13.082,
-      "end_time": 14.271,
-      "raw_text": "不收模拟费",
-      "corrected_text": "不收模拟费",
-      "id": "seg_8"
-    },
-    {
-      "start_time": 14.271,
-      "end_time": 15.699,
+      "start_time": 14.58,
+      "end_time": 15.8,
       "raw_text": "从刻一到刻四",
-      "corrected_text": "从刻一到刻四",
-      "id": "seg_9"
+      "corrected_text": "从刻一到刻四"
     },
     {
-      "start_time": 15.699,
-      "end_time": 18.315,
+      "start_time": 15.98,
+      "end_time": 17.96,
       "raw_text": "我们都有老师手把手教学",
-      "corrected_text": "我们都有老师手把手教学",
-      "id": "seg_10"
+      "corrected_text": "我们都有老师手把手教学"
     },
     {
-      "start_time": 18.315,
-      "end_time": 21.169,
+      "start_time": 18.24,
+      "end_time": 20.44,
       "raw_text": "如果想知道我们价效在哪里",
-      "corrected_text": "如果想知道我们价效在哪里",
-      "id": "seg_11"
+      "corrected_text": "如果想知道我们价效在哪里"
     },
     {
-      "start_time": 21.169,
-      "end_time": 22.596,
+      "start_time": 20.66,
+      "end_time": 22.34,
+      "raw_text": "眼红心加关注我来",
+      "corrected_text": "眼红心加关注我来"
+    },
+    {
+      "start_time": 22.84,
+      "end_time": 24.7,
       "raw_text": "眼红心加关注",
-      "corrected_text": "眼红心加关注",
-      "id": "seg_12"
+      "corrected_text": "眼红心加关注"
     },
     {
-      "start_time": 22.596,
-      "end_time": 23.072,
-      "raw_text": "我来",
-      "corrected_text": "我来",
-      "id": "seg_13"
-    },
-    {
-      "start_time": 23.072,
-      "end_time": 24.499,
-      "raw_text": "眼红心加关注",
-      "corrected_text": "眼红心加关注",
-      "id": "seg_14"
-    },
-    {
-      "start_time": 24.499,
-      "end_time": 25.213,
-      "raw_text": "评论区",
-      "corrected_text": "评论区",
-      "id": "seg_15"
-    },
-    {
-      "start_time": 25.213,
-      "end_time": 25.689,
-      "raw_text": "找我",
-      "corrected_text": "找我",
-      "id": "seg_16"
-    },
-    {
-      "start_time": 25.689,
-      "end_time": 26.64,
-      "raw_text": "聊一下吧",
-      "corrected_text": "聊一下吧",
-      "id": "seg_17"
+      "start_time": 24.88,
+      "end_time": 26.32,
+      "raw_text": "评论区找我聊一下吧",
+      "corrected_text": "评论区找我聊一下吧"
     }
   ],
-  "created_at": 1789533770.0604901,
-  "updated_at": 1789534870.1959872
+  "corrections_summary": null,
+  "last_engine_used": null,
+  "correction_latency_ms": null,
+  "created_at": 1789609597.4255388,
+  "updated_at": 1789631271.1238003
 }

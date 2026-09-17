@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from app.core import config
+from app.core.config import apply_glossary_corrections
 from app.harness_bridge.base import (
     BaseHarnessBridge,
     HarnessCorrectionRequest,
@@ -16,7 +17,9 @@ from app.harness_bridge.base import (
     HarnessInstructionRequest,
     HarnessPlanResponse
 )
-from app.harness_bridge.embedded import EmbeddedHarnessBridge, COMMON_DRIVING_CORRECTIONS
+from app.harness_bridge.embedded import EmbeddedHarnessBridge
+from app.harness_bridge.prompting import build_correction_prompt
+from app.harness_bridge import llm_client
 
 class CodexHarnessBridge(BaseHarnessBridge):
     """
@@ -74,40 +77,20 @@ class CodexHarnessBridge(BaseHarnessBridge):
     ) -> Tuple[bool, str, float]:
         """
         执行大模型推理：
-        1. 优先通过本地 Codex 后端代理（15721 /v1/responses 真实端点）直连调用，毫秒级响应且规避 Windows CLI 管道挂起。
-        2. 若代理不可用，回退至命令行 `codex exec`。
+        1. 优先直连 codex 本地配置（~/.codex/config.toml 的本地代理/供应商，与设置页 API 配置完全隔离）。
+        2. 直连不可用时回退至命令行 `codex exec`。
         """
-        import httpx
-        start_time = time.time()
-        provider_cfg = config.get_codex_provider_config()
-        base_url = provider_cfg.get("base_url", "http://127.0.0.1:15721/v1").rstrip("/")
-        token = provider_cfg.get("token", "PROXY_MANAGED")
-        active_model = (model_override or provider_cfg.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
-
-        # 1. 尝试直连本地后端代理 /v1/responses (wire_api="responses")
-        try:
-            url = f"{base_url}/responses"
-            payload = {
-                "model": active_model,
-                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]
-            }
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    output_text = ""
-                    for item in data.get("output", []):
-                        if item.get("type") == "message":
-                            for c in item.get("content", []):
-                                if c.get("type") == "output_text":
-                                    output_text += c.get("text", "")
-                    if output_text.strip():
-                        latency_ms = (time.time() - start_time) * 1000
-                        return True, output_text.strip(), latency_ms
-        except Exception:
-            pass
+        # 1. 共享直连传输层，但提供方强制绑定 codex 本地配置，不读设置页
+        success, content, latency_ms = await llm_client.chat_completion(
+            prompt, timeout=timeout, model_override=model_override,
+            provider=llm_client.codex_provider()
+        )
+        if success:
+            return True, content, latency_ms
+        print(f"[CodexBridge] codex 本地配置直连未成功，回退 codex CLI: {content[:160]}")
 
         # 2. 回退到 Codex CLI 进程执行
+        start_time = time.time()
         if not await self.is_available():
             return False, "codex CLI not found in system PATH", 0.0
 
@@ -207,7 +190,7 @@ class CodexHarnessBridge(BaseHarnessBridge):
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
                 "stream": True
             }
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 async with client.stream("POST", url, json=payload, headers=headers, timeout=50.0) as resp:
                     if resp.status_code == 200:
                         async for line in resp.aiter_lines():
@@ -348,32 +331,16 @@ class CodexHarnessBridge(BaseHarnessBridge):
             fallback_res.harness_engine_used = "codex (fallback embedded: cli not found)"
             return fallback_res
 
-        # 组装 Prompt
-        glossary_info = {
-            "keywords": config.DRIVING_SCHOOL_KEYWORDS,
-            "common_corrections": COMMON_DRIVING_CORRECTIONS
-        }
-        
-        prompt = (
-            "你是一个专业的驾校短视频口播字幕纠错与重点词提炼助手。\n"
-            "任务：\n"
-            "1. 针对驾校场景，修正 ASR 语音识别出的同音错别字、不规范简称或语法错漏。\n"
-            "2. 针对短视频网感呈现，自动识别每一句中最需要视觉高亮强调的 1~2 个核心词或数字（例如：'科目二'、'一把过'、'五万平'、'十分钟'、'金牌教练'、'倒库'、'方便'等）。\n"
-            f"行业专有名词与高频纠正规则参照：{json.dumps(glossary_info, ensure_ascii=False)}\n\n"
-            "待校正的原始字幕列表：\n"
-            f"{json.dumps(request.raw_subtitles, ensure_ascii=False)}\n\n"
-            "请严格以单行或纯 JSON 格式输出，不要输出任何多余的开场白、解释或 markdown 标记。格式如下：\n"
-            "{\n"
-            '  "subtitles": [\n'
-            '    {"id": "...", "start_time": 0.0, "end_time": 3.0, "raw_text": "...", "corrected_text": "...", "highlight_keywords": ["核心词1", "核心词2"]}\n'
-            "  ],\n"
-            '  "corrections": [\n'
-            '    {"subtitle_id": "...", "original_text": "错字", "corrected_text": "正确字", "reason": "修改原因"}\n'
-            "  ]\n"
-            "}"
-        )
+        # 1. 剔除无关信息，仅提取 id 与 text，精简 Token 负载
+        clean_input = [
+            {"id": s.get("id"), "text": s.get("raw_text") or s.get("corrected_text", "")}
+            for s in request.raw_subtitles
+        ]
 
-        success, output_str, latency = await self._run_codex_cli(prompt, timeout=35.0)
+        # 2. 提示词由词库驱动（harness_bridge/prompting.py 统一构造，codex/zcode 共用）
+        prompt = build_correction_prompt(clean_input)
+
+        success, output_str, latency = await self._run_codex_cli(prompt, timeout=60.0)
         if success:
             try:
                 data = self._extract_json(output_str)
@@ -392,12 +359,30 @@ class CodexHarnessBridge(BaseHarnessBridge):
                                 changes=[{"from": str(c.get("original_text", "")), "to": str(c.get("corrected_text", "")), "reason": str(c.get("reason", "智能语义纠错"))}]
                             )
                         )
-                    # 保留或融合 AI 识别出的高亮词
-                    for seg in updated_subtitles:
-                        if "highlight_keywords" in seg and isinstance(seg["highlight_keywords"], list):
-                            seg["matched_keywords"] = seg.get("matched_keywords", []) + seg["highlight_keywords"]
+
+                    corr_text_map = {str(item.get("id")): item.get("corrected_text") for item in updated_subtitles if item.get("id")}
+                    hl_map = {str(item.get("id")): item.get("highlight_keywords", []) for item in updated_subtitles if item.get("id")}
+
+                    # 安全回填进完整字幕数据结构，完全保留原始精确物理时间戳；
+                    # 大模型返回后再过一遍词库确定性纠偏兜底（幂等），防止模型漏纠或改错
+                    final_subtitles = []
+                    for orig in request.raw_subtitles:
+                        seg = dict(orig)
+                        sid = str(seg.get("id"))
+                        if sid in corr_text_map and corr_text_map[sid]:
+                            seg["corrected_text"] = corr_text_map[sid]
+                        else:
+                            seg["corrected_text"] = seg.get("corrected_text") or seg.get("raw_text", "")
+                        seg["corrected_text"], _ = apply_glossary_corrections(str(seg["corrected_text"]))
+                        
+                        if sid in hl_map and isinstance(hl_map[sid], list):
+                            existing_kw = seg.get("matched_keywords", []) or []
+                            combined_kw = existing_kw + hl_map[sid]
+                            seg["matched_keywords"] = list(dict.fromkeys(combined_kw))
+                        final_subtitles.append(seg)
+
                     return HarnessCorrectionResponse(
-                        updated_subtitles=updated_subtitles,
+                        updated_subtitles=final_subtitles,
                         corrections_summary=corrections_summary,
                         harness_engine_used="codex",
                         latency_ms=round(latency, 1)
@@ -440,7 +425,7 @@ class CodexHarnessBridge(BaseHarnessBridge):
             "}"
         )
 
-        success, output_str, latency = await self._run_codex_cli(prompt, timeout=35.0)
+        success, output_str, latency = await self._run_codex_cli(prompt, timeout=60.0)
         if success:
             try:
                 data = self._extract_json(output_str)
@@ -463,5 +448,4 @@ class CodexHarnessBridge(BaseHarnessBridge):
         fallback_res.latency_ms = round(latency, 1)
         return fallback_res
 
-    async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
-        return await self._fallback.generate_batch_variations(template_project, variant_count)
+    # generate_batch_variations 已删除：全项目无消费方，继承 base 默认显式报错

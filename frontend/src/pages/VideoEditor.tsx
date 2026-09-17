@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { SubtitleList, SubtitleItem } from '../components/SubtitleList';
@@ -10,9 +10,14 @@ import {
   updateProjectStrategy,
   fetchProjectByMaterial,
   analyzeAndCutVideo,
+  renderProject,
+  openFolder,
+  fetchProjectProgress,
+  PipelineProgress,
   Material,
   EditingStrategy,
-  API_BASE
+  API_BASE,
+  getMediaUrl
 } from '../services/api';
 import {
   Sparkles,
@@ -24,7 +29,13 @@ import {
   Sliders,
   ListOrdered,
   Database,
-  RotateCcw
+  RotateCcw,
+  FolderOpen,
+  Download,
+  Copy,
+  Check,
+  Film,
+  Edit3
 } from 'lucide-react';
 
 interface CorrectionItem {
@@ -41,11 +52,13 @@ interface VideoEditorProps {
     updated_subtitles?: any[];
     updated_brolls?: any[];
   } | null;
+  initialSelectedTalkingHeadId?: string | null;
 }
 
 const DEFAULT_STRATEGY: EditingStrategy = {
   subtitle_theme: 'glow_gold',
   font_size: 'medium',
+  subtitle_font_size: 72,
   show_subtitles: true,
   subtitle_position_y: 82,
   subtitle_position_x: 50,
@@ -57,9 +70,15 @@ const DEFAULT_STRATEGY: EditingStrategy = {
   banner_main_title: '科目二一把过秘籍',
   banner_sub_title: '教练手把手教学',
   banner_style: 'capsule',
+  banner_font_size: 48,
+  banner_position_x: 50,
+  banner_position_y: 10,
   enable_watermark: true,
   watermark_text: '@顺达驾校官方教学',
   watermark_position: 'top_right',
+  watermark_font_size: 32,
+  watermark_position_x: 96,
+  watermark_position_y: 3,
   watermark_opacity: 0.45,
   broll_pacing: 'standard'
 };
@@ -67,15 +86,27 @@ const DEFAULT_STRATEGY: EditingStrategy = {
 export const VideoEditor: React.FC<VideoEditorProps> = ({
   onProjectLoaded,
   externalStrategyPlan,
+  initialSelectedTalkingHeadId,
 }) => {
   const [talkingHeads, setTalkingHeads] = useState<Material[]>([]);
-  const [selectedThId, setSelectedThId] = useState<string>('');
+  const [selectedThId, setSelectedThId] = useState<string>(initialSelectedTalkingHeadId || '');
   const [projectId, setProjectId] = useState<string>('');
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
+  const [oneClickStage, setOneClickStage] = useState<string>('');
   const [rendering, setRendering] = useState<boolean>(false);
   const [outputVideoUrl, setOutputVideoUrl] = useState<string>('');
+  const [outputTimestamp, setOutputTimestamp] = useState<number>(Date.now());
+  const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('interactive');
+  const [exportInfo, setExportInfo] = useState<{
+    url: string;
+    filename: string;
+    absolutePath: string;
+    sizeMb: number;
+  } | null>(null);
+  const [copiedPath, setCopiedPath] = useState<boolean>(false);
+  const [folderOpened, setFolderOpened] = useState<boolean>(false);
   const [aiInstruction, setAiInstruction] = useState<string>('');
   const [applyingInstruction, setApplyingInstruction] = useState<boolean>(false);
   const [correcting, setCorrecting] = useState<boolean>(false);
@@ -88,6 +119,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   const [isCachedProject, setIsCachedProject] = useState<boolean>(false);
   const [loadingProject, setLoadingProject] = useState<boolean>(false);
+  const [aspectRatio, setAspectRatio] = useState<'9:16' | '16:9'>('9:16');
 
   // 剪辑工作区 Tab 模式：'subtitles' (轨道字幕与空镜) vs 'strategy' (爱拍式策略工坊)
   const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
@@ -104,10 +136,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
         if (proj.strategy) setStrategy(proj.strategy);
+        if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
+          setAspectRatio(proj.aspect_ratio as any);
+        }
         if (proj.output_video_path) {
-          setOutputVideoUrl(`http://localhost:18888/${proj.output_video_path}`);
+          const mediaUrl = getMediaUrl(proj.output_video_path);
+          setOutputVideoUrl(mediaUrl);
+          setOutputTimestamp(Date.now());
+          setExportInfo({
+            url: mediaUrl,
+            filename: proj.output_filename || proj.output_video_path.split('/').pop() || 'output.mp4',
+            absolutePath: proj.output_absolute_path || '',
+            sizeMb: proj.output_file_size_mb || 0,
+          });
+          setPreviewMode('rendered');
         } else {
           setOutputVideoUrl('');
+          setExportInfo(null);
+          setPreviewMode('interactive');
         }
         setIsCachedProject(true);
         setAiFeedback(`已秒级载入工程磁盘缓存（共 ${proj.subtitles?.length || 0} 句字幕）`);
@@ -118,6 +164,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setProjectId('');
       setSubtitles([]);
       setOutputVideoUrl('');
+      setExportInfo(null);
+      setPreviewMode('interactive');
       setIsCachedProject(false);
     } finally {
       setLoadingProject(false);
@@ -127,7 +175,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   useEffect(() => {
     fetchMaterials('talking_head').then(data => {
       setTalkingHeads(data);
-      if (data.length > 0) {
+      if (initialSelectedTalkingHeadId && data.some(d => d.id === initialSelectedTalkingHeadId)) {
+        setSelectedThId(initialSelectedTalkingHeadId);
+      } else if (data.length > 0 && !selectedThId) {
         setSelectedThId(data[0].id);
       }
     });
@@ -136,24 +186,34 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setActiveEngine(s.active_harness || 'codex');
       setActiveModel(s.llm_model || 'GLM-5.3-Flash');
     }).catch(() => {});
-  }, []);
+  }, [initialSelectedTalkingHeadId]);
 
   useEffect(() => {
     if (selectedThId) {
+      const curMat = talkingHeads.find(t => t.id === selectedThId);
+      if (curMat && curMat.width && curMat.height && curMat.width > curMat.height) {
+        setAspectRatio('16:9');
+      }
       loadProjectForMaterial(selectedThId);
     }
-  }, [selectedThId]);
+  }, [selectedThId, talkingHeads]);
 
   const handleAnalyze = async (force: boolean = false) => {
+    return handleOneClickCutAndCorrect(force);
+  };
+
+  const handleOneClickCutAndCorrect = async (force: boolean = false) => {
     if (!selectedThId) {
       alert('请先选择或上传口播主视频');
       return;
     }
     setAnalyzing(true);
     setCorrectionsSummary(null);
+    setOneClickStage('正在抽取音频、ASR识别切分并调用AI纠偏...');
     try {
+      // 1. 语音提取 + 词级时间戳 + 黄金片段切分合并 + 大模型行业专词纠偏一体化完成
       const res = await analyzeAndCutVideo(selectedThId, {
-        aspectRatio: '9:16',
+        aspectRatio: aspectRatio,
         autoBroll: true,
         forceRetranscribe: force
       });
@@ -161,19 +221,33 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (onProjectLoaded) {
         onProjectLoaded(res.id);
       }
-      setSubtitles(res.subtitles || []);
+      const currentSubs = res.subtitles || [];
+      setSubtitles(currentSubs);
       if (res.strategy) {
         setStrategy(res.strategy);
       }
       if (res.output_video_path) {
-        setOutputVideoUrl(`http://localhost:18888/${res.output_video_path}`);
+        setOutputVideoUrl(getMediaUrl(res.output_video_path));
       }
       setIsCachedProject(true);
-      setAiFeedback(force ? '已重新提取并刷新 ASR 字幕工程缓存！' : '视频音频提取与 ASR 识别完成，已自动固化为工程缓存！');
+
+      if (res.last_engine_used) {
+        setLastEngineUsed(res.last_engine_used);
+      }
+      if (res.corrections_summary && res.corrections_summary.length > 0) {
+        setCorrectionsSummary(res.corrections_summary);
+        setAiFeedback(`一键智能初剪与纠偏完成！已通过 ${res.last_engine_used || activeEngine} 智能修正 ${res.corrections_summary.length} 处专有词并自动保存。`);
+      } else {
+        const costStr = res.correction_latency_ms ? `，耗时 ${Math.round(res.correction_latency_ms)}ms` : '';
+        setAiFeedback(`一键智能初剪与纠偏完成（未发现明显错别字${costStr}）。`);
+      }
+
+      setPreviewMode('interactive');
     } catch (err) {
-      alert('智能识别与初剪失败，请确保后端服务正常运行');
+      alert('一键智能初剪与纠偏失败，请确保后端服务正常运行');
     } finally {
       setAnalyzing(false);
+      setOneClickStage('');
     }
   };
 
@@ -208,12 +282,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (data.subtitles) {
         setSubtitles(data.subtitles);
         if (projectId) {
-          axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data.subtitles }).catch(() => {});
+          await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data.subtitles });
         }
       }
       setLastEngineUsed(data.harness_engine_used);
       if (data.corrections && data.corrections.length > 0) {
         setCorrectionsSummary(data.corrections);
+        setAiFeedback(`智能纠错完成（发现并修正 ${data.corrections.length} 处错别字），已立即自动固化至工程！`);
       } else {
         setAiFeedback(`智能纠错完成（耗时 ${data.latency_ms}ms），未发现明显错别字。`);
       }
@@ -224,12 +299,61 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
+  const subtitleSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const handleTextChange = (idx: number, newText: string) => {
+    if (previewMode === 'rendered') {
+      setPreviewMode('interactive');
+    }
     const updated = [...subtitles];
     updated[idx].corrected_text = newText;
     setSubtitles(updated);
+    if (!projectId) return;
+    if (subtitleSaveTimeoutRef.current) {
+      clearTimeout(subtitleSaveTimeoutRef.current);
+    }
+    subtitleSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated });
+      } catch (e) {
+        console.error('Auto save subtitle failed', e);
+      }
+    }, 500);
+  };
+
+  // 策略自动防抖保存 (600ms)，确保面板滑动或拖拽松开后 100% 固化到单一权威 SQLite 库
+  const strategySaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const handleStrategyChange = (newStrategy: EditingStrategy) => {
+    if (previewMode === 'rendered') {
+      setPreviewMode('interactive');
+    }
+    setStrategy(newStrategy);
+    if (!projectId) return;
+    if (strategySaveTimeoutRef.current) {
+      clearTimeout(strategySaveTimeoutRef.current);
+    }
+    strategySaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await updateProjectStrategy(projectId, newStrategy);
+      } catch (e) {
+        console.error('Debounced strategy save failed', e);
+      }
+    }, 600);
+  };
+
+  const handleStrategyCommit = async (committedStrategy: EditingStrategy) => {
+    if (previewMode === 'rendered') {
+      setPreviewMode('interactive');
+    }
+    if (strategySaveTimeoutRef.current) {
+      clearTimeout(strategySaveTimeoutRef.current);
+    }
+    setStrategy(committedStrategy);
     if (projectId) {
-      axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated }).catch(() => {});
+      try {
+        await updateProjectStrategy(projectId, committedStrategy);
+      } catch (e) {
+        console.error('Immediate strategy save failed', e);
+      }
     }
   };
 
@@ -274,6 +398,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const handleRender = async () => {
     if (!projectId) return;
     setRendering(true);
+    setAiFeedback(null);
     try {
       // 1. 同步最新字幕与策略
       await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
@@ -281,30 +406,72 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       });
       await updateProjectStrategy(projectId, strategy);
 
-      // 2. 发起复合渲染
-      const res = await axios.post(`${API_BASE}/projects/${projectId}/render`);
-      if (res.data.output_video_path) {
-        setOutputVideoUrl(`http://localhost:18888/${res.data.output_video_path}`);
-        alert('视频渲染完成！包含高亮字幕、横幅与水印！');
+      // 2. 发起高质量复合渲染 (Lanczos 算法 + CRF 18 高清画质 + 原生 Emoji 横幅 + ASS 高亮字幕)
+      const res = await renderProject(projectId);
+      if (res.output_video_path) {
+        const mediaUrl = getMediaUrl(res.output_video_path);
+        const newTs = Date.now();
+        setOutputTimestamp(newTs);
+        setOutputVideoUrl(mediaUrl);
+        setExportInfo({
+          url: mediaUrl,
+          filename: res.output_filename || res.output_video_path.split('/').pop() || 'output.mp4',
+          absolutePath: res.output_absolute_path || '',
+          sizeMb: res.output_file_size_mb || 0,
+        });
+        setPreviewMode('rendered');
+        setAiFeedback('🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。');
       }
-    } catch (err) {
-      alert('渲染合成失败');
+    } catch (err: any) {
+      alert(`渲染合成失败: ${err?.response?.data?.detail || err.message || '请检查后端服务'}`);
     } finally {
       setRendering(false);
     }
   };
 
-  const currentPreviewUrl = outputVideoUrl || (
-    selectedThId && talkingHeads.find(t => t.id === selectedThId)
-      ? `http://localhost:18888/${talkingHeads.find(t => t.id === selectedThId)?.filepath}`
-      : ''
-  );
+  const handleOpenFolder = async () => {
+    try {
+      await openFolder(exportInfo?.absolutePath);
+      setFolderOpened(true);
+      setAiFeedback(`已在系统文件管理器中高亮定位：${exportInfo?.filename || '导出目录'}`);
+      setTimeout(() => setFolderOpened(false), 3000);
+    } catch (e) {
+      alert('打开所在文件夹失败，请检查系统权限');
+    }
+  };
+
+  const handleCopyPath = () => {
+    if (exportInfo?.absolutePath) {
+      navigator.clipboard.writeText(exportInfo.absolutePath);
+      setCopiedPath(true);
+      setTimeout(() => setCopiedPath(false), 2000);
+    }
+  };
+
+  const handleDownload = () => {
+    if (exportInfo?.url) {
+      const a = document.createElement('a');
+      a.href = exportInfo.url;
+      a.download = exportInfo.filename || 'export.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  };
+
+  const rawVideoUrl = selectedThId && talkingHeads.find(t => t.id === selectedThId)
+    ? getMediaUrl(talkingHeads.find(t => t.id === selectedThId)?.filepath || '')
+    : '';
+
+  const currentPreviewUrl = (previewMode === 'rendered' && outputVideoUrl)
+    ? `${outputVideoUrl}?v=${outputTimestamp}`
+    : rawVideoUrl;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] max-w-7xl mx-auto p-4 overflow-hidden">
+    <div className="flex flex-col h-full max-h-full max-w-7xl mx-auto p-3 overflow-hidden">
       {/* 顶部操作条：口播素材选择、引擎状态徽章、纠错与初剪触发 */}
-      <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-3 shadow-xs mb-3 gap-2.5 flex-shrink-0">
-        <div className="flex items-center space-x-3">
+      <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs mb-2.5 gap-2 flex-shrink-0">
+        <div className="flex items-center space-x-2.5">
           <label className="text-xs font-semibold text-gray-700">口播主视频:</label>
           <select
             value={selectedThId}
@@ -316,6 +483,28 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               <option key={t.id} value={t.id}>{t.filename} ({t.duration.toFixed(1)}s)</option>
             ))}
           </select>
+
+          {/* 比例切换 (9:16 竖屏 / 16:9 横屏) */}
+          <div className="flex items-center space-x-1 bg-gray-100 p-1 rounded-xl border border-gray-200/80">
+            <button
+              type="button"
+              onClick={() => setAspectRatio('9:16')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                aspectRatio === '9:16' ? 'bg-white text-blue-600 shadow-xs' : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              📱 9:16 竖屏
+            </button>
+            <button
+              type="button"
+              onClick={() => setAspectRatio('16:9')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                aspectRatio === '16:9' ? 'bg-white text-blue-600 shadow-xs' : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              🖥️ 16:9 横屏
+            </button>
+          </div>
         </div>
 
         {/* 引擎状态与高阶操作按钮 */}
@@ -337,17 +526,18 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             )}
           </div>
 
-          {/* 智能纠错按钮 */}
+          {/* 智能纠错单独微调按钮（保留独立单步通道） */}
           <button
             onClick={handleCorrectSubtitles}
-            disabled={correcting || subtitles.length === 0}
-            className="flex items-center space-x-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 text-xs font-medium px-3.5 py-2 rounded-xl transition-colors disabled:opacity-40"
+            disabled={correcting || analyzing || subtitles.length === 0}
+            className="flex items-center space-x-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 text-xs font-medium px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40 cursor-pointer"
+            title="对已提取/手改字幕单独发起专有词语义纠偏"
           >
             {correcting ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-700" /> : <Sparkles className="w-3.5 h-3.5 text-amber-600" />}
-            <span>{correcting ? 'AI 专有词纠错中...' : '智能纠错'}</span>
+            <span>{correcting ? '专词纠偏中...' : '单步纠错'}</span>
           </button>
 
-          {/* 初剪触发与 ASR 音频转写 / 缓存状态 */}
+          {/* 一键智能初剪与纠偏（主动作按钮） */}
           {loadingProject ? (
             <div className="flex items-center space-x-1.5 bg-gray-100 text-gray-500 text-xs font-medium px-3.5 py-2 rounded-xl">
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-400" />
@@ -357,27 +547,27 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             <div className="flex items-center space-x-2">
               <span className="flex items-center space-x-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-xs font-medium px-3 py-2 rounded-xl">
                 <Database className="w-3.5 h-3.5 text-emerald-600" />
-                <span>已载入工程缓存 ({subtitles.length}句)</span>
+                <span>工程已就绪 ({subtitles.length}句)</span>
               </span>
               <button
-                onClick={() => handleAnalyze(true)}
-                disabled={analyzing || !selectedThId}
-                className="flex items-center space-x-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
-                title="重新调用 FFmpeg 提取音频与 faster-whisper 引擎重新识别并覆盖当前工程缓存"
+                onClick={() => handleOneClickCutAndCorrect(true)}
+                disabled={analyzing || correcting || !selectedThId}
+                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+                title="重新执行：音频重抽 -> ASR 黄金片段切分合并 -> 大模型专词纠偏一体化全流程"
               >
-                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-500" /> : <RotateCcw className="w-3.5 h-3.5 text-gray-500" />}
-                <span>{analyzing ? '重算中...' : '重新提取 ASR'}</span>
+                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                <span>{analyzing ? (oneClickStage || '处理中...') : '重新一键智能初剪'}</span>
               </button>
             </div>
           ) : (
             <button
-              onClick={() => handleAnalyze(false)}
-              disabled={analyzing || !selectedThId}
-              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-2 rounded-xl transition-colors shadow-sm disabled:opacity-50"
-              title="通过 FFmpeg 提取 16kHz 高保真音频，并调用 faster-whisper 引擎进行全链路语音识别并自动持久化"
+              onClick={() => handleOneClickCutAndCorrect(false)}
+              disabled={analyzing || correcting || !selectedThId}
+              className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 cursor-pointer"
+              title="一键全自动：音频提取 -> faster-whisper 识别与黄金片段切分合并 -> 大模型专词纠偏一体化全链路"
             >
-              {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-              <span>{analyzing ? '音频抽取与 ASR 识别中...' : '🎙️ 提取音频并生成 ASR 字幕'}</span>
+              {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+              <span>{analyzing ? (oneClickStage || 'AI 智能初剪与纠偏中...') : '⚡ 一键智能初剪与纠偏 (Auto AI Cut)'}</span>
             </button>
           )}
         </div>
@@ -415,24 +605,64 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         </div>
       )}
 
-      {/* 主体工作台：左侧播放器（即时策略预览），右侧选项卡（时间轴 vs 策略组合工坊） */}
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-4 min-h-0">
-        <div className="md:col-span-5 h-full flex flex-col justify-center">
+      {/* 主体工作台：左侧播放器（即时策略预览），右侧选项卡（时间轴 vs 策略组合工坊） - 始终保持左右双栏工作台布局 */}
+      <div className="flex-1 grid grid-cols-12 gap-3.5 min-h-0 overflow-hidden">
+        <div className="col-span-5 h-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
+          {/* 实时模式 vs 成片模式 切换状态栏 */}
+          <div className="w-full flex items-center justify-between px-2 pb-1 text-[11px] flex-shrink-0">
+            {previewMode === 'rendered' ? (
+              <div className="flex items-center space-x-1.5 text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-0.5 rounded-full font-medium">
+                <Film className="w-3 h-3 text-emerald-600" />
+                <span>当前播放：已压制成片 (CRF 18 高清)</span>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-1.5 text-blue-700 bg-blue-50 border border-blue-200/80 px-2.5 py-0.5 rounded-full font-medium">
+                <Edit3 className="w-3 h-3 text-blue-600" />
+                <span>当前预览：实时交互编辑模式（画布可拖拽）</span>
+              </div>
+            )}
+            <div className="flex items-center space-x-2">
+              {outputVideoUrl && (
+                previewMode === 'rendered' ? (
+                  <button
+                    onClick={() => setPreviewMode('interactive')}
+                    className="text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center space-x-1 cursor-pointer"
+                    title="切换回实时编辑模式，可继续拖拽横幅、水印、字幕排版"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>返回实时编辑</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setPreviewMode('rendered')}
+                    className="text-emerald-700 hover:text-emerald-900 font-medium hover:underline flex items-center space-x-1 cursor-pointer"
+                    title="播放复合压制后的高清 MP4 成片"
+                  >
+                    <Film className="w-3 h-3" />
+                    <span>查看已渲染成片</span>
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+
           <VideoPlayer
             videoUrl={currentPreviewUrl}
             subtitles={subtitles}
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
-            aspectRatio="9:16"
+            aspectRatio={aspectRatio}
+            onAspectRatioChange={setAspectRatio}
             strategy={strategy}
-            onStrategyChange={setStrategy}
-            isRendered={Boolean(outputVideoUrl)}
+            onStrategyChange={handleStrategyChange}
+            onStrategyCommit={handleStrategyCommit}
+            isRendered={previewMode === 'rendered'}
           />
         </div>
 
-        <div className="md:col-span-7 h-full flex flex-col overflow-hidden bg-white rounded-2xl border border-gray-200/80 shadow-sm p-4">
+        <div className="col-span-7 h-full min-h-0 flex flex-col overflow-hidden bg-white rounded-2xl border border-gray-200/80 shadow-sm p-3">
           {/* 工作区模式切换 Tabs */}
-          <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4 flex-shrink-0">
+          <div className="flex items-center justify-between border-b border-gray-100 pb-2 mb-2.5 flex-shrink-0">
             <div className="flex items-center space-x-2 bg-gray-100 p-1 rounded-xl">
               <button
                 type="button"
@@ -479,7 +709,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             ) : (
               <StrategyStudio
                 strategy={strategy}
-                onChange={setStrategy}
+                onChange={handleStrategyChange}
                 onSave={handleSaveStrategy}
                 saving={savingStrategy}
               />
@@ -490,9 +720,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
       {/* AI 调整反馈提示 */}
       {aiFeedback && (
-        <div className="mt-3 bg-blue-50/80 border border-blue-200/80 rounded-xl px-4 py-2 flex items-center justify-between text-xs text-blue-900 shadow-sm animate-in fade-in">
+        <div className="mt-1.5 bg-blue-50/80 border border-blue-200/80 rounded-xl px-3 py-1.5 flex items-center justify-between text-xs text-blue-900 shadow-sm animate-in fade-in flex-shrink-0">
           <div className="flex items-center space-x-2">
-            <Sparkles className="w-4 h-4 text-blue-600 flex-shrink-0" />
+            <Sparkles className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
             <span className="font-medium">{aiFeedback}</span>
           </div>
           <button onClick={() => setAiFeedback(null)} className="text-blue-500 hover:text-blue-700 text-xs ml-4">
@@ -501,8 +731,74 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         </div>
       )}
 
+      {/* 成片导出完成信息与操作卡片 */}
+      {exportInfo && (
+        <div className="mt-1.5 bg-gradient-to-r from-emerald-50 via-teal-50/70 to-emerald-50 border border-emerald-300/80 rounded-xl px-3 py-2 shadow-2xs flex items-center justify-between gap-2 text-xs animate-in fade-in flex-shrink-0">
+          <div className="flex items-center space-x-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center flex-shrink-0 shadow-2xs">
+              <Film className="w-3.5 h-3.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center space-x-2">
+                <span className="font-bold text-emerald-950 truncate max-w-[220px]" title={exportInfo.filename}>
+                  {exportInfo.filename}
+                </span>
+                {exportInfo.sizeMb > 0 && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-mono bg-emerald-200/80 text-emerald-900 rounded font-semibold">
+                    {exportInfo.sizeMb} MB
+                  </span>
+                )}
+                <span className="text-[10px] text-emerald-700 bg-emerald-100/90 px-1.5 py-0.5 rounded font-medium flex items-center">
+                  <CheckCircle2 className="w-3 h-3 mr-0.5 text-emerald-600" />
+                  CRF 18 高清
+                </span>
+              </div>
+              <div className="flex items-center space-x-1.5 text-[11px] text-gray-500 font-mono mt-0.5">
+                <span className="text-gray-400 flex-shrink-0">导出位置:</span>
+                <span className="truncate max-w-[300px] lg:max-w-[450px] text-gray-700 font-sans" title={exportInfo.absolutePath}>
+                  {exportInfo.absolutePath || 'storage/outputs/' + exportInfo.filename}
+                </span>
+                {exportInfo.absolutePath && (
+                  <button
+                    onClick={handleCopyPath}
+                    title="复制文件绝对路径"
+                    className="text-emerald-700 hover:text-emerald-900 p-0.5 hover:bg-emerald-100 rounded transition-colors flex items-center"
+                  >
+                    {copiedPath ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-1.5 flex-shrink-0">
+            <button
+              onClick={handleOpenFolder}
+              className={`flex items-center space-x-1 border font-semibold px-2.5 py-1.5 rounded-lg shadow-2xs transition-colors cursor-pointer ${
+                folderOpened
+                  ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
+                  : 'bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-300'
+              }`}
+              title="在系统资源管理器中定位并选中此视频文件"
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-emerald-700" />
+              <span>{folderOpened ? '✓ 已唤起文件管理器' : '打开所在文件夹'}</span>
+            </button>
+
+            <button
+              onClick={handleDownload}
+              className="flex items-center space-x-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-2.5 py-1.5 rounded-lg shadow-2xs transition-colors"
+              title="在浏览器中直接下载此视频"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>下载成片</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 底部浮动交互条：AI Prompt 指令输入框 + 生成按钮 + 硬件监控 */}
-      <div className="mt-2.5 bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs flex items-center space-x-2.5 flex-shrink-0">
+      <div className="mt-1.5 bg-white border border-gray-200/80 rounded-xl p-2 shadow-xs flex items-center space-x-2 flex-shrink-0">
         <div className="flex-1 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
           {applyingInstruction ? (
             <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />
@@ -532,7 +828,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
         >
           {rendering && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-          <span>{rendering ? '复合压制中...' : '生成预览 (Generate Preview)'}</span>
+          <span>{rendering ? '高清复合压制中 (CRF 18)...' : '生成成片预览 (Generate Preview)'}</span>
         </button>
 
         {hardwareInfo && (

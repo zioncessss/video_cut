@@ -34,7 +34,16 @@ async def root():
         return FileResponse(str(index_path))
     return {"status": "ok", "service": "VideoCut Harness Engine"}
 
+@app.on_event("startup")
+def on_startup():
+    try:
+        from app.db.migrator import migrate_legacy_data
+        migrate_legacy_data()
+    except Exception as e:
+        print(f"[Main] SQLite migration on startup warning: {e}")
+
 @app.get("/api/health")
+@app.get("/api/v1/health")
 async def health_check():
     return {"status": "ok", "service": "VideoCut Harness Engine"}
 

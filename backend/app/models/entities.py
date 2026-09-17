@@ -43,9 +43,11 @@ class BrollReplacement(BaseModel):
 class EditingStrategy(BaseModel):
     subtitle_theme: str = "glow_gold"   # glow_gold, glass_clean, cinema_shadow, tech_emerald, viral_gold, marker_pen
     font_size: str = "medium"           # small, medium, large, xlarge
+    subtitle_font_size: Optional[int] = None # 自定义连续字号 (24~96px)
     show_subtitles: bool = True
     subtitle_position_y: int = 82       # 竖屏垂直百分比 10~95% (默认82%黄金底部)
-    subtitle_position_x: int = 50       # 竖屏水平百分比 10~90% (默认50%居中)
+    subtitle_position_x: int = 50       # 竖屏水平百分比 5~95% (默认50%居中)
+    subtitle_width_percent: Optional[int] = None # 自定义字幕最大宽度百分比 30~95%
     enable_highlight: bool = True
     highlight_color: str = "#FACC15"
     highlight_scale: bool = True
@@ -55,10 +57,19 @@ class EditingStrategy(BaseModel):
     banner_main_title: str = "科目二一把过秘籍"
     banner_sub_title: Optional[str] = "教练手把手教学"
     banner_style: str = "capsule"       # capsule, full_width
+    banner_size: str = "medium"         # small, medium, large
+    banner_font_size: Optional[int] = None # 自定义字号 (24~72px)
+    banner_width_percent: Optional[int] = None # 自定义横幅宽度百分比 20~95%
+    banner_position_x: int = 50         # 水平百分比 5~95% (默认50%居中)
+    banner_position_y: int = 6          # 垂直百分比 2~85% (默认6%顶部)
     
     enable_watermark: bool = True
     watermark_text: str = "@顺达驾校官方教学"
-    watermark_position: str = "top_right"  # top_right, top_left, bottom_right
+    watermark_position: str = "top_right"  # top_right, top_left, bottom_right, bottom_left
+    watermark_size: str = "medium"         # small, medium, large
+    watermark_font_size: Optional[int] = None # 自定义字号 (14~60px)
+    watermark_position_x: Optional[int] = None # 水平微调百分比 2~98%
+    watermark_position_y: Optional[int] = None # 垂直微调百分比 2~98%
     watermark_opacity: float = 0.4
     
     broll_pacing: str = "standard"      # fast, standard, talking_only
@@ -79,7 +90,13 @@ class CutProject(BaseModel):
     strategy: EditingStrategy = Field(default_factory=EditingStrategy)
     status: CutProjectStatus = CutProjectStatus.DRAFT
     output_video_path: Optional[str] = None
+    output_absolute_path: Optional[str] = None
+    output_filename: Optional[str] = None
+    output_file_size_mb: Optional[float] = None
     raw_asr_segments: Optional[List[Dict[str, Any]]] = None
+    corrections_summary: Optional[List[Dict[str, Any]]] = None
+    last_engine_used: Optional[str] = None
+    correction_latency_ms: Optional[float] = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -104,3 +121,20 @@ class BatchJob(BaseModel):
     concurrency: int = 2
     status: BatchJobStatus = BatchJobStatus.QUEUED
     created_at: float = Field(default_factory=time.time)
+
+class PipelineStage(str, Enum):
+    IDLE = "idle"
+    AUDIO_EXTRACTING = "audio_extracting"   # 15%
+    ASR_TRANSCRIBING = "asr_transcribing"   # 50%
+    LLM_CORRECTING = "llm_correcting"       # 80%
+    BROLL_MATCHING = "broll_matching"       # 95%
+    COMPLETED = "completed"                 # 100%
+    FAILED = "failed"
+
+class PipelineProgress(BaseModel):
+    project_id: str
+    stage: PipelineStage = PipelineStage.IDLE
+    percent: int = 0
+    message: str = ""
+    updated_at: float = Field(default_factory=time.time)
+

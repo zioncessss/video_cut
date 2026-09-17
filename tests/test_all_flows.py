@@ -26,23 +26,32 @@ def test_system_and_health():
 def test_settings_api():
     res = client.get("/api/v1/settings")
     assert res.status_code == 200
-    assert "active_harness" in res.json()
+    orig_settings = res.json()
+    assert "active_harness" in orig_settings
 
-    post_res = client.post(
-        "/api/v1/settings",
-        json={"active_harness": "embedded", "llm_model": "glm-5.3-flash"}
-    )
-    assert post_res.status_code == 200
-    assert post_res.json()["data"]["active_harness"] == "embedded"
+    try:
+        post_res = client.post(
+            "/api/v1/settings",
+            json={"active_harness": "embedded", "llm_model": "glm-5.3-flash"}
+        )
+        assert post_res.status_code == 200
+        assert post_res.json()["data"]["active_harness"] == "embedded"
 
-    probe_res = client.post(
-        "/api/v1/settings/test-harness",
-        json={"engine": "embedded"}
-    )
-    assert probe_res.status_code == 200
-    probe_data = probe_res.json()
-    assert probe_data["code"] == 0
-    assert probe_data["data"]["success"] is True
+        probe_res = client.post(
+            "/api/v1/settings/test-harness",
+            json={"engine": "embedded"}
+        )
+        assert probe_res.status_code == 200
+        probe_data = probe_res.json()
+        assert probe_data["code"] == 0
+        assert probe_data["data"]["success"] is True
+    finally:
+        # 恢复原始 settings，防止单测污染生产配置
+        client.post("/api/v1/settings", json={
+            "active_harness": orig_settings.get("active_harness", "codex"),
+            "llm_model": orig_settings.get("llm_model", "glm-5.3-flash")
+        })
+
 
 def test_batch_api():
     res = client.post(

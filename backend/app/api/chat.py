@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.harness_bridge.factory import get_active_harness
+from app.harness_bridge.factory import get_tier_b_harness
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
 
@@ -26,21 +26,29 @@ async def chat_stream(req: ChatStreamRequest):
     project_context = ""
     p = project_storage_service.get_by_project_id(req.project_id) if req.project_id else None
     if p:
+        # 上下文纪律：只传摘要（字幕 id+文本+时长、空镜分类计数），不 dump 全量模型字段
+        sub_summary = [
+            {"id": s.id, "text": s.corrected_text or s.raw_text, "dur": round(s.end_time - s.start_time, 1)}
+            for s in p.subtitles
+        ]
+        broll_stats: Dict[str, int] = {}
+        for b in p.broll_replacements:
+            key = str(b.material_category) if b.material_category else "unknown"
+            broll_stats[key] = broll_stats.get(key, 0) + 1
         project_context = f"""
-【当前用户正在编辑的视频工程元数据】：
+【当前用户正在编辑的视频工程摘要】：
 - 工程ID: {p.id}
 - 视频比例: {p.aspect_ratio}
-- 当前字幕片段列表 (共 {len(p.subtitles)} 句):
-{json.dumps([s.model_dump() for s in p.subtitles], ensure_ascii=False, indent=2)}
-- 当前插入的空镜头片段 (B-rolls):
-{json.dumps([b.model_dump() for b in p.broll_replacements], ensure_ascii=False, indent=2)}
+- 字幕片段 (共 {len(sub_summary)} 句): {json.dumps(sub_summary, ensure_ascii=False)}
+- 空镜统计 (按分类计数): {json.dumps(broll_stats, ensure_ascii=False)}
 """
 
     all_materials = storage_service.list_materials()
-    materials_context = json.dumps([
-        {"id": m.id, "category": str(m.category), "filename": m.filename, "duration": m.duration}
-        for m in all_materials
-    ], ensure_ascii=False)
+    mat_stats: Dict[str, int] = {}
+    for m in all_materials:
+        key = str(m.category)
+        mat_stats[key] = mat_stats.get(key, 0) + 1
+    materials_context = f"素材库分类统计: {json.dumps(mat_stats, ensure_ascii=False)}"
 
     system_instructions = f"""你是一个专业而富有创意的短视频剪辑与创意副驾驶 (VideoCut Harness Copilot)。
 你具备以下核心能力：
@@ -73,7 +81,8 @@ async def chat_stream(req: ChatStreamRequest):
     prompt_builder.append(f"用户: {req.message}\nAI副驾驶:")
     full_prompt = "\n".join(prompt_builder)
 
-    harness = get_active_harness()
+    # 聊天属开放式任务：走 Tier B（codex/zcode → embedded），与字幕纠偏的 active_harness 解耦
+    harness = get_tier_b_harness()
 
     async def event_generator():
         try:

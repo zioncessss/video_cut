@@ -47,16 +47,14 @@ class BaseHarnessBridge(ABC):
         pass
 
     @abstractmethod
-    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> List[Dict[str, Any]]:
-        """利用 Harness / LLM 对原始 ASR 字幕进行上下文与驾校专有词纠偏"""
+    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> HarnessCorrectionResponse:
+        """利用 Harness / LLM 对原始 ASR 字幕进行上下文与驾校专有词纠偏，统一返回契约对象"""
         pass
 
-    @abstractmethod
     async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
-        """解析用户在底部输入的自然语言微调意图，动态调整剪辑工程配置"""
-        pass
+        """可选能力：解析开放式自然语言微调指令。不支持该能力的引擎必须显式报错，严禁返回假装成功的预置响应"""
+        raise RuntimeError(f"{self.__class__.__name__} 不支持开放式指令理解，请配置并切换到 codex / zcode 智能体")
 
-    @abstractmethod
     async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
-        """利用 Harness 创意规划能力，批量生成不同镜头编排维度的混剪方案"""
-        pass
+        """可选能力：批量混剪方案创意规划（当前无消费方，默认不支持）"""
+        raise RuntimeError(f"{self.__class__.__name__} 不支持批量混剪方案规划")

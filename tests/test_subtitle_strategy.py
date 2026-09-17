@@ -63,8 +63,69 @@ def test_editing_strategy_model():
     assert strat.subtitle_theme == "glow_gold"
     assert strat.enable_highlight is True
     assert strat.banner_style == "capsule"
+    assert strat.banner_size == "medium"
+    assert strat.banner_position_y == 6
+    assert strat.watermark_size == "medium"
+    assert strat.watermark_position == "top_right"
+    assert strat.watermark_position_y is None
     assert strat.broll_pacing == "standard"
 
     project = CutProject(title="测试工程", talking_head_id="th-123")
     assert project.strategy.subtitle_theme == "glow_gold"
     assert project.strategy.enable_top_banner is True
+    assert project.strategy.banner_size == "medium"
+
+def test_banner_and_watermark_custom_strategy():
+    strat = EditingStrategy(
+        banner_size="large",
+        banner_position_x=40,
+        banner_position_y=15,
+        banner_font_size=56,
+        watermark_size="small",
+        watermark_position="bottom_left",
+        watermark_position_x=12,
+        watermark_position_y=88,
+        watermark_font_size=28,
+        subtitle_font_size=60,
+        subtitle_position_x=45,
+        subtitle_position_y=75
+    )
+    assert strat.banner_size == "large"
+    assert strat.banner_position_x == 40
+    assert strat.banner_position_y == 15
+    assert strat.banner_font_size == 56
+    assert strat.watermark_size == "small"
+    assert strat.watermark_position == "bottom_left"
+    assert strat.watermark_position_x == 12
+    assert strat.watermark_position_y == 88
+    assert strat.watermark_font_size == 28
+    assert strat.subtitle_font_size == 60
+    assert strat.subtitle_position_x == 45
+    assert strat.subtitle_position_y == 75
+
+def test_generate_ass_file_2d_position_and_flexible_font(tmp_path):
+    subtitles = [
+        {
+            "start_time": 0.5,
+            "end_time": 2.5,
+            "raw_text": "同学们好，今天带大家练科目二。",
+            "matched_keywords": ["科目二"]
+        }
+    ]
+    strat = {
+        "subtitle_theme": "glow_gold",
+        "subtitle_font_size": 68,
+        "subtitle_position_x": 42,
+        "subtitle_position_y": 70,
+        "enable_highlight": True,
+        "highlight_color": "#FACC15",
+    }
+    ass_path = tmp_path / "test_2d.ass"
+    out = generate_ass_file(subtitles, ass_path, strategy=strat)
+    assert out.exists()
+    content = ass_path.read_text(encoding="utf-8")
+    
+    # 验证自定义 68px 字号写入样式
+    assert "Microsoft YaHei,68," in content
+    # 验证 2D 坐标 (1080 * 0.42 = 453, 1920 * 0.70 = 1344)
+    assert r"\an5\pos(453,1344)" in content

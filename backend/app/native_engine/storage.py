@@ -1,21 +1,36 @@
 import json
-import os
+import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional, Dict
-from app.core.config import CATEGORY_DIRS, STORAGE_DIR, ALLOWED_VIDEO_EXTENSIONS
+from app.core.config import CATEGORY_DIRS, STORAGE_DIR, ALLOWED_VIDEO_EXTENSIONS, ensure_storage_path
 from app.models.entities import Material, MaterialCategory
+from app.db.repository import MaterialRepository
 
 META_FILE = STORAGE_DIR / "materials_meta.json"
 
+# 上传文件名仅保留安全字符，杜绝路径穿越与非法字符落盘
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9\u4e00-\u9fff._-]")
+
 class StorageService:
-    def __init__(self):
+    def __init__(self, db_path=None):
         self.meta_file = META_FILE
+        self.repo = MaterialRepository(db_path)
         self._cache: Dict[str, Material] = {}
         self._load_meta()
 
     def _load_meta(self):
+        try:
+            db_materials = self.repo.list_all()
+            if db_materials:
+                for m in db_materials:
+                    self._cache[m.id] = m
+                return
+        except Exception:
+            pass
+
         if self.meta_file.exists():
             try:
                 with open(self.meta_file, "r", encoding="utf-8") as f:
@@ -23,13 +38,19 @@ class StorageService:
                     for item in data:
                         m = Material(**item)
                         self._cache[m.id] = m
+                        try:
+                            self.repo.save(m)
+                        except Exception:
+                            pass
             except Exception:
                 self._cache = {}
 
     def _save_meta(self):
         try:
-            with open(self.meta_file, "w", encoding="utf-8") as f:
-                json.dump([m.model_dump() for m in self._cache.values()], f, ensure_ascii=False, indent=2)
+            META_FILE.write_text(
+                json.dumps([m.model_dump() for m in self._cache.values()], ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
         except Exception as e:
             print(f"Error saving materials meta: {e}")
 
@@ -69,19 +90,19 @@ class StorageService:
     def save_material(self, category: MaterialCategory, filename: str, source_path_or_bytes) -> Material:
         target_dir = CATEGORY_DIRS[category.value]
         target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_VIDEO_EXTENSIONS:
             ext = ".mp4"
-            
-        safe_name = f"{Path(filename).stem}_{int(os.times().elapsed * 1000)}{ext}"
-        dest_path = target_dir / safe_name
+
+        # 文件名净化：仅保留安全字符并截断长度，杜绝路径穿越
+        raw_stem = _SAFE_FILENAME_RE.sub("_", Path(filename).stem)[:80].strip("._") or "material"
+        dest_path = ensure_storage_path(target_dir / f"{raw_stem}_{int(time.time() * 1000)}{ext}")
 
         if isinstance(source_path_or_bytes, (str, Path)):
             shutil.copyfile(str(source_path_or_bytes), str(dest_path))
         else:
-            with open(dest_path, "wb") as f:
-                f.write(source_path_or_bytes)
+            dest_path.write_bytes(source_path_or_bytes)
 
         # 视频编码兼容性保护：检测是否为 HEVC/H.265 或非标准编码，自动转为浏览器万能支持的 H.264
         try:
@@ -96,6 +117,7 @@ class StorageService:
                 conv_cmd = [
                     "ffmpeg", "-y", "-i", str(dest_path),
                     "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
                     str(conv_tmp)
                 ]
                 if subprocess.run(conv_cmd, capture_output=True, timeout=120).returncode == 0:
@@ -117,28 +139,55 @@ class StorageService:
             fps=metadata["fps"]
         )
         self._cache[material.id] = material
+        try:
+            self.repo.save(material)
+        except Exception as e:
+            print(f"Error saving to SQLite: {e}")
         self._save_meta()
         return material
 
     def get_material(self, material_id: str) -> Optional[Material]:
+        db_mat = self.repo.get_by_id(material_id)
+        if db_mat:
+            self._cache[db_mat.id] = db_mat
+            return db_mat
         return self._cache.get(material_id)
 
     def list_materials(self, category: Optional[MaterialCategory] = None) -> List[Material]:
+        try:
+            db_list = self.repo.list_all(category)
+            if db_list:
+                for m in db_list:
+                    self._cache[m.id] = m
+                return db_list
+        except Exception:
+            pass
+
         if category:
             return [m for m in self._cache.values() if m.category == category]
         return list(self._cache.values())
 
     def delete_material(self, material_id: str) -> bool:
-        m = self._cache.pop(material_id, None)
+        m = self.get_material(material_id)
+        deleted = self.repo.delete(material_id)
+        self._cache.pop(material_id, None)
+        self._save_meta()
+
         if m:
-            self._save_meta()
             full_path = STORAGE_DIR.parent / m.filepath
             if full_path.exists():
                 try:
                     full_path.unlink()
                 except Exception:
                     pass
-            return True
-        return False
+
+        # 级联清理关联剪辑工程持久化文件与内存缓存
+        try:
+            from app.native_engine.project_storage import project_storage_service
+            project_storage_service.delete_project_by_material(material_id)
+        except Exception as e:
+            print(f"[StorageService] 级联删除工程异常: {e}")
+
+        return deleted or (m is not None)
 
 storage_service = StorageService()

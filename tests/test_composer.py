@@ -27,3 +27,21 @@ def test_scale_filter_builder():
 
     filter_169 = composer.build_scale_filter("16:9")
     assert "1920:1080" in filter_169
+
+def test_compose_without_ffmpeg_must_raise(tmp_path, monkeypatch):
+    """真实执行铁律回归：FFmpeg 缺失时严禁复制原文件假装合成成功，必须抛出真实异常"""
+    src = tmp_path / "talking_head.mp4"
+    src.write_bytes(b"x" * 20480)  # >10KB 真实体量的模拟素材
+    out = tmp_path / "output.mp4"
+
+    monkeypatch.setattr(composer, "has_ffmpeg", False)
+    with pytest.raises(RuntimeError, match="FFmpeg"):
+        composer.compose_jl_cut(
+            talking_head_path=src,
+            broll_cuts=[],
+            output_path=out,
+            aspect_ratio="9:16",
+            total_duration=3.0,
+        )
+    # 失败路径不得产出任何输出文件
+    assert not out.exists()

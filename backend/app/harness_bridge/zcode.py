@@ -6,13 +6,17 @@ import subprocess
 from typing import List, Dict, Any, Optional
 
 from app.core import config
+from app.core.config import apply_glossary_corrections
 from app.harness_bridge.base import (
     BaseHarnessBridge,
     HarnessCorrectionRequest,
+    HarnessCorrectionResponse,
+    SubtitleCorrectionItem,
     HarnessInstructionRequest,
     HarnessPlanResponse
 )
 from app.harness_bridge.embedded import EmbeddedHarnessBridge
+from app.harness_bridge.prompting import build_correction_prompt
 
 class ZCodeHarnessBridge(BaseHarnessBridge):
     """
@@ -109,39 +113,69 @@ class ZCodeHarnessBridge(BaseHarnessBridge):
                     pass
         return None
 
-    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> List[Dict[str, Any]]:
-        """利用 ZCode / GLM-5.3 对原始 ASR 字幕进行上下文与驾校专有词纠偏"""
+    async def correct_subtitles(self, request: HarnessCorrectionRequest) -> HarnessCorrectionResponse:
+        """利用 ZCode / GLM 对原始 ASR 字幕进行纠偏：提示词与 codex 共用词库工厂，返回统一契约"""
         if not await self.is_available():
-            return await self._fallback.correct_subtitles(request)
+            fallback_res = await self._fallback.correct_subtitles(request)
+            fallback_res.harness_engine_used = "zcode (fallback embedded: cli not found)"
+            return fallback_res
 
-        # 组织字幕摘要列表
-        raw_items = []
-        for i, item in enumerate(request.raw_subtitles):
-            raw_items.append({"index": i, "text": item.get("raw_text", "")})
-
-        prompt = (
-            "你是一个专业的短视频字幕与剪辑助手。请对以下 ASR 识别出的口播字幕进行垂直专有词纠错与通顺化润色：\n"
-            "【纠错重点】：纠正常见同音错字，如“科尔”->“科目二”，“到库”->“倒库”，“坡起”->“坡道起步”，“测方”->“侧方停车”，“提检”->“体检”，“学车价位”->“学车价格”等。\n"
-            f"原始字幕列表：\n{json.dumps(raw_items, ensure_ascii=False)}\n\n"
-            "请严格仅返回一个合法的 JSON 数组，格式如下：\n"
-            '[{"index": 0, "corrected_text": "..."}, {"index": 1, "corrected_text": "..."}]\n'
-            "注意：严禁输出任何多余说明、严禁输出除了纯 JSON 之外的字符。"
-        )
+        # 与 codex 桥接器共用同一份词库驱动的提示词（id + text 精简负载）
+        clean_input = [
+            {"id": s.get("id"), "text": s.get("raw_text") or s.get("corrected_text", "")}
+            for s in request.raw_subtitles
+        ]
+        prompt = build_correction_prompt(clean_input)
 
         response_text = await self._run_zcode_prompt(prompt, timeout=35)
         parsed = self._extract_json(response_text)
 
-        if isinstance(parsed, list) and len(parsed) > 0:
-            correction_map = {item.get("index"): item.get("corrected_text") for item in parsed if isinstance(item, dict)}
-            result = []
-            for i, item in enumerate(request.raw_subtitles):
-                new_item = dict(item)
-                new_item["corrected_text"] = correction_map.get(i, item.get("raw_text", ""))
-                result.append(new_item)
-            return result
+        if isinstance(parsed, dict) and isinstance(parsed.get("subtitles"), list):
+            corr_text_map = {
+                str(item.get("id")): item.get("corrected_text")
+                for item in parsed["subtitles"]
+                if isinstance(item, dict) and item.get("id")
+            }
+            hl_map = {
+                str(item.get("id")): item.get("highlight_keywords", [])
+                for item in parsed["subtitles"]
+                if isinstance(item, dict) and item.get("id")
+            }
+            corrections_summary = [
+                SubtitleCorrectionItem(
+                    subtitle_id=str(c.get("subtitle_id", "")),
+                    original_text=str(c.get("original_text", "")),
+                    corrected_text=str(c.get("corrected_text", "")),
+                    changes=[{"from": str(c.get("original_text", "")), "to": str(c.get("corrected_text", "")), "reason": str(c.get("reason", "智能语义纠错"))}]
+                )
+                for c in (parsed.get("corrections") or []) if isinstance(c, dict)
+            ]
+
+            # 回填原始时间戳，词库确定性纠偏兜底（幂等），防模型漏纠
+            final_subtitles = []
+            for orig in request.raw_subtitles:
+                seg = dict(orig)
+                sid = str(seg.get("id"))
+                if sid in corr_text_map and corr_text_map[sid]:
+                    seg["corrected_text"] = corr_text_map[sid]
+                else:
+                    seg["corrected_text"] = seg.get("corrected_text") or seg.get("raw_text", "")
+                seg["corrected_text"], _ = apply_glossary_corrections(str(seg["corrected_text"]))
+                if sid in hl_map and isinstance(hl_map[sid], list):
+                    existing_kw = seg.get("matched_keywords", []) or []
+                    seg["matched_keywords"] = list(dict.fromkeys(existing_kw + hl_map[sid]))
+                final_subtitles.append(seg)
+
+            return HarnessCorrectionResponse(
+                updated_subtitles=final_subtitles,
+                corrections_summary=corrections_summary,
+                harness_engine_used="zcode"
+            )
 
         # 解析失败或超时时回退
-        return await self._fallback.correct_subtitles(request)
+        fallback_res = await self._fallback.correct_subtitles(request)
+        fallback_res.harness_engine_used = "zcode (fallback embedded)"
+        return fallback_res
 
     async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
         """解析用户在工作台底部输入的自然语言微调意图"""
@@ -206,8 +240,7 @@ class ZCodeHarnessBridge(BaseHarnessBridge):
         res.harness_engine_used = "embedded (fallback)"
         return res
 
-    async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
-        return await self._fallback.generate_batch_variations(template_project, variant_count)
+    # generate_batch_variations 已删除：全项目无消费方，继承 base 默认显式报错
 
     async def stream_chat(self, prompt: str, model_override: str = None):
         """基于 ZCode 本地引擎流式输出或快速响应"""

@@ -1,25 +1,14 @@
 [
   {
-    "id": "f9122796-5629-49a3-b22a-2e52006dc393",
-    "category": "talking_head",
-    "filename": "4ddcb473b604937f6ce7ac36cb897a31.mp4",
-    "filepath": "storage/materials/talking_head/4ddcb473b604937f6ce7ac36cb897a31_0.mp4",
-    "duration": 27.767,
+    "id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
+    "category": "lesson",
+    "filename": "ff16c3683988e4f7732ccdf4cb3bf56a.mp4",
+    "filepath": "storage/materials/lesson/ff16c3683988e4f7732ccdf4cb3bf56a_0.mp4",
+    "duration": 70.2,
     "width": 720,
     "height": 1280,
     "fps": 30.0,
-    "created_at": 1789481361.91443
-  },
-  {
-    "id": "a00aabd0-8e66-46d2-8311-dcebab51af56",
-    "category": "venue",
-    "filename": "15e4e3906f2b21432c78c29c99823181.mp4",
-    "filepath": "storage/materials/venue/15e4e3906f2b21432c78c29c99823181_0.mp4",
-    "duration": 8.133,
-    "width": 720,
-    "height": 1280,
-    "fps": 30.0,
-    "created_at": 1789481384.9234962
+    "created_at": 1789481419.89663
   },
   {
     "id": "c15a471f-b1f7-40e3-b75b-d5d975f754bf",
@@ -33,14 +22,58 @@
     "created_at": 1789481391.6538033
   },
   {
-    "id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
-    "category": "lesson",
-    "filename": "ff16c3683988e4f7732ccdf4cb3bf56a.mp4",
-    "filepath": "storage/materials/lesson/ff16c3683988e4f7732ccdf4cb3bf56a_0.mp4",
-    "duration": 70.2,
+    "id": "a00aabd0-8e66-46d2-8311-dcebab51af56",
+    "category": "venue",
+    "filename": "15e4e3906f2b21432c78c29c99823181.mp4",
+    "filepath": "storage/materials/venue/15e4e3906f2b21432c78c29c99823181_0.mp4",
+    "duration": 8.133,
     "width": 720,
     "height": 1280,
     "fps": 30.0,
-    "created_at": 1789481419.89663
+    "created_at": 1789481384.9234962
+  },
+  {
+    "id": "f9122796-5629-49a3-b22a-2e52006dc393",
+    "category": "talking_head",
+    "filename": "4ddcb473b604937f6ce7ac36cb897a31.mp4",
+    "filepath": "storage/materials/talking_head/4ddcb473b604937f6ce7ac36cb897a31_0.mp4",
+    "duration": 27.767,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "created_at": 1789481361.91443
+  },
+  {
+    "id": "7d5fa30a-be41-4915-9afc-888d1cbd45b3",
+    "category": "talking_head",
+    "filename": "talking_head.mp4",
+    "filepath": "storage/materials/talking_head/talking_head_0.mp4",
+    "duration": 0.0,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30.0,
+    "created_at": 1789617132.8230414
+  },
+  {
+    "id": "346692eb-2a5c-414b-865a-2432edaf6b58",
+    "category": "venue",
+    "filename": "venue.mp4",
+    "filepath": "storage/materials/venue/venue_0.mp4",
+    "duration": 0.0,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30.0,
+    "created_at": 1789617132.9107265
+  },
+  {
+    "id": "a0611349-3d4f-4e46-9656-c49c9ede02c1",
+    "category": "talking_head",
+    "filename": "th_inst.mp4",
+    "filepath": "storage/materials/talking_head/th_inst_0.mp4",
+    "duration": 0.0,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30.0,
+    "created_at": 1789617135.3948402
   }
 ]

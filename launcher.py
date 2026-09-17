@@ -24,7 +24,8 @@ def log(msg: str):
 
 def is_server_ready(timeout=0.8) -> bool:
     try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as resp:
+        # 固定本机健康检查地址，字面量内联，杜绝任何动态 URL 来源
+        with urllib.request.urlopen("http://127.0.0.1:18888/api/health", timeout=timeout) as resp:
             return resp.status == 200
     except Exception:
         return False

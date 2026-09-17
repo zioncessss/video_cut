@@ -2,6 +2,14 @@ import axios from 'axios';
 
 export const API_BASE = 'http://localhost:18888/api/v1';
 
+export const getMediaUrl = (filepath: string): string => {
+  if (!filepath) return '';
+  if (filepath.startsWith('http://') || filepath.startsWith('https://')) return filepath;
+  const cleanPath = filepath.replace(/^[/\\]+/, '').replace(/\\/g, '/');
+  const baseUrl = API_BASE.replace(/\/api\/v1\/?$/, '');
+  return `${baseUrl}/${cleanPath}`;
+};
+
 export interface Material {
   id: string;
   category: 'talking_head' | 'venue' | 'medical' | 'lesson';
@@ -26,6 +34,14 @@ export const uploadMaterial = async (category: string, file: File): Promise<Mate
   formData.append('file', file);
   const res = await axios.post(`${API_BASE}/materials/upload`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+};
+
+export const importLocalMaterial = async (category: string, filePath: string): Promise<Material> => {
+  const res = await axios.post(`${API_BASE}/materials/import-local`, {
+    category,
+    file_path: filePath
   });
   return res.data;
 };
@@ -60,11 +76,20 @@ export const fetchSettings = async () => {
   return res.data;
 };
 
+export const listModels = async (llmBaseUrl?: string, llmApiKey?: string): Promise<{ code: number; message: string; data: { models: string[] } }> => {
+  const res = await axios.post(`${API_BASE}/settings/list-models`, {
+    llm_base_url: llmBaseUrl || null,
+    llm_api_key: llmApiKey || null,
+  });
+  return res.data;
+};
+
 export const updateSettings = async (settings: {
   active_harness: string;
   llm_model?: string;
   llm_api_key?: string;
   llm_base_url?: string;
+  llm_protocol?: string;
 }) => {
   const res = await axios.post(`${API_BASE}/settings`, settings);
   return res.data;
@@ -146,9 +171,11 @@ export const streamChatSSE = async (
 export interface EditingStrategy {
   subtitle_theme: 'glow_gold' | 'glass_clean' | 'cinema_shadow' | 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
   font_size: 'small' | 'medium' | 'large' | 'xlarge';
+  subtitle_font_size?: number; // 连续字号大小 (24~96px)
   show_subtitles?: boolean;
   subtitle_position_y?: number;  // 竖屏垂直百分比 10~95 (默认82)
-  subtitle_position_x?: number;  // 竖屏水平百分比 10~90 (默认50)
+  subtitle_position_x?: number;  // 竖屏水平百分比 5~95 (默认50)
+  subtitle_width_percent?: number; // 文本框宽度百分比 30~95 (可拖拽拉宽/窄)
   enable_highlight: boolean;
   highlight_color: string;
   highlight_scale: boolean;
@@ -157,10 +184,19 @@ export interface EditingStrategy {
   banner_main_title: string;
   banner_sub_title?: string;
   banner_style: 'capsule' | 'full_width';
+  banner_size?: 'small' | 'medium' | 'large';
+  banner_font_size?: number; // 连续字号大小 (24~72px)
+  banner_width_percent?: number; // 文本框宽度百分比 20~95 (可拖拽拉宽/窄)
+  banner_position_x?: number; // 水平百分比 5~95 (默认50)
+  banner_position_y?: number; // 垂直百分比 2~85 (默认6)
   enable_watermark: boolean;
   watermark_text: string;
-  watermark_position: 'top_right' | 'top_left' | 'bottom_right';
+  watermark_position: 'top_right' | 'top_left' | 'bottom_right' | 'bottom_left';
   watermark_opacity: number;
+  watermark_size?: 'small' | 'medium' | 'large';
+  watermark_font_size?: number; // 连续字号大小 (14~60px)
+  watermark_position_x?: number; // 水平百分比 2~98
+  watermark_position_y?: number; // 垂直百分比 2~98
   broll_pacing: 'fast' | 'standard' | 'talking_only';
 }
 
@@ -198,3 +234,40 @@ export const deleteProjectByMaterial = async (materialId: string) => {
   const res = await axios.delete(`${API_BASE}/projects/by-material/${materialId}`);
   return res.data;
 };
+
+export interface RenderProjectResult {
+  id: string;
+  title: string;
+  status: string;
+  output_video_path?: string;
+  output_absolute_path?: string;
+  output_filename?: string;
+  output_file_size_mb?: number;
+  subtitles?: any[];
+  strategy?: EditingStrategy;
+}
+
+export const renderProject = async (projectId: string): Promise<RenderProjectResult> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/render`);
+  return res.data;
+};
+
+export const openFolder = async (path?: string): Promise<{ code: number; message: string; path?: string }> => {
+  const res = await axios.post(`${API_BASE}/projects/open-folder`, { path });
+  return res.data;
+};
+
+export interface PipelineProgress {
+  project_id: string;
+  stage: 'idle' | 'audio_extracting' | 'asr_transcribing' | 'llm_correcting' | 'broll_matching' | 'completed' | 'failed';
+  percent: number;
+  message: string;
+  updated_at: number;
+}
+
+export const fetchProjectProgress = async (projectId: string): Promise<PipelineProgress> => {
+  const res = await axios.get(`${API_BASE}/projects/${projectId}/progress`);
+  return res.data;
+};
+
+

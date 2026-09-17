@@ -164,30 +164,27 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
 
         {strategy.show_subtitles !== false && (
           <div className="space-y-3 pt-1 border-t border-gray-100 text-xs">
-            {/* 字号选择 */}
+            {/* 字号选择：预设档位 + 连续灵活滑块 */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-gray-600 font-medium text-[11px]">字幕字号大小</span>
-                <span className="text-[10px] text-gray-400">
-                  {strategy.font_size === 'small' && '小 (42px)'}
-                  {(!strategy.font_size || strategy.font_size === 'medium') && '标准 (52px)'}
-                  {strategy.font_size === 'large' && '大号 (64px)'}
-                  {strategy.font_size === 'xlarge' && '超大 (76px)'}
+                <span className="text-[10px] font-mono text-blue-600 font-semibold">
+                  {strategy.subtitle_font_size || (strategy.font_size === 'small' ? 56 : strategy.font_size === 'large' ? 86 : strategy.font_size === 'xlarge' ? 98 : 72)}px
                 </span>
               </div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5 mb-2">
                 {[
-                  { id: 'small', label: '小号' },
-                  { id: 'medium', label: '标准' },
-                  { id: 'large', label: '大号' },
-                  { id: 'xlarge', label: '特大' },
+                  { id: 'small', px: 56, label: '小号 (56px)' },
+                  { id: 'medium', px: 72, label: '标准 (72px)' },
+                  { id: 'large', px: 86, label: '大号 (86px)' },
+                  { id: 'xlarge', px: 98, label: '特大 (98px)' },
                 ].map(size => (
                   <button
                     key={size.id}
                     type="button"
-                    onClick={() => update({ font_size: size.id as any })}
-                    className={`py-1 rounded-lg border text-center text-[11px] transition-all ${
-                      (strategy.font_size || 'medium') === size.id
+                    onClick={() => update({ font_size: size.id as any, subtitle_font_size: size.px })}
+                    className={`py-1 rounded-lg border text-center text-[10px] transition-all ${
+                      (strategy.subtitle_font_size === size.px || (!strategy.subtitle_font_size && (strategy.font_size || 'medium') === size.id))
                         ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold'
                         : 'border-gray-200 text-gray-600 hover:bg-gray-50'
                     }`}
@@ -196,28 +193,126 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                   </button>
                 ))}
               </div>
+              <input
+                type="range"
+                min="36"
+                max="110"
+                step="1"
+                value={strategy.subtitle_font_size || (strategy.font_size === 'small' ? 56 : strategy.font_size === 'large' ? 86 : strategy.font_size === 'xlarge' ? 98 : 72)}
+                onChange={e => update({ subtitle_font_size: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
             </div>
 
-            {/* 垂直位置调节 */}
+            {/* 字幕区域宽度 (控制单行容量与折行阈值) */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <span className="text-gray-600 font-medium text-[11px]">垂直位置 (Y轴高度)</span>
-                <span className="text-[10px] font-mono text-gray-500">
+                <span className="text-gray-600 font-medium text-[11px]">字幕框宽度 (单行容量与折行)</span>
+                <span className="text-[10px] font-mono text-blue-600 font-semibold">
+                  {strategy.subtitle_width_percent ?? 90}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="40"
+                max="96"
+                step="1"
+                value={strategy.subtitle_width_percent ?? 90}
+                onChange={e => update({ subtitle_width_percent: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_width_percent: 65 })}
+                  className="hover:text-blue-600"
+                >
+                  聚中短行 (65%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_width_percent: 85 })}
+                  className="hover:text-blue-600"
+                >
+                  标准黄金 (85%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_width_percent: 94 })}
+                  className="hover:text-blue-600"
+                >
+                  宽屏长单行 (94%)
+                </button>
+              </div>
+            </div>
+
+            {/* 水平位置 (X轴左右移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">水平位置 (X轴左右移动)</span>
+                <span className="text-[10px] font-mono text-blue-600 font-semibold">
+                  {strategy.subtitle_position_x ?? 50}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="90"
+                step="1"
+                value={strategy.subtitle_position_x ?? 50}
+                onChange={e => update({ subtitle_position_x: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_x: 30 })}
+                  className="hover:text-blue-600"
+                >
+                  偏左 (30%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_x: 50 })}
+                  className="hover:text-blue-600"
+                >
+                  居中 (50%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_x: 70 })}
+                  className="hover:text-blue-600"
+                >
+                  偏右 (70%)
+                </button>
+              </div>
+            </div>
+
+            {/* 垂直位置 (Y轴上下移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">垂直位置 (Y轴上下高度)</span>
+                <span className="text-[10px] font-mono text-blue-600 font-semibold">
                   {strategy.subtitle_position_y ?? 82}%
                 </span>
               </div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="range"
-                  min="20"
-                  max="92"
-                  step="1"
-                  value={strategy.subtitle_position_y ?? 82}
-                  onChange={e => update({ subtitle_position_y: parseInt(e.target.value, 10) })}
-                  className="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-              </div>
+              <input
+                type="range"
+                min="15"
+                max="95"
+                step="1"
+                value={strategy.subtitle_position_y ?? 82}
+                onChange={e => update({ subtitle_position_y: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
               <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ subtitle_position_y: 20 })}
+                  className="hover:text-blue-600"
+                >
+                  顶部 (20%)
+                </button>
                 <button
                   type="button"
                   onClick={() => update({ subtitle_position_y: 50 })}
@@ -242,7 +337,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
               </div>
               <div className="mt-1.5 bg-blue-50/60 rounded p-1.5 text-[10px] text-blue-700 flex items-center space-x-1">
                 <span>💡</span>
-                <span>也可直接在左侧播放器中按住字幕自由拖动调整位置！</span>
+                <span>也可直接在左侧视频画面中鼠标按住字幕上下左右自由拖动！</span>
               </div>
             </div>
           </div>
@@ -333,7 +428,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">
             <Type className="w-4 h-4 text-purple-600" />
-            <h3 className="font-semibold text-xs text-gray-800">顶部 Title 挂顶横幅 (防重叠设计)</h3>
+            <h3 className="font-semibold text-xs text-gray-800">顶部 Title 挂顶横幅 (可调位置与大小)</h3>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -347,7 +442,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
 
         {strategy.enable_top_banner && (
-          <div className="space-y-2 pt-1 border-t border-gray-100 text-xs">
+          <div className="space-y-2.5 pt-1 border-t border-gray-100 text-xs">
             <div>
               <span className="text-gray-600 block mb-1 font-medium text-[11px]">主标题 (大字吸睛)</span>
               <input
@@ -368,6 +463,175 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-purple-500"
               />
             </div>
+
+            {/* 横幅大小调节：预设档位 + 连续灵活滑块 */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">横幅字号大小</span>
+                <span className="text-[10px] font-mono text-purple-600 font-semibold">
+                  {strategy.banner_font_size || (strategy.banner_size === 'small' ? 36 : strategy.banner_size === 'large' ? 60 : 48)}px
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 mb-2">
+                {[
+                  { id: 'small', px: 36, label: '小号 (36px)' },
+                  { id: 'medium', px: 48, label: '标准 (48px)' },
+                  { id: 'large', px: 60, label: '大号 (60px)' },
+                ].map(size => (
+                  <button
+                    key={size.id}
+                    type="button"
+                    onClick={() => update({ banner_size: size.id as any, banner_font_size: size.px })}
+                    className={`py-1 rounded-lg border text-center text-[10px] transition-all ${
+                      (strategy.banner_font_size === size.px || (!strategy.banner_font_size && (strategy.banner_size || 'medium') === size.id))
+                        ? 'border-purple-600 bg-purple-50 text-purple-700 font-bold'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="range"
+                min="20"
+                max="72"
+                step="1"
+                value={strategy.banner_font_size || (strategy.banner_size === 'small' ? 36 : strategy.banner_size === 'large' ? 60 : 48)}
+                onChange={e => update({ banner_font_size: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+              />
+            </div>
+
+            {/* 横幅宽度 (横向空间伸缩) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">横幅宽度 (边框拉伸 / 自适应)</span>
+                <span className="text-[10px] font-mono text-purple-600 font-semibold">
+                  {strategy.banner_width_percent ? `${strategy.banner_width_percent}%` : '紧凑胶囊自适应'}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="25"
+                max="95"
+                step="1"
+                value={strategy.banner_width_percent || 90}
+                onChange={e => update({ banner_width_percent: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ banner_width_percent: undefined })}
+                  className="hover:text-purple-600"
+                >
+                  紧凑胶囊 (默认)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_width_percent: 60 })}
+                  className="hover:text-purple-600"
+                >
+                  中等半宽 (60%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_width_percent: 90 })}
+                  className="hover:text-purple-600"
+                >
+                  全宽贯穿 (90%)
+                </button>
+              </div>
+            </div>
+
+            {/* 横幅水平位置 (X轴左右移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">水平位置 (X轴左右移动)</span>
+                <span className="text-[10px] font-mono text-purple-600 font-semibold">
+                  {strategy.banner_position_x ?? 50}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="90"
+                step="1"
+                value={strategy.banner_position_x ?? 50}
+                onChange={e => update({ banner_position_x: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_x: 30 })}
+                  className="hover:text-purple-600"
+                >
+                  偏左 (30%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_x: 50 })}
+                  className="hover:text-purple-600"
+                >
+                  居中 (50%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_x: 70 })}
+                  className="hover:text-purple-600"
+                >
+                  偏右 (70%)
+                </button>
+              </div>
+            </div>
+
+            {/* 横幅垂直位置 (Y轴上下移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">垂直位置 (Y轴上下高度)</span>
+                <span className="text-[10px] font-mono text-purple-600 font-semibold">
+                  {strategy.banner_position_y ?? 10}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="2"
+                max="85"
+                step="1"
+                value={strategy.banner_position_y ?? 10}
+                onChange={e => update({ banner_position_y: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_y: 6 })}
+                  className="hover:text-purple-600"
+                >
+                  顶部 (6%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_y: 18 })}
+                  className="hover:text-purple-600"
+                >
+                  中上 (18%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ banner_position_y: 48 })}
+                  className="hover:text-purple-600"
+                >
+                  居中 (48%)
+                </button>
+              </div>
+              <div className="mt-1.5 bg-purple-50/60 rounded p-1.5 text-[10px] text-purple-700 flex items-center space-x-1">
+                <span>💡</span>
+                <span>也可直接在左侧视频画面中鼠标按住横幅上下左右自由拖动！</span>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -377,7 +641,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">
             <Shield className="w-4 h-4 text-emerald-600" />
-            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (右上角)</h3>
+            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (可调位置与大小)</h3>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -391,7 +655,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
 
         {strategy.enable_watermark && (
-          <div className="space-y-2 pt-1 border-t border-gray-100 text-xs">
+          <div className="space-y-2.5 pt-1 border-t border-gray-100 text-xs">
             <div>
               <span className="text-gray-600 block mb-1 font-medium text-[11px]">水印文字</span>
               <input
@@ -402,7 +666,177 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-emerald-500"
               />
             </div>
-            <div className="flex items-center justify-between">
+
+            {/* 水印尺寸调节：预设档位 + 连续灵活滑块 */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">水印字号大小</span>
+                <span className="text-[10px] font-mono text-emerald-600 font-semibold">
+                  {strategy.watermark_font_size || (strategy.watermark_size === 'small' ? 22 : strategy.watermark_size === 'large' ? 44 : 32)}px
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 mb-2">
+                {[
+                  { id: 'small', px: 22, label: '小号 (22px)' },
+                  { id: 'medium', px: 32, label: '标准 (32px)' },
+                  { id: 'large', px: 44, label: '大号 (44px)' },
+                ].map(size => (
+                  <button
+                    key={size.id}
+                    type="button"
+                    onClick={() => update({ watermark_size: size.id as any, watermark_font_size: size.px })}
+                    className={`py-1 rounded-lg border text-center text-[10px] transition-all ${
+                      (strategy.watermark_font_size === size.px || (!strategy.watermark_font_size && (strategy.watermark_size || 'medium') === size.id))
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700 font-bold'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="range"
+                min="14"
+                max="60"
+                step="1"
+                value={strategy.watermark_font_size || (strategy.watermark_size === 'small' ? 22 : strategy.watermark_size === 'large' ? 44 : 32)}
+                onChange={e => update({ watermark_font_size: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+              />
+            </div>
+
+            {/* 水印 4 角预设位置 */}
+            <div>
+              <span className="text-gray-600 block mb-1 font-medium text-[11px]">角标方位预设</span>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: 'top_left', label: '左上', x: 4, y: 3 },
+                  { id: 'top_right', label: '右上', x: 96, y: 3 },
+                  { id: 'bottom_left', label: '左下', x: 4, y: 96 },
+                  { id: 'bottom_right', label: '右下', x: 96, y: 96 },
+                ].map(pos => (
+                  <button
+                    key={pos.id}
+                    type="button"
+                    onClick={() => update({
+                      watermark_position: pos.id as any,
+                      watermark_position_x: pos.x,
+                      watermark_position_y: pos.y
+                    })}
+                    className={`py-1 rounded-lg border text-center text-[11px] transition-all ${
+                      (strategy.watermark_position_x === pos.x && strategy.watermark_position_y === pos.y) ||
+                      (strategy.watermark_position_x === undefined && (strategy.watermark_position || 'top_right') === pos.id)
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700 font-bold'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {pos.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 水印水平微调 (X 轴左右移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">水平微调 (X轴左右移动)</span>
+                <span className="text-[10px] font-mono text-emerald-600 font-semibold">
+                  {strategy.watermark_position_x !== undefined ? `${strategy.watermark_position_x}%` : ((strategy.watermark_position || 'top_right').endsWith('left') ? '4% (靠左)' : '96% (靠右)')}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="2"
+                max="98"
+                step="1"
+                value={strategy.watermark_position_x ?? ((strategy.watermark_position || 'top_right').endsWith('left') ? 4 : 96)}
+                onChange={e => update({ watermark_position_x: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_x: 4 })}
+                  className="hover:text-emerald-600"
+                >
+                  靠左 (4%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_x: 50 })}
+                  className="hover:text-emerald-600"
+                >
+                  居中 (50%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_x: 96 })}
+                  className="hover:text-emerald-600"
+                >
+                  靠右 (96%)
+                </button>
+              </div>
+            </div>
+
+            {/* 水印垂直微调 (Y 轴上下移动) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-gray-600 font-medium text-[11px]">垂直微调 (Y轴上下移动)</span>
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[10px] font-mono text-emerald-600 font-semibold">
+                    {strategy.watermark_position_y !== undefined ? `${strategy.watermark_position_y}%` : ((strategy.watermark_position || 'top_right').startsWith('bottom') ? '96% (靠底)' : '3% (靠顶)')}
+                  </span>
+                  {(strategy.watermark_position_x !== undefined || strategy.watermark_position_y !== undefined) && (
+                    <button
+                      type="button"
+                      onClick={() => update({ watermark_position_x: undefined, watermark_position_y: undefined })}
+                      className="text-[9px] text-gray-400 hover:text-emerald-600 underline"
+                    >
+                      重置回角标
+                    </button>
+                  )}
+                </div>
+              </div>
+              <input
+                type="range"
+                min="2"
+                max="98"
+                step="1"
+                value={strategy.watermark_position_y ?? ((strategy.watermark_position || 'top_right').startsWith('bottom') ? 96 : 3)}
+                onChange={e => update({ watermark_position_y: parseInt(e.target.value, 10) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+              />
+              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_y: 3 })}
+                  className="hover:text-emerald-600"
+                >
+                  靠顶 (3%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_y: 50 })}
+                  className="hover:text-emerald-600"
+                >
+                  居中 (50%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update({ watermark_position_y: 96 })}
+                  className="hover:text-emerald-600"
+                >
+                  靠底 (96%)
+                </button>
+              </div>
+              <div className="mt-1.5 bg-emerald-50/60 rounded p-1.5 text-[10px] text-emerald-700 flex items-center space-x-1">
+                <span>💡</span>
+                <span>也可直接在左侧视频画面中鼠标按住水印上下左右自由拖动！</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
               <span className="text-gray-600 font-medium text-[11px]">透明度 ({Math.round((strategy.watermark_opacity || 0.4) * 100)}%)</span>
               <input
                 type="range"

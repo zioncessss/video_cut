@@ -55,3 +55,54 @@ async def test_harness_factory_routing():
     config.ACTIVE_HARNESS = "zcode"
     h2 = get_active_harness()
     assert h2.__class__.__name__ == "ZCodeHarnessBridge"
+
+@pytest.mark.asyncio
+async def test_zcode_correct_subtitles_contract(monkeypatch):
+    """契约回归：zcode 主路径必须返回 HarnessCorrectionResponse（此前返回裸 List，激活即崩），
+    提示词由词库工厂注入，返回结果经词库确定性兜底补纠。"""
+    import json as _json
+    from app.harness_bridge.base import HarnessCorrectionResponse
+
+    bridge = ZCodeHarnessBridge()
+    if not await bridge.is_available():
+        pytest.skip("本机无 Node/ZCode CLI，zcode 主路径不适用")
+
+    canned = _json.dumps(
+        {
+            "subtitles": [
+                # 模拟大模型漏纠：'科尔' 未按词库纠为 '科目二'
+                {"id": "z1", "corrected_text": "欢迎来到科尔考场教练带你练车", "highlight_keywords": ["考场"]},
+            ],
+            "corrections": [],
+        },
+        ensure_ascii=False,
+    )
+
+    async def fake_run(prompt, timeout=35):
+        assert "纠偏" in prompt, "纠错提示词必须来自词库驱动的 prompting 工厂"
+        return canned
+
+    monkeypatch.setattr(bridge, "_run_zcode_prompt", fake_run)
+
+    req = HarnessCorrectionRequest(
+        raw_subtitles=[{"id": "z1", "raw_text": "欢迎来到科尔考场教练带你练车", "corrected_text": "欢迎来到科尔考场教练带你练车"}]
+    )
+    res = await bridge.correct_subtitles(req)
+    assert isinstance(res, HarnessCorrectionResponse)
+    assert res.harness_engine_used == "zcode"
+    # 模型漏纠的 '科尔' 必须被词库兜底补纠为 '科目二'
+    assert res.updated_subtitles[0]["corrected_text"] == "欢迎来到科目二考场教练带你练车"
+
+@pytest.mark.asyncio
+async def test_zcode_fallback_returns_contract():
+    """CLI 不可用降级 embedded 时，同样必须返回契约对象并完成词库纠偏"""
+    from app.harness_bridge.base import HarnessCorrectionResponse
+
+    fake_bridge = ZCodeHarnessBridge(cli_path=Path("D:/not_exist/zcode.cjs"))
+    assert await fake_bridge.is_available() is False
+
+    req = HarnessCorrectionRequest(raw_subtitles=[{"id": "a", "raw_text": "福州价效迎来大改革"}])
+    res = await fake_bridge.correct_subtitles(req)
+    assert isinstance(res, HarnessCorrectionResponse)
+    assert "fallback" in res.harness_engine_used
+    assert "湖州驾校" in res.updated_subtitles[0]["corrected_text"]

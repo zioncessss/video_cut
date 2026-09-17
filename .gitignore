@@ -49,3 +49,15 @@ storage/outputs/*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local SQLite Database & Electron outputs
+storage/*.db
+storage/*.db-wal
+storage/*.db-shm
+*.db
+storage/*.sqlite
+storage/backups/
+storage/legacy/
+out/
+dist/
+test_banner.png

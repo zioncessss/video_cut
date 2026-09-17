@@ -60,13 +60,13 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-2xl border border-gray-200/80 shadow-sm p-4 overflow-hidden">
-      <div className="flex items-center justify-between pb-3 border-b border-gray-100 mb-3">
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex items-center justify-between pb-2.5 border-b border-gray-100 mb-2.5 flex-shrink-0">
         <h2 className="text-sm font-bold text-gray-800">字幕时间轴与语义空镜分配</h2>
         <span className="text-xs text-gray-400 font-mono">共 {subtitles.length} 条</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+      <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
         {subtitles.length === 0 ? (
           <div className="py-12 text-center text-gray-400 text-xs">
             暂无字幕片段，请先点击【AI 智能识别与初剪】

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
-from app.harness_bridge.factory import get_active_harness
+from app.harness_bridge.factory import get_tier_b_harness
 from app.harness_bridge.base import HarnessInstructionRequest, HarnessPlanResponse
 from app.models.entities import SubtitleSegment, BrollReplacement
 from app.native_engine.storage import storage_service
@@ -36,8 +36,12 @@ async def apply_instruction(payload: NaturalInstructionPayload):
         user_instruction=payload.instruction,
         available_materials=mat_meta
     )
-    harness = get_active_harness()
-    result = await harness.apply_natural_instruction(req)
+    harness = get_tier_b_harness()
+    try:
+        result = await harness.apply_natural_instruction(req)
+    except RuntimeError as e:
+        # 能力缺失必须诚实反馈：内置词库引擎无开放式指令理解能力，且本机无 codex/zcode 可用
+        raise HTTPException(status_code=400, detail=str(e))
     
     # 若返回了更新后的状态，同步并转换为对应实体
     if result.updated_subtitles:

@@ -7,25 +7,48 @@ from app.core import config
 router = APIRouter()
 
 class SettingsPayload(BaseModel):
-    active_harness: str  # "embedded", "codex", "zcode"
+    active_harness: str  # "api", "embedded", "codex", "zcode"
     llm_model: str = "GLM-5.3-Flash"
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
+    llm_protocol: str = "openai"  # openai 兼容 /chat/completions；anthropic/gemini 预留
 
 @router.get("")
 async def get_settings():
     config.load_settings()
     has_codex = bool(shutil.which("codex"))
     has_zcode = config.has_zcode_available()
+    from app.harness_bridge.llm_client import resolve_api_provider, codex_provider
+    has_api = resolve_api_provider() is not None
+    codex_local = codex_provider() or {}
+    # 凭据红线：key 明文严禁下发前端，仅返回掩码与是否已配置
+    key = config.LLM_API_KEY or ""
+    key_masked = f"{key[:4]}****{key[-4:]}" if len(key) > 8 else ("****" if key else "")
     return {
         "active_harness": config.ACTIVE_HARNESS,
         "llm_model": config.LLM_MODEL,
-        "llm_api_key": config.LLM_API_KEY,
+        "llm_api_key": "",
+        "llm_api_key_masked": key_masked,
+        "llm_api_key_configured": bool(key),
         "llm_base_url": config.LLM_BASE_URL,
+        "llm_protocol": config.LLM_PROTOCOL,
         "detected_engines": {
+            "api": has_api,
             "embedded": True,
             "codex": has_codex,
             "zcode": has_zcode
+        },
+        # 各引擎实际生效的配置来源摘要（token 不下发）
+        "engine_config": {
+            "api": {"base_url": config.LLM_BASE_URL, "has_key": bool(config.LLM_API_KEY), "model": config.LLM_MODEL},
+            "codex": {
+                "base_url": codex_local.get("base_url", ""),
+                "model": codex_local.get("model", ""),
+                "has_token": bool(codex_local.get("token")),
+                "available": has_codex
+            },
+            "zcode": {"cli_path": str(config.ZCODE_CLI_PATH) if has_zcode else None, "available": has_zcode},
+            "embedded": {"mode": "词库确定性纠偏（无网络依赖）"}
         },
         "zcode_path": str(config.ZCODE_CLI_PATH) if has_zcode else None
     }
@@ -34,15 +57,42 @@ async def get_settings():
 async def update_settings(payload: SettingsPayload):
     save_data = {
         "active_harness": payload.active_harness,
-        "llm_model": payload.llm_model
+        "llm_model": payload.llm_model,
+        "llm_protocol": payload.llm_protocol
     }
     if payload.llm_api_key is not None:
         save_data["llm_api_key"] = payload.llm_api_key
     if payload.llm_base_url is not None:
         save_data["llm_base_url"] = payload.llm_base_url
-        
+
     config.save_settings(save_data)
     return {"code": 0, "message": "Settings updated successfully", "data": payload}
+
+class ListModelsPayload(BaseModel):
+    """留空则回退当前已解析的直连提供方（设置页 → ~/.codex/config.toml）"""
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
+
+@router.post("/list-models")
+async def list_models(payload: ListModelsPayload):
+    """探测直连端点的可用模型列表（OpenAI 兼容 GET /models），供设置页下拉选择"""
+    from app.harness_bridge import llm_client
+
+    base_url = (payload.llm_base_url or "").strip()
+    api_key = (payload.llm_api_key or "").strip()
+    if not base_url:
+        provider = llm_client.resolve_api_provider()
+        if not provider:
+            return {"code": 1, "message": "未提供 base_url，且当前无已配置的直连提供方", "data": {"models": []}}
+        base_url = provider["base_url"]
+        api_key = api_key or provider.get("token", "")
+
+    success, models, message = await llm_client.list_models(base_url, token=api_key)
+    return {
+        "code": 0 if success else 1,
+        "message": message,
+        "data": {"models": models}
+    }
 
 class TestHarnessPayload(BaseModel):
     engine: str = "codex"

@@ -109,3 +109,12 @@ video_cut/
 ### 阶段 4: GitHub Actions 跨平台 CI/CD 与发包工作流 (Phase 4)
 - 编写 `.github/workflows/release.yml`，定义 `windows-latest` 和 `macos-latest` 双矩阵构建。
 - 接入 GitHub CLI (`gh`) 发包指引，验证打标签自动发布 Release。
+
+---
+
+## 决策修订记录 (2026-09-17 代码审查后)
+
+1. **运行期数据库位置**: 维持 `storage/videocut.db`（项目根相对），**不迁移**到 `app.getPath('userData')`。打包产物以便携模式约定：主进程经 `VIDEOCUT_STORAGE_DIR` 指示引擎数据目录。原「userData」决策作废。
+2. **存储真相源**: SQLite 为唯一权威存储；`materials_meta.json`、`projects/*.json` 仅作为一次性迁移输入，迁移成功后归档至 `storage/legacy/`；生产代码停止 JSON 双写（`VIDEOCUT_LEGACY_JSON=1` 可临时开启用于调试）。
+3. **引擎交付形态**: 按 research.md 既定 sidecar 方案执行——PyInstaller 将 `backend/` 打为 `resources/engine/videocut-engine(.exe)`，FFmpeg 随包；动态空闲端口经 `VIDEOCUT_PORT` 环境变量传递；引擎启动失败必须显式报错，禁止静默降级开窗。
+4. **词库（glossary）**: `storage/glossary.json` 为全链路唯一纠偏/热词知识源（ASR initial_prompt、embedded 替换、LLM 提示词共用）；文件缺失时纠偏链路空转并显式告警，严禁注入预置业务文案。
