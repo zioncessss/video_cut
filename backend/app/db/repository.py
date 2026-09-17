@@ -11,6 +11,7 @@ from app.models.entities import (
     BrollReplacement,
     EditingStrategy,
     BatchJob,
+    BatchJobItem,
     BatchJobStatus
 )
 
@@ -334,44 +335,45 @@ class BatchJobRepository:
     def save(self, job: BatchJob) -> BatchJob:
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO batch_jobs (id, total_count, completed_count, concurrency, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO batch_jobs (id, total_count, completed_count, concurrency, status, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 job.id,
                 job.total_count,
                 job.completed_count,
                 job.concurrency,
                 job.status.value if hasattr(job.status, 'value') else str(job.status),
+                json.dumps([i.model_dump() for i in job.items], ensure_ascii=False) if job.items else None,
                 job.created_at
             ))
         return job
+
+    def _row_to_job(self, row) -> BatchJob:
+        items = []
+        if row["payload_json"]:
+            try:
+                items = [BatchJobItem(**i) for i in json.loads(row["payload_json"])]
+            except Exception:
+                items = []
+        return BatchJob(
+            id=row["id"],
+            total_count=row["total_count"],
+            completed_count=row["completed_count"],
+            concurrency=row["concurrency"],
+            status=BatchJobStatus(row["status"]),
+            items=items,
+            created_at=row["created_at"]
+        )
 
     def get_by_id(self, job_id: str) -> Optional[BatchJob]:
         with get_db_connection(self.db_path) as conn:
             cur = conn.execute("SELECT * FROM batch_jobs WHERE id = ?", (job_id,))
             row = cur.fetchone()
             if row:
-                return BatchJob(
-                    id=row["id"],
-                    total_count=row["total_count"],
-                    completed_count=row["completed_count"],
-                    concurrency=row["concurrency"],
-                    status=BatchJobStatus(row["status"]),
-                    created_at=row["created_at"]
-                )
+                return self._row_to_job(row)
         return None
 
     def list_all(self) -> List[BatchJob]:
         with get_db_connection(self.db_path) as conn:
             cur = conn.execute("SELECT * FROM batch_jobs ORDER BY created_at DESC")
-            return [
-                BatchJob(
-                    id=r["id"],
-                    total_count=r["total_count"],
-                    completed_count=r["completed_count"],
-                    concurrency=r["concurrency"],
-                    status=BatchJobStatus(r["status"]),
-                    created_at=r["created_at"]
-                )
-                for r in cur.fetchall()
-            ]
+            return [self._row_to_job(r) for r in cur.fetchall()]

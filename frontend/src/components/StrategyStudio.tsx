@@ -429,6 +429,9 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
           <div className="flex items-center space-x-1.5">
             <Type className="w-4 h-4 text-purple-600" />
             <h3 className="font-semibold text-xs text-gray-800">顶部 Title 挂顶横幅 (可调位置与大小)</h3>
+            {!strategy.enable_top_banner && (
+              <span className="text-[10px] text-gray-400">已关闭（成片评审后可开启）</span>
+            )}
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -642,6 +645,9 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
           <div className="flex items-center space-x-1.5">
             <Shield className="w-4 h-4 text-emerald-600" />
             <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (可调位置与大小)</h3>
+            {!strategy.enable_watermark && (
+              <span className="text-[10px] text-gray-400">已关闭（成片评审后可开启）</span>
+            )}
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input

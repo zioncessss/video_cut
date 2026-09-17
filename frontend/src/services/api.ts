@@ -237,6 +237,48 @@ export const updateProjectStrategy = async (
   return res.data;
 };
 
+// ===== 批量智能剪辑（005）=====
+
+export interface BatchJobItem {
+  material_id: string;
+  project_id?: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  error?: string | null;
+  progress: number;
+}
+
+export const submitBatch = async (materialIds: string[], aspectRatio: string = '9:16') => {
+  const res = await axios.post(`${API_BASE}/batch/submit`, { material_ids: materialIds, aspect_ratio: aspectRatio });
+  return res.data.data as { job_id: string; queued: number; concurrency: number };
+};
+
+export const fetchBatchJob = async (jobId: string) => {
+  const res = await axios.get(`${API_BASE}/batch/jobs/${jobId}`);
+  return res.data.data as {
+    job_id: string;
+    status: 'queued' | 'running' | 'finished';
+    concurrency: number;
+    completed_count: number;
+    items: BatchJobItem[];
+  };
+};
+
+// ===== 工程封面（005，AI 生成暂为规划占位）=====
+
+export const setProjectCover = async (
+  projectId: string,
+  source: 'frame' | 'upload' | 'ai',
+  timestamp?: number,
+  imageBase64?: string
+) => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/cover`, {
+    source,
+    timestamp,
+    image_base64: imageBase64
+  });
+  return res.data.data as { cover_image_path: string; cover_source: string; cover_url: string };
+};
+
 export const fetchProjectByMaterial = async (materialId: string) => {
   const res = await axios.get(`${API_BASE}/projects/by-material/${materialId}`);
   return res.data;

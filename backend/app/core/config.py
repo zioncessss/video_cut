@@ -9,6 +9,7 @@ STORAGE_DIR = ROOT_DIR / "storage"
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
+COVERS_DIR = STORAGE_DIR / "covers"     # 005: 工程封面（截帧/上传）
 DB_PATH = Path(os.getenv("VIDEOCUT_DB_PATH", str(STORAGE_DIR / "videocut.db")))
 
 # 素材分类定义（experience 为原 medical 体检分类的扩展升级：学员全流程体验空镜）
@@ -18,7 +19,7 @@ CATEGORY_DIRS: Dict[str, Path] = {
 }
 
 # 确保所有目录存在
-for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR, PROJECTS_DIR]:
+for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR, PROJECTS_DIR, COVERS_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
 # 允许的视频扩展名

@@ -88,12 +88,13 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at REAL NOT NULL
 );
 
--- 批量混剪作业队列表
+-- 批量混剪作业队列表（payload_json 逐项状态，005 新增）
 CREATE TABLE IF NOT EXISTS batch_jobs (
     id TEXT PRIMARY KEY,
     total_count INTEGER NOT NULL,
     completed_count INTEGER NOT NULL DEFAULT 0,
     concurrency INTEGER NOT NULL DEFAULT 2,
     status TEXT NOT NULL DEFAULT 'queued',
+    payload_json TEXT,
     created_at REAL NOT NULL
 );

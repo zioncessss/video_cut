@@ -74,7 +74,7 @@ class EditingStrategy(BaseModel):
     custom_highlight_words: List[str] = Field(default_factory=list)
     transition_style: str = "cut"       # cut(硬切) | fade(叠化 0.3~0.5s，时长取各句 scene_decision)
     
-    enable_top_banner: bool = True
+    enable_top_banner: bool = False   # 005 默认关闭：首批成片评审后按需开启
     banner_main_title: str = "科目二一把过秘籍"
     banner_sub_title: Optional[str] = "教练手把手教学"
     banner_style: str = "capsule"       # capsule, full_width
@@ -84,7 +84,7 @@ class EditingStrategy(BaseModel):
     banner_position_x: int = 50         # 水平百分比 5~95% (默认50%居中)
     banner_position_y: int = 6          # 垂直百分比 2~85% (默认6%顶部)
     
-    enable_watermark: bool = True
+    enable_watermark: bool = False    # 005 默认关闭：首批成片评审后按需开启
     watermark_text: str = "@顺达驾校官方教学"
     watermark_position: str = "top_right"  # top_right, top_left, bottom_right, bottom_left
     watermark_size: str = "medium"         # small, medium, large
@@ -138,12 +138,20 @@ class BatchJobStatus(str, Enum):
     PAUSED = "paused"
     FINISHED = "finished"
 
+class BatchJobItem(BaseModel):
+    material_id: str
+    project_id: Optional[str] = None
+    status: str = "queued"  # queued | running | completed | failed
+    error: Optional[str] = None
+    progress: int = 0
+
 class BatchJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     total_count: int
     completed_count: int = 0
     concurrency: int = 2
     status: BatchJobStatus = BatchJobStatus.QUEUED
+    items: List[BatchJobItem] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
 
 class PipelineStage(str, Enum):

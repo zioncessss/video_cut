@@ -1,49 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE, fetchHardwareMetrics } from '../services/api';
-import { Cpu, HardDrive, Layers, Play, CheckCircle2, Clock } from 'lucide-react';
+import { Cpu, HardDrive, Layers, Play } from 'lucide-react';
 
 export const BatchCut: React.FC = () => {
   const [hardware, setHardware] = useState<any>(null);
-  const [totalCount, setTotalCount] = useState<number>(5);
-  const [concurrency, setConcurrency] = useState<number>(2);
   const [jobs, setJobs] = useState<any[]>([]);
-  const [submitting, setSubmitting] = useState<boolean>(false);
 
   const loadJobs = async () => {
     try {
       const res = await axios.get(`${API_BASE}/batch/jobs`);
-      setJobs(res.data);
+      setJobs(res.data.data || []);
     } catch (e) {}
   };
 
   useEffect(() => {
-    fetchHardwareMetrics().then(data => {
-      setHardware(data);
-      if (data && data.recommended_concurrency) {
-        setConcurrency(data.recommended_concurrency);
-      }
-    }).catch(() => {});
+    fetchHardwareMetrics().then(setHardware).catch(() => {});
     loadJobs();
-    const interval = setInterval(loadJobs, 2000);
+    const interval = setInterval(loadJobs, 3000);
     return () => clearInterval(interval);
   }, []);
-
-  const handleStartBatch = async () => {
-    setSubmitting(true);
-    try {
-      await axios.post(`${API_BASE}/batch/jobs`, {
-        total_count: totalCount,
-        concurrency_limit: concurrency
-      });
-      await loadJobs();
-      alert('批量混剪作业已成功加入队列！');
-    } catch (err) {
-      alert('提交批量任务失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
@@ -99,44 +75,13 @@ export const BatchCut: React.FC = () => {
         </div>
       )}
 
-      {/* 批量任务配置卡片 */}
+      {/* 批量任务说明卡片 */}
       <div className="bg-white border border-gray-200/80 rounded-2xl p-6 shadow-sm mb-8">
-        <h2 className="text-base font-bold text-gray-800 mb-4">创建批量生产作业</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-2">生成混剪视频数量</label>
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={totalCount}
-              onChange={e => setTotalCount(parseInt(e.target.value) || 1)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <span className="text-[11px] text-gray-400 mt-1 block">每次混剪将自动随机组合不同的空镜头切片</span>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-2">并发渲染线程限制</label>
-            <input
-              type="number"
-              min="1"
-              max="16"
-              value={concurrency}
-              onChange={e => setConcurrency(parseInt(e.target.value) || 1)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <span className="text-[11px] text-gray-400 mt-1 block">建议不要超过推荐并发数，以保持电脑流畅不卡顿</span>
-          </div>
-        </div>
-
-        <button
-          onClick={handleStartBatch}
-          disabled={submitting}
-          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm px-6 py-3 rounded-xl transition-colors shadow-sm disabled:opacity-50"
-        >
-          {submitting ? '提交中...' : '启动批量混剪作业'}
-        </button>
+        <h2 className="text-base font-bold text-gray-800 mb-2">创建批量智能剪辑任务</h2>
+        <p className="text-sm text-gray-500">
+          批量剪辑入口已整合至「素材库」：在口播分镜页签勾选多个视频，点击「批量智能剪辑」即可按推荐并发逐个执行
+          完整流水线（ASR → AI 纠偏 → 高亮词 → AI 分镜决策 → 合成）。每个视频完成后可在此或素材库点入单视频工作台人工修正。
+        </p>
       </div>
 
       {/* 任务运行列表 */}
@@ -149,12 +94,12 @@ export const BatchCut: React.FC = () => {
         ) : (
           <div className="space-y-3">
             {jobs.map(j => {
-              const pct = Math.round((j.completed_count / j.total_count) * 100);
+              const pct = j.total_count > 0 ? Math.round((j.completed_count / j.total_count) * 100) : 0;
               return (
-                <div key={j.id} className="bg-white border border-gray-200/80 rounded-xl p-4 shadow-sm">
+                <div key={j.job_id} className="bg-white border border-gray-200/80 rounded-xl p-4 shadow-sm">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center space-x-2">
-                      <span className="text-xs font-mono font-bold text-gray-700">作业 ID: {j.id.substring(0, 8)}...</span>
+                      <span className="text-xs font-mono font-bold text-gray-700">作业 ID: {String(j.job_id).substring(0, 8)}...</span>
                       <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
                         j.status === 'finished' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'
                       }`}>

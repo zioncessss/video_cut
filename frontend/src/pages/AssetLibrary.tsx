@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, Material, API_BASE } from '../services/api';
-import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink } from 'lucide-react';
+import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, Material, API_BASE, submitBatch, fetchBatchJob, BatchJobItem } from '../services/api';
+import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink, Layers } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'talking_head', label: '口播分镜', desc: '剪辑主视频，声音主轨与人像主体', icon: Film, color: 'text-blue-600 bg-blue-50' },
@@ -39,6 +39,13 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
   const [modalSeeking, setModalSeeking] = useState<boolean>(false);
   const [modalSeekTime, setModalSeekTime] = useState<number>(0);
   const [modalAspect, setModalAspect] = useState<'auto' | '16:9' | '9:16'>('auto');
+
+  // 批量智能剪辑（005）：口播多选、任务进度
+  const [batchSelected, setBatchSelected] = useState<string[]>([]);
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
+  const [batchItems, setBatchItems] = useState<BatchJobItem[]>([]);
+  const [batchStatus, setBatchStatus] = useState<string>('');
+  const [batchSubmitting, setBatchSubmitting] = useState<boolean>(false);
 
   // 当预览素材变更时重置播放状态
   useEffect(() => {
@@ -261,6 +268,41 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
 
   const currentCategoryInfo = CATEGORIES.find(c => c.key === activeTab);
 
+  // ===== 批量智能剪辑（005）=====
+  const toggleBatchSelect = (id: string) => {
+    setBatchSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleBatchSubmit = async () => {
+    if (batchSelected.length === 0) return;
+    setBatchSubmitting(true);
+    try {
+      const data = await submitBatch(batchSelected);
+      setBatchJobId(data.job_id);
+      const job = await fetchBatchJob(data.job_id);
+      setBatchItems(job.items);
+      setBatchStatus(job.status);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || '批量任务提交失败';
+      alert(detail);
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  // 任务进行中每 2s 轮询一次，finished 后停止
+  useEffect(() => {
+    if (!batchJobId || batchStatus === 'finished') return;
+    const timer = setInterval(async () => {
+      try {
+        const job = await fetchBatchJob(batchJobId);
+        setBatchItems(job.items);
+        setBatchStatus(job.status);
+      } catch (e) { /* 轮询失败静默重试 */ }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [batchJobId, batchStatus]);
+
   return (
     <div className="p-8 max-w-7xl mx-auto">
       {/* 顶部标题与说明 */}
@@ -360,7 +402,77 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
           <h2 className="text-base font-semibold text-gray-800">
             【{currentCategoryInfo?.label}】已就绪素材清单 ({materials.length})
           </h2>
+
+          {/* 批量智能剪辑操作条（仅口播分镜页签） */}
+          {activeTab === 'talking_head' && materials.length > 0 && (
+            <div className="flex items-center space-x-2">
+              <span className="text-xs text-gray-500">已选 {batchSelected.length} 项</span>
+              <button
+                onClick={handleBatchSubmit}
+                disabled={batchSelected.length === 0 || batchSubmitting}
+                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-40 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed"
+                title="对所选口播视频逐个执行完整智能剪辑流水线（按硬件并发分批进行）"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>{batchSubmitting ? '提交中...' : `批量智能剪辑 (${batchSelected.length})`}</span>
+              </button>
+              {batchSelected.length > 0 && (
+                <button
+                  onClick={() => setBatchSelected([])}
+                  className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
+                >清空选择</button>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* 批量任务进度面板 */}
+        {batchJobId && (
+          <div className="mb-4 bg-white border border-blue-200 rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-gray-800">
+                批量任务（{batchJobId.slice(0, 8)}…）{batchStatus === 'finished' ? '已完成' : '进行中'}
+              </span>
+              <span className="text-xs text-gray-400">
+                {batchItems.filter(i => i.status === 'completed').length} 完成 · {batchItems.filter(i => i.status === 'failed').length} 失败 · {batchItems.filter(i => i.status === 'running' || i.status === 'queued').length} 等待
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {batchItems.map(item => {
+                const mat = materials.find(m => m.id === item.material_id);
+                return (
+                  <div key={item.material_id} className="flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-1.5">
+                    <span className="font-mono text-gray-600 truncate max-w-[40%]">{mat?.filename || item.material_id.slice(0, 12)}</span>
+                    <div className="flex items-center space-x-2">
+                      {item.status === 'completed' && (
+                        <>
+                          <span className="flex items-center text-emerald-600 font-medium"><CheckCircle2 className="w-3.5 h-3.5 mr-1" />完成</span>
+                          {onSelectForEditor && (
+                            <button
+                              onClick={() => onSelectForEditor(item.material_id)}
+                              className="flex items-center text-blue-600 hover:text-blue-700 font-medium cursor-pointer"
+                              title="进入单视频剪辑工作台人工修正"
+                            >
+                              进入工作台 <ExternalLink className="w-3 h-3 ml-0.5" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {item.status === 'failed' && (
+                        <span className="flex items-center text-red-600 font-medium" title={item.error || ''}>
+                          <AlertCircle className="w-3.5 h-3.5 mr-1" />失败: {(item.error || '').slice(0, 60)}
+                        </span>
+                      )}
+                      {(item.status === 'running' || item.status === 'queued') && (
+                        <span className="text-gray-500">{item.status === 'running' ? `处理中 ${item.progress}%` : '排队中'}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="py-12 text-center text-gray-400 text-sm">加载中...</div>
@@ -416,6 +528,22 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
                     <span>{m.duration.toFixed(1)}s</span>
                   </div>
 
+                  {/* 批量选择框（仅口播分镜页签） */}
+                  {activeTab === 'talking_head' && (
+                    <label
+                      className="absolute top-2.5 right-2.5 z-10 p-1.5 bg-black/70 backdrop-blur-sm rounded-full cursor-pointer shadow-sm"
+                      onClick={(e) => e.stopPropagation()}
+                      title="加入批量智能剪辑"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={batchSelected.includes(m.id)}
+                        onChange={() => toggleBatchSelect(m.id)}
+                        className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+                      />
+                    </label>
+                  )}
+
                   {/* 右上角删除按钮 */}
                   <button
                     onClick={(e) => {
@@ -423,7 +551,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
                       handleDelete(m.id);
                     }}
                     title="删除素材"
-                    className="absolute top-2.5 right-2.5 p-1.5 bg-black/70 backdrop-blur-sm text-gray-300 hover:text-red-400 hover:bg-black/90 rounded-full transition-colors cursor-pointer shadow-sm"
+                    className="absolute top-2.5 right-9 p-1.5 bg-black/70 backdrop-blur-sm text-gray-300 hover:text-red-400 hover:bg-black/90 rounded-full transition-colors cursor-pointer shadow-sm"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

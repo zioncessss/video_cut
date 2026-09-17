@@ -148,10 +148,10 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Implementation for User Story 6
 
-- [ ] T028 [US6] 批量任务持久化：backend/app/db/schema.sql 新增 `batch_jobs(id TEXT PK, payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','finished')), created_at REAL)`；backend/app/db/repository.py 新增 BatchJobRepository（save/get_by_id/list_recent）
-- [ ] T029 [P] [US6] 新建 backend/app/api/batch.py：`POST /api/batch/submit`（material_ids 校验存在性、并发数取 HardwareMetrics.recommended_concurrency、后台线程池逐个执行完整流水线：analyze→决策→render，单项失败落真实 error 不中断其余）+ `GET /api/batch/{job_id}`（返回 items 进度/状态/error，契约 C4）；backend/app/main.py 注册 router
-- [ ] T030 [P] [US6] 新建 tests/test_batch_api.py：monkeypatch 掉 ASR/composer（测试隔离边界内 mock），断言 submit 返回 job_id 与 queued 数、轮询到 completed、损坏素材项 status=failed 且 error 非空、其余项继续完成
-- [ ] T031 [US6] 批量前端：frontend/src/services/api.ts 新增 submitBatch/fetchBatch 封装；frontend/src/pages/AssetLibrary.tsx 口播分镜卡片多选（checkbox）+「批量智能剪辑」按钮 + 队列进度面板（逐项进度/状态/错误，复用现有 progress 样式）+ 完成项「进入工作台」链接跳转 VideoEditor（复用现有路由参数 initialSelectedTalkingHeadId）
+- [x] T028 [US6] 批量任务持久化：backend/app/db/schema.sql 新增 `batch_jobs(id TEXT PK, payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','finished')), created_at REAL)`；backend/app/db/repository.py 新增 BatchJobRepository（save/get_by_id/list_recent）
+- [x] T029 [P] [US6] 新建 backend/app/api/batch.py：`POST /api/batch/submit`（material_ids 校验存在性、并发数取 HardwareMetrics.recommended_concurrency、后台线程池逐个执行完整流水线：analyze→决策→render，单项失败落真实 error 不中断其余）+ `GET /api/batch/{job_id}`（返回 items 进度/状态/error，契约 C4）；backend/app/main.py 注册 router
+- [x] T030 [P] [US6] 新建 tests/test_batch_api.py：monkeypatch 掉 ASR/composer（测试隔离边界内 mock），断言 submit 返回 job_id 与 queued 数、轮询到 completed、损坏素材项 status=failed 且 error 非空、其余项继续完成
+- [x] T031 [US6] 批量前端：frontend/src/services/api.ts 新增 submitBatch/fetchBatch 封装；frontend/src/pages/AssetLibrary.tsx 口播分镜卡片多选（checkbox）+「批量智能剪辑」按钮 + 队列进度面板（逐项进度/状态/错误，复用现有 progress 样式）+ 完成项「进入工作台」链接跳转 VideoEditor（复用现有路由参数 initialSelectedTalkingHeadId）
 
 **Checkpoint**: 批量队列可见、失败如实、单视频可点入修正 → US6 独立可验收
 
@@ -165,8 +165,8 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Implementation for User Story 7
 
-- [ ] T032 [US7] backend/app/models/entities.py `EditingStrategy` 默认值：`enable_top_banner: bool = True` → `False`、`enable_watermark: bool = True` → `False`（仅影响新建工程的默认构造，迁移不回写已保存策略——T017 迁移测试中加断言：存量策略 JSON 里的 True 不被改写）
-- [ ] T033 [P] [US7] frontend/src/components/StrategyStudio.tsx 横幅与水印两个设置区块（约 436、649 行）：区块头部默认折叠态呈现「已关闭（成片评审后可开启）」提示文案，展开后开关与样式能力保持不变
+- [x] T032 [US7] backend/app/models/entities.py `EditingStrategy` 默认值：`enable_top_banner: bool = True` → `False`、`enable_watermark: bool = True` → `False`（仅影响新建工程的默认构造，迁移不回写已保存策略——T017 迁移测试中加断言：存量策略 JSON 里的 True 不被改写）
+- [x] T033 [P] [US7] frontend/src/components/StrategyStudio.tsx 横幅与水印两个设置区块（约 436、649 行）：区块头部默认折叠态呈现「已关闭（成片评审后可开启）」提示文案，展开后开关与样式能力保持不变
 
 **Checkpoint**: 新工程成片无横幅水印 → US7 独立可验收
 
@@ -180,9 +180,9 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Implementation for User Story 8
 
-- [ ] T034 [P] [US8] backend/app/models/entities.py `CutProject` 新增 `cover_image_path: Optional[str]=None`、`cover_source: Optional[Literal["frame","upload","ai"]]=None`；backend/app/core/config.py 新增 `COVERS_DIR = STORAGE_DIR / "covers"` 并加入启动建目录列表
-- [ ] T035 [US8] backend/app/api/editor.py 新增 `POST /{project_id}/cover`（契约 C5）：`source="frame"` 时用 `ffmpeg -ss {timestamp} -frames:v 1` 从当前成片截帧存 covers/ 并持久化字段；`source="upload"` 接收图片文件（复用 ensure_storage_path 路径守卫）；`source="ai"` 返回 `501 {"code":40901,"message":"AI 封面生成规划中，敬请期待"}`（真实执行铁律：不返回伪成功）
-- [ ] T036 [US8] 前端封面入口：frontend/src/pages/VideoEditor.tsx 成片预览区（output_video_url 播放器旁）新增「设为封面」按钮（取当前播放时间戳截帧）+ 已设封面缩略图展示；frontend/src/services/api.ts 封装 setProjectCover
+- [x] T034 [P] [US8] backend/app/models/entities.py `CutProject` 新增 `cover_image_path: Optional[str]=None`、`cover_source: Optional[Literal["frame","upload","ai"]]=None`；backend/app/core/config.py 新增 `COVERS_DIR = STORAGE_DIR / "covers"` 并加入启动建目录列表
+- [x] T035 [US8] backend/app/api/editor.py 新增 `POST /{project_id}/cover`（契约 C5）：`source="frame"` 时用 `ffmpeg -ss {timestamp} -frames:v 1` 从当前成片截帧存 covers/ 并持久化字段；`source="upload"` 接收图片文件（复用 ensure_storage_path 路径守卫）；`source="ai"` 返回 `501 {"code":40901,"message":"AI 封面生成规划中，敬请期待"}`（真实执行铁律：不返回伪成功）
+- [x] T036 [US8] 前端封面入口：frontend/src/pages/VideoEditor.tsx 成片预览区（output_video_url 播放器旁）新增「设为封面」按钮（取当前播放时间戳截帧）+ 已设封面缩略图展示；frontend/src/services/api.ts 封装 setProjectCover
 
 **Checkpoint**: 封面持久化闭环，AI 入口诚实占位 → US8 独立可验收
 

@@ -35,7 +35,8 @@ import {
   Copy,
   Check,
   Film,
-  Edit3
+  Edit3,
+  Image as ImageIcon
 } from 'lucide-react';
 
 interface CorrectionItem {
@@ -97,6 +98,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [oneClickStage, setOneClickStage] = useState<string>('');
   const [rendering, setRendering] = useState<boolean>(false);
   const [outputVideoUrl, setOutputVideoUrl] = useState<string>('');
+  const [coverUrl, setCoverUrl] = useState<string>('');
+  const [settingCover, setSettingCover] = useState<boolean>(false);
   const [outputTimestamp, setOutputTimestamp] = useState<number>(Date.now());
   const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('interactive');
   const [exportInfo, setExportInfo] = useState<{
@@ -598,6 +601,33 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               </div>
             )}
             <div className="flex items-center space-x-2">
+              {outputVideoUrl && previewMode === 'rendered' && projectId && (
+                <button
+                  onClick={async () => {
+                    setSettingCover(true);
+                    try {
+                      const { setProjectCover } = await import('../services/api');
+                      const data = await setProjectCover(projectId, 'frame', currentTime);
+                      setCoverUrl(getMediaUrl(data.cover_url.replace(/^\//, '')));
+                      setAiFeedback('已将当前帧设为工程封面。');
+                    } catch (err: any) {
+                      const detail = err?.response?.data?.detail || '设置封面失败';
+                      alert(detail);
+                    } finally {
+                      setSettingCover(false);
+                    }
+                  }}
+                  disabled={settingCover}
+                  className="text-purple-600 hover:text-purple-800 font-medium hover:underline flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                  title="将成片当前帧设为工程封面（AI 封面生成为规划中能力）"
+                >
+                  <ImageIcon className="w-3 h-3" />
+                  <span>{settingCover ? '截取中...' : '设为封面'}</span>
+                </button>
+              )}
+              {coverUrl && (
+                <img src={coverUrl} alt="封面" className="w-8 h-8 object-cover rounded-md border border-gray-200" title="当前工程封面" />
+              )}
               {outputVideoUrl && (
                 previewMode === 'rendered' ? (
                   <button

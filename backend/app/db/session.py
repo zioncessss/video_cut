@@ -78,6 +78,11 @@ def init_db(db_path: Optional[Path] = None):
             conn.execute("ALTER TABLE projects ADD COLUMN correction_latency_ms REAL DEFAULT NULL;")
         except Exception:
             pass
+        # 005: 批量任务逐项状态列
+        try:
+            conn.execute("ALTER TABLE batch_jobs ADD COLUMN payload_json TEXT;")
+        except Exception:
+            pass
         conn.commit()
 
 @contextmanager

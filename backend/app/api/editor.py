@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, ensure_storage_path
 import time
 from app.models.entities import (
     CutProject,
@@ -457,6 +457,82 @@ async def render_project(project_id: str):
 
     project_storage_service.save_project(p)
     return p
+
+class CoverRequest(BaseModel):
+    source: str = "frame"             # frame | upload | ai
+    timestamp: Optional[float] = None  # source=frame 时必填：成片内秒数
+    image_base64: Optional[str] = None  # source=upload 时：图片 base64 内容
+
+@router.post("/{project_id}/cover")
+async def set_project_cover(project_id: str, req: CoverRequest):
+    """设置工程封面：成片截帧 / 本地上传；AI 生成仅规划占位，显式 501 不伪造结果"""
+    import base64 as _b64
+    import re as _re
+    import subprocess
+
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    if req.source == "ai":
+        raise HTTPException(status_code=501, detail="AI 封面生成规划中，敬请期待")
+
+    if req.source == "frame":
+        if not p.output_video_path:
+            raise HTTPException(status_code=400, detail="该工程尚未生成成片，无法截帧")
+        if req.timestamp is None:
+            raise HTTPException(status_code=400, detail="请提供有效的截帧时间点 timestamp")
+        # 路径守卫：规范化并校验必须位于 storage 目录内，之后才允许进入命令参数
+        full_video = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
+        if not full_video.exists():
+            raise HTTPException(status_code=404, detail="成片文件在磁盘上不存在")
+
+        # 白名单清洗：时间点只能是纯数字秒值，不合法时回退首帧 0.000
+        ss_value = f"{max(0.0, min(float(req.timestamp), 36000.0)):.3f}"
+        if not _re.fullmatch(r"\d+\.\d{3}", ss_value):
+            ss_value = "0.000"
+
+        ts = int(time.time())
+        cover_name = f"cover_{p.id}_{ts}.jpg"
+        cover_path = COVERS_DIR / cover_name
+        proc = subprocess.run([
+            "ffmpeg", "-y",
+            "-ss", ss_value,
+            "-i", str(full_video),
+            "-frames:v", "1", "-q:v", "3",
+            str(cover_path)
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if proc.returncode != 0 or not cover_path.exists():
+            raise HTTPException(status_code=500, detail="截帧失败：请确认 FFmpeg 可用后重试")
+        p.cover_image_path = f"storage/covers/{cover_name}"
+        p.cover_source = "frame"
+    elif req.source == "upload":
+        if not req.image_base64:
+            raise HTTPException(status_code=400, detail="请上传图片内容 image_base64")
+        try:
+            img_bytes = _b64.b64decode(req.image_base64)
+        except Exception:
+            raise HTTPException(status_code=400, detail="图片 base64 解码失败")
+        if len(img_bytes) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
+        ts = int(time.time())
+        cover_name = f"cover_{p.id}_{ts}.jpg"
+        cover_path = COVERS_DIR / cover_name
+        cover_path.write_bytes(img_bytes)
+        p.cover_image_path = f"storage/covers/{cover_name}"
+        p.cover_source = "upload"
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的封面来源: {req.source}")
+
+    project_storage_service.save_project(p)
+    return {
+        "code": 0,
+        "data": {
+            "cover_image_path": p.cover_image_path,
+            "cover_source": p.cover_source,
+            "cover_url": f"/{p.cover_image_path}"
+        }
+    }
 
 class OpenFolderRequest(BaseModel):
     path: Optional[str] = None
