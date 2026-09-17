@@ -401,6 +401,22 @@ class CodexHarnessBridge(BaseHarnessBridge):
         fallback_res.latency_ms = round(latency, 1)
         return fallback_res
 
+    async def decide_scenes(self, subtitles: List[Dict[str, Any]]):
+        """AI 分镜决策通道（codex 本地配置直连优先，CLI 回退；150s 超时）"""
+        from app.native_engine.scene_decision import parse_decisions
+
+        if not await self.is_available():
+            return [], "codex (unavailable)", 0.0, False
+        from app.harness_bridge.prompting import build_scene_decision_prompt
+        prompt = build_scene_decision_prompt(subtitles)
+        success, output_str, latency = await self._run_codex_cli(prompt, timeout=150.0)
+        if success:
+            decisions = parse_decisions(output_str)
+            if decisions:
+                return decisions, "codex", latency, True
+            return [], "codex (解析失败)", latency, False
+        return [], f"codex ({output_str[:80]})", latency, False
+
     async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
         """
         利用 Codex CLI 解析全能自然语言微调指令（改写文案、重选空镜、微调节奏）。

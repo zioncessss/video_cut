@@ -114,6 +114,22 @@ class ApiHarnessBridge(BaseHarnessBridge):
             latency_ms=round(latency_ms, 1)
         )
 
+    async def decide_scenes(self, subtitles: List[Dict[str, Any]]):
+        """AI 分镜决策通道：150s 超时（实测 91~127s），失败/解析失败如实返回 ok=False 由调用方降级"""
+        from app.native_engine.scene_decision import parse_decisions
+
+        if not await self.is_available():
+            return [], "api (unavailable)", 0.0, False
+        from app.harness_bridge.prompting import build_scene_decision_prompt
+        prompt = build_scene_decision_prompt(subtitles)
+        success, output_str, latency_ms = await llm_client.chat_completion(prompt, timeout=150.0)
+        if success:
+            decisions = parse_decisions(output_str)
+            if decisions:
+                return decisions, "api", latency_ms, True
+            return [], "api (解析失败)", latency_ms, False
+        return [], f"api ({output_str[:80]})", latency_ms, False
+
     async def apply_natural_instruction(self, request: HarnessInstructionRequest) -> HarnessPlanResponse:
         """开放式指令不在直连引擎职责内，路由 Tier B（codex/zcode → embedded 链）"""
         return await self._get_tier_b().apply_natural_instruction(request)

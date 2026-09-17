@@ -11,6 +11,7 @@ from app.models.entities import (
     CutProjectStatus,
     SubtitleSegment,
     HighlightWord,
+    SceneDecision,
     BrollReplacement,
     MaterialCategory,
     EditingStrategy,
@@ -21,6 +22,7 @@ from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
 from app.native_engine.asr_runner import asr_runner
 from app.native_engine.keyword_matcher import match_keywords_in_segment
+from app.native_engine.scene_decision import validate_and_clip, fallback_keyword_rules
 from app.native_engine.ffmpeg_filter import composer
 from app.native_engine.subtitle_styler import generate_srt_file, generate_ass_file
 from app.harness_bridge.factory import get_active_harness
@@ -52,6 +54,7 @@ class AnalyzeAndCutRequest(BaseModel):
     aspect_ratio: str = "9:16"
     auto_broll: bool = True
     force_retranscribe: bool = False
+    enable_scene_decision: bool = True
 
 class UpdateSubtitlesRequest(BaseModel):
     subtitles: List[Dict[str, Any]]
@@ -110,7 +113,33 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         correction_res = await get_active_harness().correct_subtitles(correction_req)
         corrected_segments = correction_res.updated_subtitles
 
-        # 3. 关键词匹配与空镜智能分配 (J/L-Cut)
+        # 3.5 AI 分镜决策（切哪类/时长/转场；不切区与节奏约束由确定性校验兜底）
+        scene_decisions: Dict[str, SceneDecision] = {}
+        scene_engine_note = "disabled"
+        if req.enable_scene_decision:
+            _set_progress(req.talking_head_id, PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（切分镜/时长/转场）...")
+            decision_input = [
+                {
+                    "id": str(it.get("id")),
+                    "text": str(it.get("corrected_text") or it.get("raw_text") or ""),
+                    "corrected_text": str(it.get("corrected_text") or it.get("raw_text") or ""),
+                    "start_time": float(it.get("start_time", 0.0)),
+                    "end_time": float(it.get("end_time", 0.0)),
+                }
+                for it in corrected_segments
+            ]
+            try:
+                decisions, engine_used, _latency, ok = await get_active_harness().decide_scenes(decision_input)
+                if not ok:
+                    raise RuntimeError(engine_used)
+                scene_decisions = validate_and_clip(decision_input, decisions)
+                scene_engine_note = engine_used
+            except Exception as sd_err:
+                # 真实执行铁律：AI 决策失败如实降级到关键词规则并在 pipeline_notes 标注，不假装成功
+                scene_decisions = fallback_keyword_rules(decision_input)
+                scene_engine_note = f"keyword-rules (degraded: {str(sd_err)[:120]})"
+
+        # 4. 关键词匹配与空镜智能分配 (J/L-Cut)
         _set_progress(req.talking_head_id, PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
         subtitles: List[SubtitleSegment] = []
         brolls: List[BrollReplacement] = []
@@ -131,10 +160,25 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             kw_info = match_keywords_in_segment(c_text)
             matched_cat_str = kw_info.get("matched_category")
             matched_cat = MaterialCategory(matched_cat_str) if matched_cat_str else None
-            
+
             assigned_broll_id = None
-            if req.auto_broll and matched_cat and cat_map.get(matched_cat):
-                # 初始随机选取对应类别的空镜素材（使用加密安全随机源）
+            broll_end = float(item["end_time"])
+            sd = scene_decisions.get(str(item.get("id")))
+            if sd and sd.broll_category and cat_map.get(sd.broll_category):
+                # AI 决策路径：按决策分类随机选素材，窗口 = 句首 + 决策时长
+                selected_mat = secrets.choice(cat_map[sd.broll_category])
+                assigned_broll_id = selected_mat.id
+                if sd.broll_duration > 0:
+                    broll_end = min(float(item["start_time"]) + sd.broll_duration, float(item["end_time"]))
+                brolls.append(BrollReplacement(
+                    start_time=item["start_time"],
+                    end_time=broll_end,
+                    material_id=selected_mat.id,
+                    material_category=sd.broll_category
+                ))
+                sd.material_id = selected_mat.id
+            elif req.auto_broll and matched_cat and cat_map.get(matched_cat):
+                # 旧行为兜底（未启用决策或决策未命中）：整句窗口平替
                 selected_mat = secrets.choice(cat_map[matched_cat])
                 assigned_broll_id = selected_mat.id
                 brolls.append(BrollReplacement(
@@ -155,6 +199,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                     HighlightWord(**w) for w in (item.get("highlight_words") or [])
                     if isinstance(w, dict) and w.get("word")
                 ],
+                scene_decision=sd,
                 broll_material_id=assigned_broll_id
             ))
 
@@ -171,6 +216,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             raw_asr_segments=raw_segments,
             status=CutProjectStatus.DRAFT,
             corrections_summary=summary_list,
+            pipeline_notes={"scene_decision_engine": scene_engine_note, "scene_decision_degraded": scene_engine_note.startswith("keyword-rules")},
             last_engine_used=engine_name,
             correction_latency_ms=latency_val
         )
@@ -213,6 +259,82 @@ async def correct_subtitles_endpoint(req: CorrectSubtitlesRequest):
             "corrections": [c.model_dump() for c in result.corrections_summary],
             "harness_engine_used": result.harness_engine_used,
             "latency_ms": result.latency_ms
+        }
+    }
+
+class SceneDecisionRequest(BaseModel):
+    subtitle_ids: Optional[List[str]] = None  # 缺省=全部句子
+
+@router.post("/{project_id}/scene-decision")
+async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDecisionRequest()):
+    """对既有工程单独重跑 AI 分镜决策（不重转写）；失败降级关键词规则并如实标注"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    decision_input = [
+        {
+            "id": s.id,
+            "text": s.corrected_text,
+            "corrected_text": s.corrected_text,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+        }
+        for s in p.subtitles
+        if not req.subtitle_ids or s.id in req.subtitle_ids
+    ]
+    if not decision_input:
+        raise HTTPException(status_code=400, detail="没有匹配的字幕句")
+
+    try:
+        decisions, engine_used, latency, ok = await get_active_harness().decide_scenes(decision_input)
+        if not ok:
+            raise RuntimeError(engine_used)
+        scene_decisions = validate_and_clip(decision_input, decisions)
+        degraded = False
+    except Exception as e:
+        scene_decisions = fallback_keyword_rules(decision_input)
+        engine_used = f"keyword-rules (degraded: {str(e)[:120]})"
+        degraded = True
+
+    # 依据新决策整体重建空镜窗口（随机落定素材），并持久化到字幕与工程
+    new_brolls: List[BrollReplacement] = []
+    for s in p.subtitles:
+        sd = scene_decisions.get(s.id)
+        if sd:
+            if sd.broll_category:
+                mats = storage_service.list_materials(sd.broll_category)
+                if mats:
+                    m = secrets.choice(mats)
+                    sd.material_id = m.id
+                    s.broll_material_id = m.id
+                    new_brolls.append(BrollReplacement(
+                        start_time=s.start_time,
+                        end_time=min(s.start_time + sd.broll_duration, s.end_time) if sd.broll_duration > 0 else s.end_time,
+                        material_id=m.id,
+                        material_category=sd.broll_category
+                    ))
+                else:
+                    sd.reason = (sd.reason + "；该分类暂无素材，自动跳过").strip("；")
+                    s.broll_material_id = None
+            else:
+                s.broll_material_id = None
+            s.scene_decision = sd
+
+    p.broll_replacements = new_brolls
+    p.pipeline_notes = {**(p.pipeline_notes or {}), "scene_decision_engine": engine_used, "scene_decision_degraded": degraded}
+    project_storage_service.save_project(p)
+
+    return {
+        "code": 0,
+        "data": {
+            "subtitles": [
+                {"id": s.id, "scene_decision": (s.scene_decision.model_dump() if s.scene_decision else None)}
+                for s in p.subtitles
+            ],
+            "engine_used": engine_used,
+            "latency_ms": round(latency, 1),
+            "degraded": degraded
         }
     }
 
@@ -274,10 +396,17 @@ async def render_project(project_id: str):
             if m:
                 full_b_path = STORAGE_DIR.parent / m.filepath
                 if full_b_path.exists():
+                    # 附带该窗口对应字幕的分镜转场时长（fade 档由合成器消费）
+                    transition_seconds = 0.0
+                    for s in p.subtitles:
+                        if s.start_time == b.start_time and s.scene_decision:
+                            transition_seconds = s.scene_decision.transition_seconds
+                            break
                     broll_cuts_payload.append({
                         "start_time": b.start_time,
                         "end_time": b.end_time,
-                        "material_path": full_b_path
+                        "material_path": full_b_path,
+                        "transition": transition_seconds
                     })
 
     # 2. 生成 ASS 高级高亮字幕文件与 SRT 文件

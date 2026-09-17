@@ -11,6 +11,14 @@ export interface SubtitleItem {
   matched_category?: 'venue' | 'medical' | 'experience' | 'lesson' | null;
   matched_keywords?: string[];
   highlight_words?: HighlightWord[];
+  scene_decision?: {
+    part: 'hook' | 'body' | 'cta';
+    broll_category: 'venue' | 'experience' | 'lesson' | null;
+    broll_duration: number;
+    transition_seconds: number;
+    material_id: string | null;
+    reason: string;
+  } | null;
   broll_material_id?: string | null;
   is_manual_edited?: boolean;
 }
@@ -92,6 +100,16 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
     setAddingFor(null);
   };
 
+  const getPartBadge = (part?: string) => {
+    if (part === 'hook') {
+      return <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-orange-100 text-orange-700 border border-orange-200">开场</span>;
+    }
+    if (part === 'cta') {
+      return <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-green-100 text-green-700 border border-green-200">召唤</span>;
+    }
+    return null;
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between pb-2.5 border-b border-gray-100 mb-2.5 flex-shrink-0">
@@ -127,8 +145,27 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                     <PlayCircle className="w-3.5 h-3.5 text-blue-600" />
                     <span>{formatTime(sub.start_time)} - {formatTime(sub.end_time)}</span>
                   </button>
-                  {getCategoryBadge(sub.matched_category)}
+                  <div className="flex items-center space-x-1">
+                    {getPartBadge(sub.scene_decision?.part)}
+                    {getCategoryBadge(sub.matched_category)}
+                  </div>
                 </div>
+
+                {sub.scene_decision && (
+                  <div
+                    className={`mb-1.5 text-[10px] rounded-lg px-2 py-1 border ${
+                      sub.scene_decision.broll_category
+                        ? 'bg-blue-50/70 text-blue-800 border-blue-200'
+                        : 'bg-gray-100/70 text-gray-500 border-gray-200'
+                    }`}
+                    title={sub.scene_decision.reason}
+                  >
+                    {sub.scene_decision.broll_category
+                      ? `AI 分镜：${sub.scene_decision.broll_category === 'venue' ? '场地' : sub.scene_decision.broll_category === 'experience' ? '体验' : '教学'}空镜 ${sub.scene_decision.broll_duration.toFixed(1)}s · 转场 ${sub.scene_decision.transition_seconds.toFixed(1)}s`
+                      : 'AI 分镜：保留口播真人画面'}
+                    <span className="text-gray-400"> · {sub.scene_decision.reason}</span>
+                  </div>
+                )}
 
                 <textarea
                   value={sub.corrected_text}

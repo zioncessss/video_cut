@@ -122,19 +122,19 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ### Tests for User Story 5 ⚠️（先写，确认 FAIL）
 
-- [ ] T018 [P] [US5] 新建测试固件 tests/fixtures/xiaoshan_price.txt（用户提供校正版 7 句含「不要这个数，也不要这个数，只要这个数」）、tests/fixtures/hangzhou_story.txt（校正版 11 句）、tests/fixtures/female_coach_raw.txt（原始版 20 句），每行格式 `id|start|end|text`
-- [ ] T019 [P] [US5] 新建 tests/test_scene_decision.py（纯函数单测，不联网）：对 backend/app/native_engine/scene_decision.py 的校验器断言六大行为——① part=hook/cta 句 broll 强制 null；② 文本命中价格手势正则（这个数/这个价/这么多）强制 null（即使 AI 误判 venue）；③ broll_duration>句长裁剪到句长×100%；④ transition 越界 [0,0.5] 裁剪；⑤ 相邻两句均切时裁后句；⑥ 全片占比 >40% 时按单处时长从大到小裁至达标
+- [x] T018 [P] [US5] 新建测试固件 tests/fixtures/xiaoshan_price.txt（用户提供校正版 7 句含「不要这个数，也不要这个数，只要这个数」）、tests/fixtures/hangzhou_story.txt（校正版 11 句）、tests/fixtures/female_coach_raw.txt（原始版 20 句），每行格式 `id|start|end|text`
+- [x] T019 [P] [US5] 新建 tests/test_scene_decision.py（纯函数单测，不联网）：对 backend/app/native_engine/scene_decision.py 的校验器断言六大行为——① part=hook/cta 句 broll 强制 null；② 文本命中价格手势正则（这个数/这个价/这么多）强制 null（即使 AI 误判 venue）；③ broll_duration>句长裁剪到句长×100%；④ transition 越界 [0,0.5] 裁剪；⑤ 相邻两句均切时裁后句；⑥ 全片占比 >40% 时按单处时长从大到小裁至达标
 
 ### Implementation for User Story 5
 
-- [ ] T020 [US5] 在 backend/app/harness_bridge/prompting.py 新增 `build_scene_decision_prompt(subs: list[dict]) -> str`：词库背景（load_glossary）+ 三类空镜定义（venue/experience/lesson）+ research.md R8 四类硬性不切区规则 + 节奏约束 + `{id,text,start,end}` 精简输入 + 严格 JSON 输出样例 `{decisions:[{id,part,broll,broll_duration,transition,reason}]}`；**不含高亮词职责**（归纠偏调用）
-- [ ] T021 [US5] 新建 backend/app/native_engine/scene_decision.py：`parse_decisions(raw: str) -> list[dict]`（复用 llm_client.extract_json）、`validate_and_clip(subtitles, decisions) -> dict[subtitle_id, SceneDecision]`（实现 T019 六大确定性规则）、`fallback_keyword_rules(subtitles) -> dict`（降级路径：复用 keyword_matcher 分类规则 + 默认 60% 句长 + 硬切）
-- [ ] T022 [US5] 桥接器新增决策通道：backend/app/harness_bridge/api_engine.py 新增 `decide_scenes(subtitles) -> tuple[list, str, float, bool]`（build_scene_decision_prompt + llm_client.chat_completion **timeout=150.0** + parse，失败返回 degraded 标记）；backend/app/harness_bridge/codex.py 同签名实现（`_run_codex_cli(prompt, timeout=150.0)`）；两者均走 T021 校验器，embedded 引擎无此能力直接走降级（依赖 T020、T021）
-- [ ] T023 [US5] 接入主流程：backend/app/models/entities.py `PipelineStage` 增加 `SCENE_DECIDING = "scene_deciding"`（85% 档）；backend/app/api/editor.py `analyze_and_cut` 在纠偏后、关键词匹配前插入第 3.5 步（`AnalyzeAndCutRequest` 新增 `enable_scene_decision: bool = True`）：调 decide_scenes → 成功则写入各句 `scene_decision` 并按分类随机落定 material_id，失败/降级则用 fallback_keyword_rules 并在项目 `pipeline_notes` 如实标注（progress 消息含「已降级」）；`/progress` 端点发布 SCENE_DECIDING 阶段
-- [ ] T024 [US5] backend/app/api/editor.py 新增 `POST /{project_id}/scene-decision` 端点（契约 C3）：对既有工程不重转写单独重跑决策，返回 `{code:0, data:{subtitles(仅 id+scene_decision), engine_used, latency_ms, degraded}}`
-- [ ] T025 [US5] backend/app/native_engine/ffmpeg_filter.py `compose_jl_cut` 新增 fade 转场档：`strategy.transition_style=="fade"` 且相邻片段转场 >0 时用 `xfade=transition=fade:duration=D:offset=累计时长` 链式替代 concat（offset 逐段累计、浮点容错）；**音频始终 `-map 0:a` 不参与滤镜**；cut 档走现状 concat 不动（依赖 T002 transition_style）
-- [ ] T026 [US5] 前端呈现：frontend/src/components/SubtitleList.tsx 每句显示 part 分段徽标（hook=橙/body=灰/cta=绿）+ scene_decision 空镜标签（分类/时长/理由 tooltip）；frontend/src/components/StrategyStudio.tsx 新增「转场风格」单选（硬切 cut / 叠化 fade 0.3~0.5s），走现有 PUT strategy 保存
-- [ ] T027 [US5] 集成验证：`pytest tests/test_scene_decision.py tests/test_editor_api.py` 全绿；用萧山固件手动跑一次真实决策（直连 API），人工核对不切区与节奏（预期结果见 research.md R8）
+- [x] T020 [US5] 在 backend/app/harness_bridge/prompting.py 新增 `build_scene_decision_prompt(subs: list[dict]) -> str`：词库背景（load_glossary）+ 三类空镜定义（venue/experience/lesson）+ research.md R8 四类硬性不切区规则 + 节奏约束 + `{id,text,start,end}` 精简输入 + 严格 JSON 输出样例 `{decisions:[{id,part,broll,broll_duration,transition,reason}]}`；**不含高亮词职责**（归纠偏调用）
+- [x] T021 [US5] 新建 backend/app/native_engine/scene_decision.py：`parse_decisions(raw: str) -> list[dict]`（复用 llm_client.extract_json）、`validate_and_clip(subtitles, decisions) -> dict[subtitle_id, SceneDecision]`（实现 T019 六大确定性规则）、`fallback_keyword_rules(subtitles) -> dict`（降级路径：复用 keyword_matcher 分类规则 + 默认 60% 句长 + 硬切）
+- [x] T022 [US5] 桥接器新增决策通道：backend/app/harness_bridge/api_engine.py 新增 `decide_scenes(subtitles) -> tuple[list, str, float, bool]`（build_scene_decision_prompt + llm_client.chat_completion **timeout=150.0** + parse，失败返回 degraded 标记）；backend/app/harness_bridge/codex.py 同签名实现（`_run_codex_cli(prompt, timeout=150.0)`）；两者均走 T021 校验器，embedded 引擎无此能力直接走降级（依赖 T020、T021）
+- [x] T023 [US5] 接入主流程：backend/app/models/entities.py `PipelineStage` 增加 `SCENE_DECIDING = "scene_deciding"`（85% 档）；backend/app/api/editor.py `analyze_and_cut` 在纠偏后、关键词匹配前插入第 3.5 步（`AnalyzeAndCutRequest` 新增 `enable_scene_decision: bool = True`）：调 decide_scenes → 成功则写入各句 `scene_decision` 并按分类随机落定 material_id，失败/降级则用 fallback_keyword_rules 并在项目 `pipeline_notes` 如实标注（progress 消息含「已降级」）；`/progress` 端点发布 SCENE_DECIDING 阶段
+- [x] T024 [US5] backend/app/api/editor.py 新增 `POST /{project_id}/scene-decision` 端点（契约 C3）：对既有工程不重转写单独重跑决策，返回 `{code:0, data:{subtitles(仅 id+scene_decision), engine_used, latency_ms, degraded}}`
+- [x] T025 [US5] backend/app/native_engine/ffmpeg_filter.py `compose_jl_cut` 新增 fade 转场档：`strategy.transition_style=="fade"` 且相邻片段转场 >0 时用 `xfade=transition=fade:duration=D:offset=累计时长` 链式替代 concat（offset 逐段累计、浮点容错）；**音频始终 `-map 0:a` 不参与滤镜**；cut 档走现状 concat 不动（依赖 T002 transition_style）
+- [x] T026 [US5] 前端呈现：frontend/src/components/SubtitleList.tsx 每句显示 part 分段徽标（hook=橙/body=灰/cta=绿）+ scene_decision 空镜标签（分类/时长/理由 tooltip）；frontend/src/components/StrategyStudio.tsx 新增「转场风格」单选（硬切 cut / 叠化 fade 0.3~0.5s），走现有 PUT strategy 保存
+- [x] T027 [US5] 集成验证：`pytest tests/test_scene_decision.py tests/test_editor_api.py` 全绿；用萧山固件手动跑一次真实决策（直连 API），人工核对不切区与节奏（预期结果见 research.md R8）
 
 **Checkpoint**: 时间轴带叙事分段与空镜标签，成片转场可选叠化且语音连续 → US5 独立可验收
 

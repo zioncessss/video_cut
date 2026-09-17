@@ -280,65 +280,107 @@ class FFmpegFilterComposer:
 
         # 构建多输入与 filter_complex 滤镜链 (空镜混合模式)
         inputs = ["-i", str(talking_head_path)]
-        filter_parts = []
-        concat_inputs = []
+        fade_mode = str(strat.get("transition_style") or "cut") == "fade"
+        # fade 档相邻转场下限：xfade duration 必须为正，接近 0 时视觉上即为硬切
+        MIN_FADE = 0.04
 
+        # 1. 先构建片段序列：{"input_idx", "trim_start", "base_dur", "is_broll", "transition"}
+        segs = []
         sorted_cuts = sorted(broll_cuts, key=lambda x: x["start_time"])
         current_time = 0.0
-        seg_idx = 0
-
         for cut in sorted_cuts:
             start = cut["start_time"]
             end = cut["end_time"]
             broll_file = cut.get("material_path")
-
+            if end <= current_time:
+                continue
             if start > current_time:
-                dur = start - current_time
-                filter_parts.append(
-                    f"[0:v]trim=start={current_time}:duration={dur},setpts=PTS-STARTPTS,{scale_filter}[v_seg{seg_idx}];"
-                )
-                concat_inputs.append(f"[v_seg{seg_idx}]")
-                seg_idx += 1
-
+                segs.append({
+                    "kind": "talking", "input_idx": 0,
+                    "trim_start": current_time, "base_dur": start - current_time,
+                    "transition": 0.0,
+                })
             if broll_file and Path(broll_file).exists():
-                input_idx = len(inputs) // 2
-                inputs.extend(["-i", str(broll_file)])
-                cut_dur = end - start
-                filter_parts.append(
-                    f"[{input_idx}:v]trim=start=0:duration={cut_dur},setpts=PTS-STARTPTS,{scale_filter}[v_seg{seg_idx}];"
-                )
-                concat_inputs.append(f"[v_seg{seg_idx}]")
-                seg_idx += 1
-
+                segs.append({
+                    "kind": "broll", "input_idx": None,
+                    "trim_start": 0.0, "base_dur": end - start,
+                    "transition": max(0.0, min(0.5, float(cut.get("transition") or 0.0))),
+                    "path": str(broll_file),
+                })
             current_time = end
-
         if current_time < total_duration:
-            dur = total_duration - current_time
-            filter_parts.append(
-                f"[0:v]trim=start={current_time}:duration={dur},setpts=PTS-STARTPTS,{scale_filter}[v_seg{seg_idx}];"
-            )
-            concat_inputs.append(f"[v_seg{seg_idx}]")
-            seg_idx += 1
+            segs.append({
+                "kind": "talking", "input_idx": 0,
+                "trim_start": current_time, "base_dur": total_duration - current_time,
+                "transition": 0.0,
+            })
 
-        n_segs = len(concat_inputs)
-        filter_parts.append(f"{''.join(concat_inputs)}concat=n={n_segs}:v=1:a=0[v_concat];")
-        current_v = "[v_concat]"
+        # 2. fade 档：先按衔接点计算转场时长，并由 broll 侧补帧（trim 延长）抵消叠化消耗，
+        #    保证与口播音轨总时长严格对齐；衔接点两侧都不是 broll 的情况不存在（concat 结构决定）
+        junction_fades: List[float] = []
+        if fade_mode and len(segs) >= 2:
+            for j in range(1, len(segs)):
+                prev_seg, cur_seg = segs[j - 1], segs[j]
+                f = cur_seg["transition"] if cur_seg["kind"] == "broll" else prev_seg["transition"]
+                f = max(MIN_FADE, min(0.5, f))
+                junction_fades.append(f)
+                if cur_seg["kind"] == "broll":
+                    cur_seg["base_dur"] += f
+                elif prev_seg["kind"] == "broll":
+                    prev_seg["base_dur"] += f
+
+        # 3. 片段进滤镜：登记输入、trim+scale，得到 [v_segN] 标签
+        filter_parts = []
+        concat_inputs = []
+        seg_labels = []
+        for i, seg in enumerate(segs):
+            if seg["kind"] == "broll":
+                seg["input_idx"] = len(inputs) // 2
+                inputs.extend(["-i", seg["path"]])
+            filter_parts.append(
+                f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{scale_filter}[v_seg{i}];"
+            )
+            seg_labels.append(f"[v_seg{i}]")
+
+        # 4. 片段串联：fade 档用 xfade 链（duration=衔接转场，offset=累计显示时长）；
+        #    cut 档保持 concat 硬切。
+        if fade_mode and len(segs) >= 2:
+            display = [
+                segs[i]["base_dur"]
+                - (junction_fades[i - 1] if i > 0 else 0.0)
+                - (junction_fades[i] if i < len(junction_fades) else 0.0)
+                for i in range(len(segs))
+            ]
+            current_label = seg_labels[0]
+            cum = display[0]
+            for j in range(1, len(segs)):
+                out_label = f"[vx{j}]"
+                off = max(0.0, cum - junction_fades[j - 1])
+                filter_parts.append(
+                    f"{current_label}{seg_labels[j]}xfade=transition=fade:duration={junction_fades[j - 1]:.3f}:offset={off:.3f}{out_label};"
+                )
+                current_label = out_label
+                cum = cum + display[j] - junction_fades[j - 1]
+            current_v = current_label
+            full_filter = "".join(filter_parts).rstrip(";")
+        else:
+            for label in seg_labels:
+                concat_inputs.append(label)
+            n_segs = len(concat_inputs)
+            filter_parts.append(f"{''.join(concat_inputs)}concat=n={n_segs}:v=1:a=0[v_concat];")
+            current_v = "[v_concat]"
+            full_filter = "".join(filter_parts).rstrip(";")
 
         if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
             escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
-            filter_parts.append(f"{current_v}ass='{escaped_ass}'[v_sub];")
+            full_filter += f";{current_v}ass='{escaped_ass}'[v_sub]"
             current_v = "[v_sub]"
 
         if has_overlay:
             overlay_idx = len(inputs) // 2
             inputs.extend(["-i", str(overlay_png_path)])
-            filter_parts.append(f"{current_v}[{overlay_idx}:v]overlay=0:0[v_out]")
+            full_filter += f";{current_v}[{overlay_idx}:v]overlay=0:0[v_out]"
             current_v = "[v_out]"
-        else:
-            if filter_parts[-1].endswith(";"):
-                filter_parts[-1] = filter_parts[-1][:-1]
-
-        full_filter = "".join(filter_parts).rstrip(";")
 
         cmd = [
             "ffmpeg", "-y", *inputs,

@@ -116,6 +116,9 @@ class CutProject(BaseModel):
     output_file_size_mb: Optional[float] = None
     raw_asr_segments: Optional[List[Dict[str, Any]]] = None
     corrections_summary: Optional[List[Dict[str, Any]]] = None
+    pipeline_notes: Optional[Dict[str, Any]] = None
+    cover_image_path: Optional[str] = None
+    cover_source: Optional[str] = None  # frame | upload | ai（ai 为规划中占位）
     last_engine_used: Optional[str] = None
     correction_latency_ms: Optional[float] = None
     created_at: float = Field(default_factory=time.time)
@@ -147,8 +150,9 @@ class PipelineStage(str, Enum):
     IDLE = "idle"
     AUDIO_EXTRACTING = "audio_extracting"   # 15%
     ASR_TRANSCRIBING = "asr_transcribing"   # 50%
-    LLM_CORRECTING = "llm_correcting"       # 80%
-    BROLL_MATCHING = "broll_matching"       # 95%
+    LLM_CORRECTING = "llm_correcting"       # 75%
+    SCENE_DECIDING = "scene_deciding"       # 82% AI 分镜决策
+    BROLL_MATCHING = "broll_matching"       # 90%
     COMPLETED = "completed"                 # 100%
     FAILED = "failed"
 

@@ -882,6 +882,31 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
             </button>
           ))}
         </div>
+
+        {/* 转场风格：硬切 / 叠化（时长取各句 AI 分镜决策的 transition，0.3~0.5s） */}
+        <div className="mt-2.5">
+          <span className="text-gray-600 block mb-1 font-medium text-[11px]">转场风格（音轨始终为口播原声）</span>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { id: 'cut', label: '硬切', sub: '画面直接切换' },
+              { id: 'fade', label: '叠化', sub: '0.3~0.5s 柔和过渡' },
+            ].map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => update({ transition_style: t.id as any })}
+                className={`p-2 rounded-lg border text-center transition-all ${
+                  (strategy.transition_style || 'cut') === t.id
+                    ? 'border-indigo-600 bg-indigo-50/40 text-indigo-700 font-semibold ring-1 ring-indigo-500'
+                    : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                }`}
+              >
+                <div className="text-xs">{t.label}</div>
+                <div className="text-[9px] text-gray-400 mt-0.5">{t.sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* 保存并同步策略按钮 */}

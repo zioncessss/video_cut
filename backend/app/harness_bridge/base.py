@@ -55,6 +55,14 @@ class BaseHarnessBridge(ABC):
         """可选能力：解析开放式自然语言微调指令。不支持该能力的引擎必须显式报错，严禁返回假装成功的预置响应"""
         raise RuntimeError(f"{self.__class__.__name__} 不支持开放式指令理解，请配置并切换到 codex / zcode 智能体")
 
+    async def decide_scenes(self, subtitles: List[Dict[str, Any]]):
+        """可选能力：AI 分镜决策（切哪类/时长/转场）。
+
+        返回 (decisions: List[Dict], engine_used: str, latency_ms: float, ok: bool)。
+        不支持该能力的引擎显式报错，由调用方降级到关键词规则（真实执行铁律：绝不伪造决策）。
+        """
+        raise RuntimeError(f"{self.__class__.__name__} 不支持 AI 分镜决策")
+
     async def generate_batch_variations(self, template_project: Dict[str, Any], variant_count: int) -> List[Dict[str, Any]]:
         """可选能力：批量混剪方案创意规划（当前无消费方，默认不支持）"""
         raise RuntimeError(f"{self.__class__.__name__} 不支持批量混剪方案规划")
