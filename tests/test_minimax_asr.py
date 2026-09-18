@@ -139,3 +139,87 @@ def test_transcribe_direct_local_when_provider_is_local(tmp_path):
         assert segments[0]["raw_text"] == "本地优先识别"
         assert not mock_minimax.called
         assert mock_local.called
+
+def test_trailing_punctuation_and_no_word_chopping():
+    """测试词尾附带标点（如 '要报。'）被正确识别并剥离标点，触发分句且词中不含标点"""
+    sample_response = {
+        "text": "千万不要报。我是小陈在杭州教车。",
+        "duration": 5.0,
+        "segments": [
+            {"id": 0, "start": 0.1, "end": 0.3, "text": "千"},
+            {"id": 1, "start": 0.3, "end": 0.5, "text": "万"},
+            {"id": 2, "start": 0.5, "end": 0.7, "text": "不"},
+            {"id": 3, "start": 0.7, "end": 1.0, "text": "要"},
+            {"id": 4, "start": 1.0, "end": 1.3, "text": "报。"}, # 词尾附带句号
+            {"id": 5, "start": 1.5, "end": 1.7, "text": "我"},
+            {"id": 6, "start": 1.7, "end": 1.9, "text": "是"},
+            {"id": 7, "start": 1.9, "end": 2.1, "text": "小"},
+            {"id": 8, "start": 2.1, "end": 2.3, "text": "陈"},
+            {"id": 9, "start": 2.3, "end": 2.5, "text": "在"},
+            {"id": 10, "start": 2.5, "end": 2.7, "text": "杭"},
+            {"id": 11, "start": 2.7, "end": 2.9, "text": "州"},
+            {"id": 12, "start": 2.9, "end": 3.1, "text": "教"},
+            {"id": 13, "start": 3.1, "end": 3.3, "text": "车。"}
+        ]
+    }
+    raw_segments = asr_runner.parse_minimax_response(sample_response)
+    assert len(raw_segments) == 2, f"应该以句号断为2句，实际切分了 {len(raw_segments)} 句"
+    assert raw_segments[0]["raw_text"] == "千万不要报"
+    assert raw_segments[1]["raw_text"] == "我是小陈在杭州教车"
+    # 验证 words 中的物理词不带尾随标点
+    for seg in raw_segments:
+        for w in seg["words"]:
+            assert not any(p in w["word"] for p in "，。？！,!?"), f"物理词单元不应含标点: {w['word']}"
+
+def test_natural_clause_elastic_merging():
+    """测试 15~18 字完整意群设问句不被机械 14 字腰斩"""
+    long_clause = [{
+        "id": "seg_0",
+        "start_time": 0.0,
+        "end_time": 3.2,
+        "raw_text": "就知道现在很多踩坑的原因是什么",
+        "corrected_text": "就知道现在很多踩坑的原因是什么",
+        "words": [
+            {"word": "就", "start": 0.0, "end": 0.2},
+            {"word": "知", "start": 0.2, "end": 0.4},
+            {"word": "道", "start": 0.4, "end": 0.6},
+            {"word": "现", "start": 0.6, "end": 0.8},
+            {"word": "在", "start": 0.8, "end": 1.0},
+            {"word": "很", "start": 1.0, "end": 1.2},
+            {"word": "多", "start": 1.2, "end": 1.4},
+            {"word": "踩", "start": 1.4, "end": 1.6},
+            {"word": "坑", "start": 1.6, "end": 1.8},
+            {"word": "的", "start": 1.8, "end": 2.0},
+            {"word": "原", "start": 2.0, "end": 2.2},
+            {"word": "因", "start": 2.2, "end": 2.4},
+            {"word": "是", "start": 2.4, "end": 2.6},
+            {"word": "什", "start": 2.6, "end": 2.8},
+            {"word": "么", "start": 2.8, "end": 3.1}
+        ]
+    }]
+    # 采用 8~18 字弹性单行
+    chunked = asr_runner.split_into_readable_segments(long_clause, max_chars=18)
+    assert len(chunked) == 1, "15字完整设问句不应被机械切开"
+    assert chunked[0]["raw_text"] == "就知道现在很多踩坑的原因是什么"
+
+def test_micro_segment_absorption():
+    """测试极短碎片词（如 '第一个' 0.46s）能被吸附进相邻句子，不会成为孤立走马灯碎词"""
+    micro_segments = [
+        {
+            "id": "s1",
+            "start_time": 0.0,
+            "end_time": 0.46,
+            "raw_text": "第一个",
+            "corrected_text": "第一个"
+        },
+        {
+            "id": "s2",
+            "start_time": 0.60,
+            "end_time": 2.50,
+            "raw_text": "就是低价引流套路",
+            "corrected_text": "就是低价引流套路"
+        }
+    ]
+    merged = asr_runner.merge_short_segments(micro_segments, max_chars=18, min_chars=4, min_duration=1.0)
+    assert len(merged) == 1, f"0.46s 极短片段应被吸附，当前切成了 {len(merged)} 句"
+    assert "第一个就是低价引流套路" in merged[0]["raw_text"]

@@ -221,7 +221,15 @@ async def test_connection(payload: Optional[TestConnectionPayload] = None):
 
     # 2. 探测 STT 通道 (speech_to_text)
     stt_start = time.time()
-    dummy_wav_header = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00" * 6400)
+    dummy_wav_bytes = buf.getvalue()
     try:
         async with httpx.AsyncClient(trust_env=False) as client:
             stt_resp = await client.post(
@@ -234,7 +242,7 @@ async def test_connection(payload: Optional[TestConnectionPayload] = None):
                     "stream": "false"
                 },
                 files={
-                    "file": ("test.wav", dummy_wav_header, "audio/wav")
+                    "file": ("probe.wav", dummy_wav_bytes, "audio/wav")
                 },
                 timeout=15.0
             )

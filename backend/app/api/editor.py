@@ -118,31 +118,97 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         for clause in correction_res.updated_subtitles:
             corrected_segments.extend(asr_runner.split_into_readable_segments([clause]))
 
-        # 3.5 AI 分镜决策（切哪类/时长/转场；不切区与节奏约束由确定性校验兜底）
+        # 3.5 AI 分镜决策（稀疏 Cue Sheet 契约 + 双层 60%~70% 黄金编排）
         scene_decisions: Dict[str, SceneDecision] = {}
         scene_engine_note = "disabled"
+        planned_windows: List[Dict[str, Any]] = []
+
+        th_duration = float(talking_head.duration or 0.0)
+        if th_duration <= 0:
+            th_duration = max((float(it.get("end_time", 0.0)) for it in corrected_segments), default=60.0)
+
+        target_cov = req.strategy.broll_target_coverage if hasattr(req, "strategy") and req.strategy else 0.65
+
+        from app.native_engine.scene_decision import (
+            plan_dual_layer_broll,
+            fallback_keyword_rules,
+            validate_and_clip,
+            BrollCueItem
+        )
+
+        decision_input = [
+            {
+                "id": str(it.get("id")),
+                "text": str(it.get("corrected_text") or it.get("raw_text") or ""),
+                "corrected_text": str(it.get("corrected_text") or it.get("raw_text") or ""),
+                "start_time": float(it.get("start_time", 0.0)),
+                "end_time": float(it.get("end_time", 0.0)),
+                "words": it.get("words", [])
+            }
+            for it in corrected_segments
+        ]
+
         if req.enable_scene_decision:
-            _set_progress(req.talking_head_id, PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（切分镜/时长/转场）...")
-            decision_input = [
-                {
-                    "id": str(it.get("id")),
-                    "text": str(it.get("corrected_text") or it.get("raw_text") or ""),
-                    "corrected_text": str(it.get("corrected_text") or it.get("raw_text") or ""),
-                    "start_time": float(it.get("start_time", 0.0)),
-                    "end_time": float(it.get("end_time", 0.0)),
-                }
-                for it in corrected_segments
-            ]
+            _set_progress(req.talking_head_id, PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（稀疏指示清单与双层黄金编排）...")
             try:
-                decisions, engine_used, _latency, ok = await get_active_harness().decide_scenes(decision_input)
+                cues_or_decisions, engine_used, _latency, ok = await get_active_harness().decide_scenes(decision_input)
                 if not ok:
                     raise RuntimeError(engine_used)
-                scene_decisions = validate_and_clip(decision_input, decisions)
                 scene_engine_note = engine_used
+
+                if cues_or_decisions and isinstance(cues_or_decisions[0], BrollCueItem):
+                    planned_windows = plan_dual_layer_broll(
+                        subtitles=decision_input,
+                        cues=cues_or_decisions,
+                        total_duration=th_duration,
+                        target_coverage=target_cov
+                    )
+                elif cues_or_decisions and isinstance(cues_or_decisions[0], dict):
+                    sd_map = validate_and_clip(decision_input, cues_or_decisions)
+                    raw_cues = [
+                        BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
+                        for s in decision_input if (sd := sd_map.get(s["id"])) and sd.broll_category
+                    ]
+                    planned_windows = plan_dual_layer_broll(
+                        subtitles=decision_input,
+                        cues=raw_cues,
+                        total_duration=th_duration,
+                        target_coverage=target_cov
+                    )
+                else:
+                    planned_windows = plan_dual_layer_broll(
+                        subtitles=decision_input,
+                        cues=[],
+                        total_duration=th_duration,
+                        target_coverage=target_cov
+                    )
             except Exception as sd_err:
                 # 真实执行铁律：AI 决策失败如实降级到关键词规则并在 pipeline_notes 标注，不假装成功
-                scene_decisions = fallback_keyword_rules(decision_input)
                 scene_engine_note = f"keyword-rules (degraded: {str(sd_err)[:120]})"
+                scene_decisions = fallback_keyword_rules(decision_input, total_duration=th_duration, target_coverage=target_cov)
+                raw_cues = [
+                    BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
+                    for s in decision_input if (sd := scene_decisions.get(s["id"])) and sd.broll_category
+                ]
+                planned_windows = plan_dual_layer_broll(
+                    subtitles=decision_input,
+                    cues=raw_cues,
+                    total_duration=th_duration,
+                    target_coverage=target_cov
+                )
+        elif req.auto_broll:
+            # 未开启大模型决策但开启自动空镜：直接走关键词规则 + 双层铺底
+            scene_decisions = fallback_keyword_rules(decision_input, total_duration=th_duration, target_coverage=target_cov)
+            raw_cues = [
+                BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
+                for s in decision_input if (sd := scene_decisions.get(s["id"])) and sd.broll_category
+            ]
+            planned_windows = plan_dual_layer_broll(
+                subtitles=decision_input,
+                cues=raw_cues,
+                total_duration=th_duration,
+                target_coverage=target_cov
+            )
 
         # 4. 关键词匹配与空镜智能分配 (J/L-Cut)
         _set_progress(req.talking_head_id, PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
@@ -160,38 +226,48 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             MaterialCategory.LESSON: lesson_materials
         }
 
+        # 实例化最终 broll 替换
+        for w in planned_windows:
+            mats = cat_map.get(w["material_category"]) or []
+            if not mats:
+                continue
+            m = secrets.choice(mats)
+            brolls.append(BrollReplacement(
+                start_time=w["start_time"],
+                end_time=w["end_time"],
+                material_id=m.id,
+                material_category=w["material_category"]
+            ))
+
         for item in corrected_segments:
             c_text = item.get("corrected_text", "")
             kw_info = match_keywords_in_segment(c_text)
             matched_cat_str = kw_info.get("matched_category")
             matched_cat = MaterialCategory(matched_cat_str) if matched_cat_str else None
 
+            # 判定该字幕是否落在某个空镜窗口内
             assigned_broll_id = None
-            broll_end = float(item["end_time"])
+            assigned_cat = None
+            assigned_dur = 0.0
+            mid = (float(item["start_time"]) + float(item["end_time"])) / 2.0
+            for b in brolls:
+                if b.start_time <= mid <= b.end_time:
+                    assigned_broll_id = b.material_id
+                    assigned_cat = b.material_category
+                    assigned_dur = round(b.end_time - b.start_time, 2)
+                    break
+
             sd = scene_decisions.get(str(item.get("id")))
-            if sd and sd.broll_category and cat_map.get(sd.broll_category):
-                # AI 决策路径：按决策分类随机选素材，窗口 = 句首 + 决策时长
-                selected_mat = secrets.choice(cat_map[sd.broll_category])
-                assigned_broll_id = selected_mat.id
-                if sd.broll_duration > 0:
-                    broll_end = min(float(item["start_time"]) + sd.broll_duration, float(item["end_time"]))
-                brolls.append(BrollReplacement(
-                    start_time=item["start_time"],
-                    end_time=broll_end,
-                    material_id=selected_mat.id,
-                    material_category=sd.broll_category
-                ))
-                sd.material_id = selected_mat.id
-            elif req.auto_broll and matched_cat and cat_map.get(matched_cat):
-                # 旧行为兜底（未启用决策或决策未命中）：整句窗口平替
-                selected_mat = secrets.choice(cat_map[matched_cat])
-                assigned_broll_id = selected_mat.id
-                brolls.append(BrollReplacement(
-                    start_time=item["start_time"],
-                    end_time=item["end_time"],
-                    material_id=selected_mat.id,
-                    material_category=matched_cat
-                ))
+            if not sd:
+                sd = SceneDecision(
+                    part="body",
+                    broll_category=assigned_cat,
+                    broll_duration=assigned_dur,
+                    material_id=assigned_broll_id,
+                    reason="双层黄金编排分镜" if assigned_cat else "保留口播真人画面"
+                )
+            elif assigned_broll_id:
+                sd.material_id = assigned_broll_id
 
             subtitles.append(SubtitleSegment(
                 start_time=item["start_time"],
@@ -207,41 +283,6 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 scene_decision=sd,
                 broll_material_id=assigned_broll_id
             ))
-
-        # 4.5 分镜编排（体验硬约束）：合并防闪、单镜 2~6s 钳制、总覆盖收敛约六成；
-        # 编排后按窗口分类重新随机选材（AI/关键词决策只负责"哪里切、切哪类"）
-        if brolls:
-            from app.native_engine.scene_decision import plan_stable_windows
-            th_duration = float(talking_head.duration or 0.0)
-            if th_duration <= 0:
-                th_duration = max((float(b.end_time) for b in brolls), default=0.0)
-            planned = plan_stable_windows(
-                [{"start_time": b.start_time, "end_time": b.end_time,
-                  "material_category": b.material_category} for b in brolls],
-                total_duration=th_duration,
-            )
-            final_brolls: List[BrollReplacement] = []
-            for w in planned:
-                mats = cat_map.get(w["material_category"]) or []
-                if not mats:
-                    continue
-                m = secrets.choice(mats)
-                final_brolls.append(BrollReplacement(
-                    start_time=w["start_time"],
-                    end_time=w["end_time"],
-                    material_id=m.id,
-                    material_category=w["material_category"]
-                ))
-            brolls = final_brolls
-            # 字幕归窗：中点落在某分镜窗口内的字幕，关联该窗口素材（供工作台展示）
-            for s in subtitles:
-                mid = (s.start_time + s.end_time) / 2
-                for w in brolls:
-                    if w.start_time > mid:
-                        break
-                    if w.start_time <= mid <= w.end_time:
-                        s.broll_material_id = w.material_id
-                        break
 
         summary_list = [c.model_dump() for c in correction_res.corrections_summary] if hasattr(correction_res, 'corrections_summary') else []
         engine_name = correction_res.harness_engine_used if hasattr(correction_res, 'harness_engine_used') else "codex"

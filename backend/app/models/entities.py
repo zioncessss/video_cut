@@ -104,6 +104,18 @@ class EditingStrategy(BaseModel):
     watermark_opacity: float = 0.4
     
     broll_pacing: str = "standard"      # fast, standard, talking_only
+    broll_target_coverage: float = 0.65 # 目标成片空镜覆盖率 (40%~70% 黄金区间，默认 65%)
+
+class BrollCueItem(BaseModel):
+    """大模型稀疏分镜切入指示项"""
+    start_time: float
+    end_time: float
+    category: MaterialCategory
+    visual_intent: str = ""
+
+class BrollCueResponse(BaseModel):
+    """分镜决策顶层响应对象"""
+    broll_cues: List[BrollCueItem] = Field(default_factory=list)
 
 class CutProjectStatus(str, Enum):
     DRAFT = "draft"

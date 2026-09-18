@@ -185,16 +185,20 @@ class ApiHarnessBridge(BaseHarnessBridge):
         )
 
     async def decide_scenes(self, subtitles: List[Dict[str, Any]]):
-        """AI 分镜决策通道：流式收集完整回复（推理模型思考链长，非流式易超时），
+        """AI 分镜决策通道：流式收集完整回复，解析稀疏指示清单 (broll_cues)，
         失败/解析失败如实返回 ok=False 由调用方降级关键词规则"""
-        from app.native_engine.scene_decision import parse_decisions
+        from app.native_engine.scene_decision import parse_cue_sheet, parse_decisions
 
         if not await self.is_available():
             return [], "api (unavailable)", 0.0, False
         from app.harness_bridge.prompting import build_scene_decision_prompt
         prompt = build_scene_decision_prompt(subtitles)
-        success, output_str, latency_ms = await llm_client.chat_completion_stream_full(prompt, timeout=180.0)
+        success, output_str, latency_ms = await llm_client.chat_completion_stream_full(prompt, timeout=60.0)
         if success:
+            cues = parse_cue_sheet(output_str)
+            if cues:
+                return cues, "api", latency_ms, True
+            # 兼容旧格式 decisions
             decisions = parse_decisions(output_str)
             if decisions:
                 return decisions, "api", latency_ms, True

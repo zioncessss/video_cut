@@ -46,38 +46,44 @@ def build_correction_prompt(clean_input: List[Dict[str, Any]]) -> str:
 
 def build_scene_decision_prompt(subtitles: List[Dict[str, Any]]) -> str:
     """
-    分镜决策提示词（词库驱动 + 真实口播风格规则，详见 specs/005 research.md R8）：
-    AI 只负责「切哪类/切多久/转场多久」的画面决策，高亮词职责归纠偏调用。
-    输出严格 JSON，后端还会过确定性校验（双保险），此处规则与后端校验保持一致。
+    分镜决策提示词：采纳稀疏剪辑指示清单（Editorial Cue Sheet）模式。
+    仅识别强相关语义区间（场地实景 venue、教练带教 lesson、学员流程 experience），
+    不输出不切的段落，彻底消除 Token 膨胀截断；普通正文区间由本地编排层自适应随机铺底以达成 60%~70% 覆盖率。
     """
     glossary = load_glossary()
     loc = glossary.get("location") or {}
     background_hint = str(loc.get("prompt_hint", "")).strip() or "（词库未配置背景信息）"
 
+    # 精简输入字幕字段，极速传输
+    clean_subs = [
+        {
+            "start": round(float(s.get("start_time", 0.0)), 2),
+            "end": round(float(s.get("end_time", 0.0)), 2),
+            "text": str(s.get("corrected_text") or s.get("raw_text") or "")
+        }
+        for s in subtitles
+    ]
+
     return (
-        "你是驾校口播短视频的智能剪辑师。口播视频的音轨与字幕全程保留自原口播，"
-        "你的唯一任务是：为每一句字幕决策【是否切空镜画面】。空镜分类：\n"
-        "- venue：场地空镜（训练场/考场/校区/门店/周边道路实景）\n"
-        "- experience：体验空镜（报名咨询/体检/试学体验/拿证/上车体验等学员流程画面）\n"
-        "- lesson：教学空镜（教练带教/打方向/倒库侧方练车画面）\n\n"
-        f"【地域背景】{background_hint}\n\n"
-        "【硬性不切规则——命中必须返回 null】：\n"
-        "1. 开场前 1.5~2 秒真人出镜亮相（建立主播信任感与人设），2 秒后若提到地域/校区/场地或流程，可自然切入相应空镜（如 venue/experience）；\n"
-        "2. 价格手势句：出现「这个数」「这个价」「这么多」等比划报价话术时绝对不切，画面手势本身就是内容；\n"
-        "3. 结尾行动召唤（滴滴我/找我聊/点红心/觉得怎么样/报名都没有关系）不切；\n"
-        "4. 情绪叙事与讲故事段落（痛点共鸣/学员故事/内心承诺）尽量不切，保留真人表情感染力。\n\n"
-        "【分镜编排要求】：\n"
-        "- 切入点优先选在话题转折/句组衔接处（讲完一个话题切进去讲下一个），同一话题连续几句可连续标注切镜，系统会自动合并为一个连续分镜；\n"
-        "- 单处分镜建议 3~5 秒；系统会统一编排：不足 2 秒的会延展或丢弃（杜绝快闪），超过 6 秒的会截断；\n"
-        "- 全片空镜总时长目标约占片长六成（系统收敛到 40%~70% 区间）；\n"
-        "- 每处的具体素材由系统在所选分类内随机抽取，无需指定。\n\n"
-        "【字幕列表】（字段：id / text 文本 / start_time 开始秒 / end_time 结束秒）：\n"
-        + json.dumps(subtitles, ensure_ascii=False)
-        + "\n\n严格只返回纯 JSON，无任何 markdown 与解释：\n"
+        "你是驾校口播短视频的智能剪辑导演。口播视频原声与字幕全程保留，"
+        "你的唯一任务是：通读全篇口播与时间戳，敏锐识别其中与以下三类场景【强相关】的语段，并输出建议切入空镜的区间清单（broll_cues）。\n\n"
+        "【空镜大类】：\n"
+        "- venue: 场地空镜（提到训练场/考场/校区/门店/周边实景）\n"
+        "- lesson: 教学练车空镜（提到教练带教/打方向/倒库侧方/练车画面）\n"
+        "- experience: 体验空镜（提到报名咨询/体检/拿证/上车体验等学员流程）\n\n"
+        f"【地域背景】：{background_hint}\n\n"
+        "【三大严禁切镜红线（绝对禁止输出切镜区间）】：\n"
+        "1. 开场前 1.8 秒口播真人亮相（主播出镜建立信任），前 1.8 秒内绝对不要切镜；\n"
+        "2. 价格手势句：比划报价话术（如「这个数」「这个价」「这么多」）绝不切镜，手势本身是核心内容；\n"
+        "3. 结尾行动召唤句（如「评论区找我聊」「点红心」「私信我」等 CTA）绝不切镜。\n\n"
+        "【导演原则与输出规范】：\n"
+        "- 仅输出强相关的空镜区间！无需逐句打标，不要输出不切空镜的段落（普通段落由系统编排层自适应随机铺底）；\n"
+        "- 单处空镜建议区间为 3~5 秒（start_time 与 end_time 必须严格对齐字幕的发音起止时间）；\n"
+        "- 严格只返回纯 JSON，没有任何 Markdown 标记或额外解释，格式如下：\n"
         "{\n"
-        '  "decisions": [\n'
-        '    {"id": "...", "part": "hook|body|cta", "broll": "venue|experience|lesson|null", '
-        '"broll_duration": 2.0, "transition": 0.4, "reason": "一句话理由"}\n'
+        '  "broll_cues": [\n'
+        '    {"start_time": 18.5, "end_time": 23.2, "category": "venue", "visual_intent": "低价套路引出驾校实景门面"}\n'
         "  ]\n"
-        "}"
+        "}\n\n"
+        f"【待决策口播字幕时间轴】：\n{json.dumps(clean_subs, ensure_ascii=False)}"
     )

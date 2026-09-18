@@ -48,6 +48,35 @@
 }
 ```
 
+### 1.5 BrollCueItem (稀疏剪辑指示项模型)
+由大模型稀疏分镜规划接口返回：
+```json
+{
+  "start_time": 18.5,
+  "end_time": 24.0,
+  "category": "venue",
+  "visual_intent": "低价套路引出驾校实景门面"
+}
+```
+- `start_time` (float): 切入开始时间（秒）
+- `end_time` (float): 切入结束时间（秒）
+- `category` (MaterialCategory): 空镜大类（`venue` / `experience` / `lesson`）
+- `visual_intent` (str): 视觉意图描述（供匹配参考与审查调试）
+
+### 1.6 BrollCueResponse (分镜决策顶层响应对象)
+```json
+{
+  "broll_cues": [
+    {
+      "start_time": 18.5,
+      "end_time": 24.0,
+      "category": "venue",
+      "visual_intent": "低价套路引出驾校实景门面"
+    }
+  ]
+}
+```
+
 ---
 
 ## 2. 数据转换映射关系 (Data Mapping)
@@ -81,14 +110,21 @@ classDiagram
         +List~SubtitleWord~ words
         +SceneDecision scene_decision
     }
+    class BrollCueItem {
+        +float start_time
+        +float end_time
+        +MaterialCategory category
+        +str visual_intent
+    }
     MiniMaxSTTResponse --> MiniMaxWordItem
     MiniMaxWordItem ..> SubtitleWord : 映射转写
-    SubtitleWord --> SubtitleSegment : 组装进意群短句
+    SubtitleWord --> SubtitleSegment : 组装进8~18字意群短句
+    BrollCueItem --> SceneDecision : 吸附词戳+随机铺底
 ```
 
 ---
 
-## 3. 状态与降级流转图 (State Transitions)
+## 3. 状态与编排流转图 (State Transitions)
 
 ```mermaid
 stateDiagram-v2
@@ -101,6 +137,10 @@ stateDiagram-v2
     RequestSTT --> LocalWhisper : 网络超时 / 鉴权错误 / 余额不足 (自动降级)
     
     LocalWhisper --> ProcessWords : 本地 Faster-Whisper 转写完毕
-    ProcessWords --> GoldenChunking : 传入 split_into_readable_segments
-    GoldenChunking --> [*] : 产出 6~12 字意群短句
+    ProcessWords --> NaturalChunking : 标点感知+语法意群保护+8~18字弹性合并
+    NaturalChunking --> LLMCueSheet : 生成完整字幕，发起稀疏指示清单决策
+    LLMCueSheet --> DualLayerPacing : 返回强相关 broll_cues (Token < 300)
+    DualLayerPacing --> ApplyCutZoneGuards : 锁定开场真人/报价/CTA三大禁切区
+    ApplyCutZoneGuards --> RandomFillToTarget : 自由段落自适应随机铺设至 60%~70%
+    RandomFillToTarget --> [*] : 输出精确对齐成片时间线
 ```

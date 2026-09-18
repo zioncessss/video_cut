@@ -23,9 +23,9 @@ class ASRRunner:
             print(f"Audio extraction error: {e}")
             return False
 
-    def split_into_readable_segments(self, segments: List[Dict[str, Any]], max_chars: int = 14) -> List[Dict[str, Any]]:
+    def split_into_readable_segments(self, segments: List[Dict[str, Any]], max_chars: int = 18) -> List[Dict[str, Any]]:
         """
-        针对口播短视频进行 6~12 字黄金视读切分：
+        针对口播短视频进行 8~18 字自然意群与视读切分（彻底废除 14 字机械硬切）：
         1. 优先基于物理词级时间戳（words）进行整词分组，严格取真实声学起止时间；
         2. 若无词级时间戳，采用中文自然语法停顿（标点、语气词、连词引词）进行语义切片，绝不机械等分劈裂词语。
         """
@@ -45,7 +45,7 @@ class ASRRunner:
             duration = max(0.2, end - start)
             words = seg.get("words") or []
 
-            # 如果句子本身字数健康且无需拆分，直接保留
+            # 如果句子本身字数健康且无需拆分，直接保留完整意群
             if len(text) <= max_chars:
                 refined_segments.append(seg)
                 continue
@@ -59,8 +59,18 @@ class ASRRunner:
                     next_len = len(w_word)
                     gap = round(w.get("start", 0.0) - curr_words[-1].get("end", 0.0), 3) if curr_words else 0.0
 
-                    # 达到推荐字数区间（>=5字）且遇到明显停顿（>=0.25s）或单句字数即将超标时收敛分段
-                    if curr_words and (curr_len + next_len > max_chars or (curr_len >= 5 and gap >= 0.25)):
+                    # 弹性断句准则（8~18字）：
+                    # 1. 字数达到健康单行（>=8字）且遇到明显声学停顿（>=0.25s）或单句字数即将超过上限（>18字）时收敛分段；
+                    # 2. 若停顿很明显（>=0.4s），字数达标（>=6字）也允许分段，确保口播呼吸节奏自然；
+                    # 3. 绝不在词组内部截半腰斩。
+                    should_split_words = (
+                        curr_words and (
+                            (curr_len + next_len > max_chars) or
+                            (curr_len >= 8 and gap >= 0.25) or
+                            (curr_len >= 6 and gap >= 0.40)
+                        )
+                    )
+                    if should_split_words:
                         w_text = "".join(x.get("word", "") for x in curr_words).strip()
                         if w_text:
                             sub = dict(seg)
@@ -162,15 +172,16 @@ class ASRRunner:
         segments: List[Dict[str, Any]],
         min_chars: int = 4,
         min_duration: float = 1.0,
-        max_chars: int = 14,
+        max_chars: int = 18,
         max_gap: float = 0.55,
-        max_duration: float = 3.8
+        max_duration: float = 4.2
     ) -> List[Dict[str, Any]]:
         """
-        短视频口播字幕黄金平滑合并策略（两轮自适应聚合）：
+        短视频口播字幕黄金平滑合并策略（两轮自适应聚合，8~18字弹性）：
         第一轮：优先将相邻的微短词连缀合并（如 "评论区" + "找我" + "聊一下吧" -> "评论区找我聊一下吧"），
         避免前序饱满句子过早将后续呼吁短句拆散；
-        第二轮：对于仍然孤立的极小微碎片词，智能吸附至前后语句中，彻底消除 0.3s~0.5s 走马灯式的碎词闪烁。
+        第二轮：对于仍然孤立的极小微碎片词（<1.0s 或 <=3字），智能吸附至前后语句中，彻底消除走马灯式的碎词闪烁。
+        合并时同步合并 words 列表，完整保留声学物理时间戳。
         """
         import re
         if not segments:
@@ -198,7 +209,7 @@ class ASRRunner:
 
                 if not prev_ended and 0 <= gap <= max_gap and combined_len <= max_chars and combined_dur <= max_duration:
                     if is_short(curr) or is_short(nxt):
-                        # 如果当前已是字数时长健康的完整句子(>=6字且>=1.2s)，且后续连续皆为短片段，留给后续短片段自主聚合
+                        # 如果当前已是字数时长健康的完整句子(>=8字且>=1.5s)，且后续连续皆为短片段，留给后续短片段自主聚合
                         if not is_short(curr) and i + 2 < len(segments) and is_short(nxt) and is_short(segments[i + 2]):
                             break
 
@@ -207,6 +218,8 @@ class ASRRunner:
                         curr_corr = curr.get("corrected_text", curr_text)
                         nxt_corr = nxt.get("corrected_text", nxt_text)
                         curr["corrected_text"] = curr_corr + nxt_corr
+                        if "words" in curr or "words" in nxt:
+                            curr["words"] = (curr.get("words") or []) + (nxt.get("words") or [])
                         curr_text = curr["raw_text"]
                         i += 1
                         continue
@@ -215,7 +228,7 @@ class ASRRunner:
             pass1.append(curr)
             i += 1
 
-        # 第二轮：对于仍然孤立的极小微碎片词（<= 3 字且 < 0.8s），向前吸收
+        # 第二轮：对于仍然孤立的极小微碎片词（<= 4 字或 < 1.0s），向前吸收
         pass2: List[Dict[str, Any]] = []
         for s in pass1:
             if not pass2:
@@ -230,12 +243,14 @@ class ASRRunner:
             combined_dur = round(s.get("end_time", 0.0) - prev.get("start_time", 0.0), 3)
 
             dur = s.get("end_time", 0.0) - s.get("start_time", 0.0)
-            is_lone_micro = len(curr_text) <= 3 and dur < 0.8
+            is_lone_micro = len(curr_text) <= min_chars or dur < min_duration
 
             if not prev_ended and 0 <= gap <= max_gap and combined_len <= max_chars and combined_dur <= max_duration and is_lone_micro:
                 prev["end_time"] = s.get("end_time", prev["end_time"])
                 prev["raw_text"] = prev_text + curr_text
                 prev["corrected_text"] = prev.get("corrected_text", prev_text) + s.get("corrected_text", curr_text)
+                if "words" in prev or "words" in s:
+                    prev["words"] = (prev.get("words") or []) + (s.get("words") or [])
             else:
                 pass2.append(dict(s))
 
@@ -263,27 +278,57 @@ class ASRRunner:
                 }]
             return []
 
-        current_words = []
-        for idx, item in enumerate(minimax_segments):
+        # 规范化：若 segment 包含内嵌标点或复合短语，拆分为原子单元并按字长线性插值时间戳
+        flat_segments = []
+        for item in minimax_segments:
             text = item.get("text", "").strip()
             if not text:
                 continue
             start = float(item.get("start", 0.0))
             end = float(item.get("end", start))
-            is_punct = bool(re.search(r'^[,，;；!！?？。、\s]+$', text))
+            tokens = [t for t in re.split(r'([,，;；!！?？。、\s]+)', text) if t]
+            if len(tokens) <= 1:
+                flat_segments.append({"start": start, "end": end, "text": text})
+                continue
 
-            if not is_punct:
-                current_words.append({"word": text, "start": round(start, 3), "end": round(end, 3)})
+            non_punct_len = sum(len(re.sub(r'[,，;；!！?？。、\s]', '', t)) for t in tokens)
+            dur = max(0.0, end - start)
+            cur_t = start
+            for tok in tokens:
+                if re.match(r'^[,，;；!！?？。、\s]+$', tok):
+                    flat_segments.append({"start": cur_t, "end": cur_t, "text": tok})
+                else:
+                    clean_len = len(re.sub(r'[,，;；!！?？。、\s]', '', tok))
+                    tok_dur = (clean_len / non_punct_len * dur) if non_punct_len > 0 else 0.0
+                    tok_end = round(cur_t + tok_dur, 3)
+                    flat_segments.append({"start": cur_t, "end": tok_end, "text": tok})
+                    cur_t = tok_end
 
-            next_start = float(minimax_segments[idx + 1].get("start", end)) if idx + 1 < len(minimax_segments) else end
+        current_words = []
+        for idx, item in enumerate(flat_segments):
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            start = float(item.get("start", 0.0))
+            end = float(item.get("end", start))
+            is_pure_punct = bool(re.search(r'^[,，;；!！?？。、\s]+$', text))
+            has_trailing_punct = bool(re.search(r'[,，;；!！?？。、\s]+$', text))
+            clean_word = re.sub(r'[,，;；!！?？。、\s]', '', text)
+
+            if clean_word:
+                current_words.append({"word": clean_word, "start": round(start, 3), "end": round(end, 3)})
+
+            next_start = float(flat_segments[idx + 1].get("start", end)) if idx + 1 < len(flat_segments) else end
             gap = max(0.0, next_start - end)
             curr_len = sum(len(x["word"]) for x in current_words)
 
+            # 语义断句：优先基于标点（纯标点或词尾附带标点）、明显声学停顿（>=0.28s）、语气词停顿
+            # 彻底废除 curr_len >= 14 的机械硬切，超长句交由 split_into_readable_segments 按语法意群切分
             should_break = (
-                is_punct or
-                (gap >= 0.28 and curr_len >= 4) or
-                (curr_len >= 6 and (gap >= 0.15 or text[-1:] in "呢吧啊吗呀啦哒哦哈")) or
-                curr_len >= 14
+                is_pure_punct or
+                has_trailing_punct or
+                (gap >= 0.28 and curr_len >= 5) or
+                (curr_len >= 6 and ((gap >= 0.15 and text[-1:] in "呢吧啊吗呀啦哒哦哈") or (clean_word and clean_word[-1:] in "呢吧啊吗呀啦哒哦哈" and gap >= 0.12)))
             )
             if should_break and current_words:
                 clause_text = "".join(x["word"] for x in current_words).strip()
@@ -386,12 +431,11 @@ class ASRRunner:
                         gap = (seg.words[idx + 1].start - w.end) if idx + 1 < len(seg.words) else 0.0
                         curr_len = sum(len(x.word.strip()) for x in current_words)
 
-                        # 触发断句条件：遇到标点、或静音停顿>=0.28s、或已达6字以上且遇到>=0.15s停顿/语气词、或即将超字数
+                        # 触发断句条件：遇到标点、或静音停顿>=0.28s、或已达6字以上且遇到>=0.15s停顿/语气词
                         should_break = (
                             is_punct or
-                            (gap >= 0.28 and curr_len >= 4) or
-                            (curr_len >= 6 and (gap >= 0.15 or clean_w[-1:] in "呢吧啊吗呀啦哒哦哈")) or
-                            curr_len >= 14
+                            (gap >= 0.28 and curr_len >= 5) or
+                            (curr_len >= 6 and (gap >= 0.15 or clean_w[-1:] in "呢吧啊吗呀啦哒哦哈"))
                         )
                         if should_break:
                             clause_text = "".join(x.word.strip() for x in current_words)

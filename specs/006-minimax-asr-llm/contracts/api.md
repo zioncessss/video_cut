@@ -31,7 +31,7 @@
   }
   ```
 
-### 1.2 大模型智能剪辑 (Chat Completions)
+### 1.2 大模型智能分镜决策 (Chat Completions - 稀疏指示清单契约)
 - **Method**: `POST`
 - **URL**: `https://api.minimaxi.com/v1/chat/completions`
 - **Headers**:
@@ -44,10 +44,30 @@
   {
     "model": "MiniMax-Text-01",
     "messages": [
-      { "role": "system", "content": "..." },
-      { "role": "user", "content": "..." }
+      {
+        "role": "system",
+        "content": "你是短视频智能剪辑导演。你的任务是通读全片口播文字与时间戳，识别与【场地(venue) / 练车(lesson) / 流程体验(experience)】强相关的场景，仅输出建议切入空镜的区间列表。普通段落不要输出，严禁逐句填空。输出严格JSON。"
+      },
+      {
+        "role": "user",
+        "content": "【时间线字幕】：[{\"start\": 1.6, \"end\": 4.2, \"text\": \"...\"}, ...]\n\n严格输出格式：\n{\"broll_cues\": [{\"start_time\": 18.5, \"end_time\": 24.0, \"category\": \"venue\", \"visual_intent\": \"场地与门面展示\"}]}"
+      }
     ],
-    "temperature": 0.1
+    "temperature": 0.1,
+    "max_tokens": 1024
+  }
+  ```
+- **Response 200 OK (极速流式返回，Token < 300)**:
+  ```json
+  {
+    "choices": [
+      {
+        "message": {
+          "role": "assistant",
+          "content": "{\"broll_cues\": [{\"start_time\": 18.5, \"end_time\": 24.0, \"category\": \"venue\", \"visual_intent\": \"低价套路引出驾校实景门面\"}, {\"start_time\": 54.6, \"end_time\": 61.8, \"category\": \"lesson\", \"visual_intent\": \"承诺教练更换与车接车送实景\"}]}"
+        }
+      }
+    ]
   }
   ```
 
