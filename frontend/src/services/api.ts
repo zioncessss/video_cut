@@ -258,11 +258,41 @@ export interface SubtitleSegment {
   is_manual_edited?: boolean;
 }
 
+export interface BrollReplacement {
+  id?: string;
+  start_time: number;
+  end_time: number;
+  material_id: string;
+  material_category: 'venue' | 'experience' | 'lesson';
+  playback_mode?: string;
+}
+
 export const updateProjectStrategy = async (
   projectId: string,
   strategy: EditingStrategy
 ) => {
   const res = await axios.put(`${API_BASE}/projects/${projectId}/strategy`, strategy);
+  return res.data;
+};
+
+export const redecideScenes = async (
+  projectId: string,
+  targetCoverage: number = 0.65
+): Promise<{
+  code: number;
+  message: string;
+  data: {
+    project: any;
+    subtitles: SubtitleSegment[];
+    broll_replacements: BrollReplacement[];
+    engine_used: string;
+    latency_ms: number;
+    degraded: boolean;
+  };
+}> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/scene-decision`, {
+    target_coverage: targetCoverage,
+  });
   return res.data;
 };
 

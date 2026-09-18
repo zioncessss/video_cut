@@ -350,10 +350,11 @@ async def correct_subtitles_endpoint(req: CorrectSubtitlesRequest):
 
 class SceneDecisionRequest(BaseModel):
     subtitle_ids: Optional[List[str]] = None  # 缺省=全部句子
+    target_coverage: float = 0.65  # 目标覆盖率 0.40~0.70 (黄金值 0.65)
 
 @router.post("/{project_id}/scene-decision")
 async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDecisionRequest()):
-    """对既有工程单独重跑 AI 分镜决策（不重转写）；失败降级关键词规则并如实标注"""
+    """对既有工程单独重跑 AI 分镜决策（不重跑 ASR 与文本纠偏）；采用双层 60%~70% 黄金编排引擎"""
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
@@ -361,10 +362,11 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
     decision_input = [
         {
             "id": s.id,
-            "text": s.corrected_text,
-            "corrected_text": s.corrected_text,
+            "text": s.corrected_text or s.raw_text,
+            "corrected_text": s.corrected_text or s.raw_text,
             "start_time": s.start_time,
             "end_time": s.end_time,
+            "words": [w.model_dump() for w in s.words] if hasattr(s, "words") and s.words else []
         }
         for s in p.subtitles
         if not req.subtitle_ids or s.id in req.subtitle_ids
@@ -372,39 +374,82 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
     if not decision_input:
         raise HTTPException(status_code=400, detail="没有匹配的字幕句")
 
+    target_cov = req.target_coverage or (p.strategy.broll_target_coverage if hasattr(p.strategy, "broll_target_coverage") and p.strategy.broll_target_coverage else 0.65)
+    total_duration = max((float(s.end_time) for s in p.subtitles), default=60.0)
+
+    from app.native_engine.scene_decision import (
+        plan_dual_layer_broll,
+        fallback_keyword_rules,
+        validate_and_clip,
+        BrollCueItem
+    )
+
+    planned_windows: List[Dict[str, Any]] = []
+    engine_used = "minimax-cue"
+    latency = 0.0
+    degraded = False
+
     try:
-        decisions, engine_used, latency, ok = await get_active_harness().decide_scenes(decision_input)
+        cues_or_decisions, engine_used, latency, ok = await get_active_harness().decide_scenes(decision_input)
         if not ok:
             raise RuntimeError(engine_used)
-        scene_decisions = validate_and_clip(decision_input, decisions)
-        degraded = False
+
+        if cues_or_decisions and isinstance(cues_or_decisions[0], BrollCueItem):
+            planned_windows = plan_dual_layer_broll(
+                subtitles=decision_input,
+                cues=cues_or_decisions,
+                total_duration=total_duration,
+                target_coverage=target_cov
+            )
+        elif cues_or_decisions and isinstance(cues_or_decisions[0], dict):
+            sd_map = validate_and_clip(decision_input, cues_or_decisions)
+            raw_cues = [
+                BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
+                for s in decision_input if (sd := sd_map.get(s["id"])) and sd.broll_category
+            ]
+            planned_windows = plan_dual_layer_broll(
+                subtitles=decision_input,
+                cues=raw_cues,
+                total_duration=total_duration,
+                target_coverage=target_cov
+            )
+        else:
+            planned_windows = plan_dual_layer_broll(
+                subtitles=decision_input,
+                cues=[],
+                total_duration=total_duration,
+                target_coverage=target_cov
+            )
     except Exception as e:
-        scene_decisions = fallback_keyword_rules(decision_input)
         engine_used = f"keyword-rules (degraded: {str(e)[:120]})"
+        scene_decisions = fallback_keyword_rules(decision_input, total_duration=total_duration, target_coverage=target_cov)
+        raw_cues = [
+            BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
+            for s in decision_input if (sd := scene_decisions.get(s["id"])) and sd.broll_category
+        ]
+        planned_windows = plan_dual_layer_broll(
+            subtitles=decision_input,
+            cues=raw_cues,
+            total_duration=total_duration,
+            target_coverage=target_cov
+        )
         degraded = True
+        latency = 0.0
 
-    # 依据新决策整体重建空镜窗口（随机落定素材），并持久化到字幕与工程
-    # 依据决策产出原始窗口，经编排层稳定化（合并防闪/单镜 2~6s 钳制/覆盖率收敛约六成）后再随机选材
-    raw_spans: List[Dict[str, Any]] = []
-    for s in p.subtitles:
-        sd = scene_decisions.get(s.id)
-        if not sd:
-            continue
-        s.scene_decision = sd
-        if sd.broll_category and sd.broll_duration > 0:
-            raw_spans.append({
-                "start_time": s.start_time,
-                "end_time": min(s.start_time + sd.broll_duration, s.end_time) if sd.broll_duration > 0 else s.end_time,
-                "material_category": sd.broll_category
-            })
+    # 预加载空镜素材库
+    venue_materials = storage_service.list_materials(MaterialCategory.VENUE)
+    experience_materials = storage_service.list_materials(MaterialCategory.EXPERIENCE)
+    lesson_materials = storage_service.list_materials(MaterialCategory.LESSON)
 
-    total_duration = max((s.end_time for s in p.subtitles), default=0.0)
-    from app.native_engine.scene_decision import plan_stable_windows
-    planned = plan_stable_windows(raw_spans, total_duration=total_duration)
+    cat_map = {
+        MaterialCategory.VENUE: venue_materials,
+        MaterialCategory.EXPERIENCE: experience_materials,
+        MaterialCategory.LESSON: lesson_materials
+    }
 
     new_brolls: List[BrollReplacement] = []
-    for w in planned:
-        mats = storage_service.list_materials(w["material_category"]) or []
+    for w in planned_windows:
+        mats = cat_map.get(w["material_category"]) or []
         if not mats:
             continue
         m = secrets.choice(mats)
@@ -415,19 +460,34 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
             material_category=w["material_category"]
         ))
 
-    # 字幕归窗：中点落在某分镜窗口内的字幕，关联该窗口素材
+    # 字幕关联与更新
+    from app.native_engine.keyword_matcher import match_keywords_in_segment
     for s in p.subtitles:
-        s.broll_material_id = None
-        mid = (s.start_time + s.end_time) / 2
+        c_text = s.corrected_text or s.raw_text
+        kw_info = match_keywords_in_segment(c_text)
+        matched_cat_str = kw_info.get("matched_category")
+        s.matched_category = MaterialCategory(matched_cat_str) if matched_cat_str else None
+        s.matched_keywords = kw_info.get("matched_keywords", [])
+
+        assigned_broll_id = None
+        assigned_cat = None
+        assigned_dur = 0.0
+        mid = (float(s.start_time) + float(s.end_time)) / 2.0
         for b in new_brolls:
-            if b.start_time > mid:
-                break
             if b.start_time <= mid <= b.end_time:
-                s.broll_material_id = b.material_id
-                sd = scene_decisions.get(s.id)
-                if sd:
-                    sd.material_id = b.material_id
+                assigned_broll_id = b.material_id
+                assigned_cat = b.material_category
+                assigned_dur = round(b.end_time - b.start_time, 2)
                 break
+
+        s.scene_decision = SceneDecision(
+            part="body",
+            broll_category=assigned_cat,
+            broll_duration=assigned_dur,
+            material_id=assigned_broll_id,
+            reason="双层黄金编排分镜" if assigned_cat else "保留口播真人画面"
+        )
+        s.broll_material_id = assigned_broll_id
 
     p.broll_replacements = new_brolls
     p.pipeline_notes = {**(p.pipeline_notes or {}), "scene_decision_engine": engine_used, "scene_decision_degraded": degraded}
@@ -435,11 +495,11 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
 
     return {
         "code": 0,
+        "message": "AI 分镜已重新编排完成",
         "data": {
-            "subtitles": [
-                {"id": s.id, "scene_decision": (s.scene_decision.model_dump() if s.scene_decision else None)}
-                for s in p.subtitles
-            ],
+            "project": _enrich_project_export_meta(p),
+            "subtitles": [s.model_dump() for s in p.subtitles],
+            "broll_replacements": [b.model_dump() for b in p.broll_replacements],
             "engine_used": engine_used,
             "latency_ms": round(latency, 1),
             "degraded": degraded

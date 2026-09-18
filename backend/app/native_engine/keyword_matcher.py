@@ -13,12 +13,11 @@ def match_keywords_in_segment(text: str) -> Dict[str, Any]:
     matched_cat: Optional[str] = None
     all_matched_words: List[str] = []
 
-    # 1. 判定空镜主分类（体验 > 场地 > 教学）
-    experience_kws = keywords.get("experience") or keywords.get("medical") or []
-    for kw in experience_kws:
+    # 1. 判定空镜主分类（用户导演准则：练车学车细节 lesson > 场地实景 venue > 学员体验流程 experience）
+    for kw in keywords.get("lesson", []):
         if kw in text:
             if not matched_cat:
-                matched_cat = "experience"
+                matched_cat = "lesson"
             if kw not in all_matched_words:
                 all_matched_words.append(kw)
 
@@ -29,10 +28,11 @@ def match_keywords_in_segment(text: str) -> Dict[str, Any]:
             if kw not in all_matched_words:
                 all_matched_words.append(kw)
 
-    for kw in keywords.get("lesson", []):
+    experience_kws = keywords.get("experience") or keywords.get("medical") or []
+    for kw in experience_kws:
         if kw in text:
             if not matched_cat:
-                matched_cat = "lesson"
+                matched_cat = "experience"
             if kw not in all_matched_words:
                 all_matched_words.append(kw)
 

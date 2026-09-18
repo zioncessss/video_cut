@@ -1,9 +1,11 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
-import { EditingStrategy } from '../services/api';
+import { EditingStrategy, BrollReplacement, Material, getMediaUrl } from '../services/api';
 
 interface VideoPlayerProps {
   videoUrl?: string;
+  brolls?: BrollReplacement[];
+  materialsMap?: Record<string, Material>;
   subtitles?: Array<{
     start_time: number;
     end_time: number;
@@ -108,6 +110,8 @@ const ResizeHandles: React.FC<ResizeHandlesProps> = ({
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoUrl,
+  brolls = [],
+  materialsMap = {},
   subtitles = [],
   currentTime,
   onTimeUpdate,
@@ -119,10 +123,36 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isRendered = false
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const brollVideoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [duration, setDuration] = useState<number>(0);
+
+  // 实时分镜探测：判断当前播放时间点是否落在某段 B-roll 空镜窗口内
+  const activeBroll = (!isRendered && brolls && brolls.length > 0)
+    ? brolls.find(b => currentTime >= b.start_time && currentTime < b.end_time)
+    : null;
+  const activeBrollMaterial = (activeBroll && materialsMap) ? materialsMap[activeBroll.material_id] : null;
+  const activeBrollUrl = activeBrollMaterial ? getMediaUrl(activeBrollMaterial.filepath) : null;
+
+  // 保持空镜视频与口播原声/主时间戳毫秒级同步
+  useEffect(() => {
+    if (!brollVideoRef.current || !activeBroll) return;
+    const brollEl = brollVideoRef.current;
+    const offset = Math.max(0, currentTime - activeBroll.start_time);
+    const bDur = brollEl.duration || activeBrollMaterial?.duration || 10;
+    const target = bDur > 0 ? (offset % bDur) : offset;
+
+    if (Math.abs(brollEl.currentTime - target) > 0.35) {
+      brollEl.currentTime = target;
+    }
+    if (isPlaying) {
+      brollEl.play().catch(() => {});
+    } else {
+      brollEl.pause();
+    }
+  }, [activeBroll, currentTime, isPlaying, activeBrollMaterial]);
   
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
   const [dragMode, setDragMode] = useState<DragMode>(null);
@@ -566,24 +596,57 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }`}
       >
         {videoUrl ? (
-          <video
-            ref={videoRef}
-            key={videoUrl}
-            src={videoUrl}
-            preload="auto"
-            playsInline
-            onClick={togglePlay}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
-            className="w-full h-full object-contain cursor-pointer bg-black"
-            onTimeUpdate={handleTimeUpdate}
-            onLoadedMetadata={handleLoadedMetadata}
-            muted={isMuted}
-          />
+          <div className="relative w-full h-full flex items-center justify-center">
+            <video
+              ref={videoRef}
+              key={videoUrl}
+              src={videoUrl}
+              preload="auto"
+              playsInline
+              onClick={togglePlay}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => setIsPlaying(false)}
+              className="w-full h-full object-contain cursor-pointer bg-black"
+              onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={handleLoadedMetadata}
+              muted={isMuted}
+            />
+
+            {/* 实时分镜空镜平替层：当非压制成片播放模式时，按分镜时间窗覆盖呈现空镜素材，音频持续保持口播主音轨 */}
+            {activeBrollUrl && (
+              <video
+                ref={brollVideoRef}
+                key={activeBrollUrl}
+                src={activeBrollUrl}
+                preload="auto"
+                playsInline
+                muted
+                onClick={togglePlay}
+                className="absolute inset-0 w-full h-full object-contain cursor-pointer bg-black z-10 animate-in fade-in duration-150"
+              />
+            )}
+          </div>
         ) : (
           <div className="text-gray-400 text-xs px-4 text-center">
             暂无渲染预览，请先分析或上传视频
+          </div>
+        )}
+
+        {/* 实时分镜切入状态徽标 */}
+        {activeBroll && !isRendered && (
+          <div className="absolute top-3 left-3 z-30 flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold shadow-lg backdrop-blur-md bg-black/85 text-white border border-white/20 animate-in fade-in duration-150 select-none pointer-events-none">
+            <span className={`w-2 h-2 rounded-full animate-pulse ${
+              activeBroll.material_category === 'venue' ? 'bg-blue-400' :
+              activeBroll.material_category === 'lesson' ? 'bg-emerald-400' : 'bg-purple-400'
+            }`} />
+            <span>
+              {activeBroll.material_category === 'venue' ? '场地实景空镜' :
+               activeBroll.material_category === 'lesson' ? '教学练车空镜' : '学员体验空镜'}
+            </span>
+            <span className="text-gray-300 font-mono text-[11px]">
+              {activeBroll.start_time.toFixed(1)}s - {activeBroll.end_time.toFixed(1)}s
+            </span>
           </div>
         )}
 

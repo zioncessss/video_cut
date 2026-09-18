@@ -297,11 +297,16 @@ class ProjectRepository:
         if not broll_cuts:
             for seg in subtitles:
                 if seg.broll_material_id:
+                    cat = seg.matched_category
+                    if not cat and seg.scene_decision and seg.scene_decision.broll_category:
+                        cat = seg.scene_decision.broll_category
+                    if not cat:
+                        cat = MaterialCategory.LESSON
                     broll_cuts.append(BrollReplacement(
                         start_time=seg.start_time,
                         end_time=seg.end_time,
                         material_id=seg.broll_material_id,
-                        material_category=seg.matched_category
+                        material_category=cat
                     ))
 
         corrections_summary = None

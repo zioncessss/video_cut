@@ -209,4 +209,47 @@ def test_versioned_render_replacement_and_progress(tmp_path):
         project_storage_service.delete_project_by_material(th.id)
         storage_service.delete_material(th.id)
 
+def test_redecide_scenes_dual_layer_api(tmp_path):
+    """测试既有工程单独重排分镜接口：双层 60%~70% 编排且保护开场 1.8s"""
+    from app.native_engine.project_storage import project_storage_service
+    fake_th = tmp_path / "th_redecide.mp4"
+    fake_th.write_bytes(b"stream_redecide")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_redecide.mp4", fake_th)
+
+    fake_v = tmp_path / "v_mat.mp4"
+    fake_v.write_bytes(b"v_mat")
+    mat_v = storage_service.save_material(MaterialCategory.VENUE, "v_mat.mp4", fake_v)
+
+    fake_l = tmp_path / "l_mat.mp4"
+    fake_l.write_bytes(b"l_mat")
+    mat_l = storage_service.save_material(MaterialCategory.LESSON, "l_mat.mp4", fake_l)
+
+    try:
+        cut_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        assert cut_res.status_code == 200
+        proj_id = cut_res.json()["id"]
+
+        # 调用 redecide-scenes 接口重排分镜
+        res = client.post(
+            f"/api/v1/projects/{proj_id}/scene-decision",
+            json={"target_coverage": 0.65}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["code"] == 0
+        assert "broll_replacements" in data["data"]
+        brolls = data["data"]["broll_replacements"]
+        assert len(brolls) > 0
+        # 验证开场 1.8s 没有被侵犯
+        assert not any(b["start_time"] < 1.8 for b in brolls)
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+        storage_service.delete_material(mat_v.id)
+        storage_service.delete_material(mat_l.id)
+
+
 

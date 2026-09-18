@@ -163,7 +163,9 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                     {sub.scene_decision.broll_category
                       ? `AI 分镜：${sub.scene_decision.broll_category === 'venue' ? '场地' : sub.scene_decision.broll_category === 'experience' ? '体验' : '教学'}空镜 ${sub.scene_decision.broll_duration.toFixed(1)}s · 转场 ${sub.scene_decision.transition_seconds.toFixed(1)}s`
                       : 'AI 分镜：保留口播真人画面'}
-                    <span className="text-gray-400"> · {sub.scene_decision.reason}</span>
+                    {sub.scene_decision.reason && sub.scene_decision.reason !== '保留口播真人画面' && (
+                      <span className="text-gray-400"> · {sub.scene_decision.reason}</span>
+                    )}
                   </div>
                 )}
 

@@ -111,3 +111,24 @@ def test_dual_layer_pacing_coverage_guarantee():
         dur = w["end_time"] - w["start_time"]
         assert dur >= 1.8, f"单镜时长过短，存在频闪: {dur}s"
         assert dur <= 6.5, f"单镜时长过长: {dur}s"
+
+def test_keyword_priority_lesson_venue_experience():
+    """测试三库匹配优先级：练车细节(lesson) > 场地(venue) > 体验(experience)"""
+    from app.native_engine.keyword_matcher import match_keywords_in_segment
+    # 含有练车(lesson)和场地(venue)的句子，优先匹配 lesson
+    res1 = match_keywords_in_segment("大家在训练场练车的时候一定要把好方向盘")
+    assert res1["matched_category"] == "lesson"
+    assert "练车" in res1["matched_keywords"]
+    assert "训练场" in res1["matched_keywords"]
+
+    # 只含有场地(venue)和体验(experience)的句子，优先匹配 venue
+    res2 = match_keywords_in_segment("我们考场提供体检一站式服务")
+    assert res2["matched_category"] == "venue"
+    assert "考场" in res2["matched_keywords"]
+    assert "体检" in res2["matched_keywords"]
+
+    # 只含有体验(experience)的句子，匹配 experience
+    res3 = match_keywords_in_segment("体检拍照十分钟快速搞定")
+    assert res3["matched_category"] == "experience"
+    assert "体检" in res3["matched_keywords"]
+

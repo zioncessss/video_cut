@@ -20,6 +20,8 @@ import {
   Material,
   ProjectSummary,
   EditingStrategy,
+  redecideScenes,
+  BrollReplacement,
   API_BASE,
   getMediaUrl
 } from '../services/api';
@@ -107,6 +109,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
+  const [brolls, setBrolls] = useState<BrollReplacement[]>([]);
+  const [materialsMap, setMaterialsMap] = useState<Record<string, Material>>({});
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
   const [oneClickStage, setOneClickStage] = useState<string>('');
@@ -154,6 +158,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         }
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
+        setBrolls(proj.broll_replacements || []);
         if (proj.strategy) setStrategy(proj.strategy);
         if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
           setAspectRatio(proj.aspect_ratio as any);
@@ -175,7 +180,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           setPreviewMode('interactive');
         }
         setIsCachedProject(true);
-        setAiFeedback(`已秒级载入工程 ${proj.title}（共 ${proj.subtitles?.length || 0} 句字幕）`);
+        setAiFeedback(`已秒级载入工程 ${proj.title}（共 ${proj.subtitles?.length || 0} 句字幕，${proj.broll_replacements?.length || 0} 处分镜）`);
       }
     } catch (e) {
       console.error('载入指定工程失败:', e);
@@ -193,6 +198,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         setProjectId(proj.id);
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
+        setBrolls(proj.broll_replacements || []);
         if (proj.strategy) setStrategy(proj.strategy);
         if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
           setAspectRatio(proj.aspect_ratio as any);
@@ -214,13 +220,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           setPreviewMode('interactive');
         }
         setIsCachedProject(true);
-        setAiFeedback(`已秒级载入工程磁盘缓存（共 ${proj.subtitles?.length || 0} 句字幕）`);
+        setAiFeedback(`已秒级载入工程磁盘缓存（共 ${proj.subtitles?.length || 0} 句字幕，${proj.broll_replacements?.length || 0} 处分镜）`);
         return;
       }
     } catch (e: any) {
       // 404 说明未提取过或工程未建立
       setProjectId('');
       setSubtitles([]);
+      setBrolls([]);
       setOutputVideoUrl('');
       setExportInfo(null);
       setPreviewMode('interactive');
@@ -236,7 +243,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     try {
       setAnalyzing(true);
       const newMat = await uploadMaterial('talking_head', file);
-      const updatedMaterials = await fetchMaterials('talking_head');
+      const allMats = await fetchMaterials();
+      const map: Record<string, Material> = {};
+      allMats.forEach(m => { map[m.id] = m; });
+      setMaterialsMap(map);
+      const updatedMaterials = allMats.filter(m => m.category === 'talking_head');
       setTalkingHeads(updatedMaterials);
       setSelectedThId(newMat.id);
       await loadProjectForMaterial(newMat.id);
@@ -252,7 +263,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   useEffect(() => {
     fetchAllProjects().then(setAllProjects).catch(() => {});
-    fetchMaterials('talking_head').then(data => {
+    fetchMaterials().then(allMats => {
+      const map: Record<string, Material> = {};
+      allMats.forEach(m => { map[m.id] = m; });
+      setMaterialsMap(map);
+      const data = allMats.filter(m => m.category === 'talking_head');
       setTalkingHeads(data);
       if (initialProjectId) {
         loadProjectById(initialProjectId);
@@ -304,6 +319,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       }
       const currentSubs = res.subtitles || [];
       setSubtitles(currentSubs);
+      if (res.broll_replacements) {
+        setBrolls(res.broll_replacements);
+      }
       if (res.strategy) {
         setStrategy(res.strategy);
       }
@@ -326,6 +344,30 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setPreviewMode('interactive');
     } catch (err) {
       alert('智能剪辑失败，请确保后端服务正常运行');
+    } finally {
+      setAnalyzing(false);
+      setOneClickStage('');
+    }
+  };
+
+  const handleFastSceneDecision = async () => {
+    if (!projectId) {
+      alert('请先选择或上传口播主视频创建工程');
+      return;
+    }
+    setAnalyzing(true);
+    setOneClickStage('AI 双层分镜极速编排中（练车/场地/体验素材对齐）...');
+    try {
+      const res = await redecideScenes(projectId, 0.65);
+      if (res && res.data) {
+        if (res.data.subtitles) setSubtitles(res.data.subtitles);
+        if (res.data.broll_replacements) setBrolls(res.data.broll_replacements);
+        const costStr = res.data.latency_ms ? `，耗时 ${Math.round(res.data.latency_ms)}ms` : '';
+        setAiFeedback(`智能分镜编排完成！已通过 ${res.data.engine_used} 匹配 ${res.data.broll_replacements?.length || 0} 个空镜分镜（约 65% 黄金覆盖率${costStr}）。`);
+      }
+      setPreviewMode('interactive');
+    } catch (err: any) {
+      alert(`智能分镜编排失败: ${err?.response?.data?.detail || err.message}`);
     } finally {
       setAnalyzing(false);
       setOneClickStage('');
@@ -638,13 +680,22 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                 <span>工程已就绪 ({subtitles.length}句)</span>
               </span>
               <button
+                onClick={() => handleFastSceneDecision()}
+                disabled={analyzing || !projectId}
+                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+                title="⚡ 极速分镜：保留现有字幕，根据口播节奏重新智能编排练车、场地与体验空镜（1~2秒）"
+              >
+                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+                <span>{analyzing ? (oneClickStage || '分镜决策中...') : '⚡ 智能剪辑 (分镜编排)'}</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => handleOneClickCutAndCorrect(true)}
                 disabled={analyzing || !selectedThId}
-                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-                title="重跑全流程：音频抽取 -> ASR 黄金片段切分合并 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
+                className="text-[11px] text-gray-400 hover:text-blue-600 px-1.5 py-1 hover:underline cursor-pointer transition-colors"
+                title="如需重新识别音频原声语音，可点击此处重跑全量 ASR 与文本纠偏"
               >
-                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-                <span>{analyzing ? (oneClickStage || '处理中...') : '智能剪辑'}</span>
+                重跑全流程
               </button>
             </div>
           ) : (
@@ -763,6 +814,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
           <VideoPlayer
             videoUrl={currentPreviewUrl}
+            brolls={brolls}
+            materialsMap={materialsMap}
             subtitles={subtitles}
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
