@@ -23,12 +23,18 @@ export interface SubtitleItem {
   is_manual_edited?: boolean;
 }
 
+export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+
 interface SubtitleListProps {
   subtitles: SubtitleItem[];
   currentTime: number;
+  saveStatus?: SaveStatus;
+  lastSavedAt?: number | null;
   onSelectTime: (time: number) => void;
   onTextChange: (index: number, newText: string) => void;
+  onTextBlur?: (index: number) => void;
   onHighlightWordsChange: (index: number, words: HighlightWord[]) => void;
+  onRetrySave?: () => void;
 }
 
 const SOURCE_META: Record<string, { label: string; cls: string }> = {
@@ -40,9 +46,13 @@ const SOURCE_META: Record<string, { label: string; cls: string }> = {
 export const SubtitleList: React.FC<SubtitleListProps> = ({
   subtitles,
   currentTime,
+  saveStatus = 'idle',
+  lastSavedAt,
   onSelectTime,
   onTextChange,
-  onHighlightWordsChange
+  onTextBlur,
+  onHighlightWordsChange,
+  onRetrySave,
 }) => {
   const [addingFor, setAddingFor] = useState<string | null>(null);
   const [newWord, setNewWord] = useState('');
@@ -113,7 +123,36 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between pb-2.5 border-b border-gray-100 mb-2.5 flex-shrink-0">
-        <h2 className="text-sm font-bold text-gray-800">字幕时间轴与语义空镜分配</h2>
+        <div className="flex items-center space-x-2">
+          <h2 className="text-sm font-bold text-gray-800">字幕时间轴与语义空镜分配</h2>
+          {/* 实时保存状态反馈徽标 */}
+          {saveStatus === 'saving' && (
+            <span className="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
+              <span>保存中...</span>
+            </span>
+          )}
+          {saveStatus === 'saved' && (
+            <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span>✓ 全部已同步</span>
+            </span>
+          )}
+          {saveStatus === 'dirty' && (
+            <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+              <span>● 编辑未保存</span>
+            </span>
+          )}
+          {saveStatus === 'error' && (
+            <button
+              type="button"
+              onClick={onRetrySave}
+              className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 cursor-pointer"
+              title="点击手动重试保存至本地权威库"
+            >
+              <span>✕ 保存失败，点击重试</span>
+            </button>
+          )}
+        </div>
         <span className="text-xs text-gray-400 font-mono">共 {subtitles.length} 条</span>
       </div>
 
@@ -138,13 +177,20 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between mb-2">
-                  <button
-                    onClick={() => onSelectTime(sub.start_time)}
-                    className="flex items-center space-x-1 text-xs font-mono font-semibold text-gray-700 hover:text-blue-600 transition-colors"
-                  >
-                    <PlayCircle className="w-3.5 h-3.5 text-blue-600" />
-                    <span>{formatTime(sub.start_time)} - {formatTime(sub.end_time)}</span>
-                  </button>
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      onClick={() => onSelectTime(sub.start_time)}
+                      className="flex items-center space-x-1 text-xs font-mono font-semibold text-gray-700 hover:text-blue-600 transition-colors"
+                    >
+                      <PlayCircle className="w-3.5 h-3.5 text-blue-600" />
+                      <span>{formatTime(sub.start_time)} - {formatTime(sub.end_time)}</span>
+                    </button>
+                    {sub.is_manual_edited && (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-blue-50 text-blue-600 border border-blue-200" title="已进行人工手动修改">
+                        人工修改
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center space-x-1">
                     {getPartBadge(sub.scene_decision?.part)}
                     {getCategoryBadge(sub.matched_category)}
@@ -172,6 +218,14 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                 <textarea
                   value={sub.corrected_text}
                   onChange={e => onTextChange(idx, e.target.value)}
+                  onBlur={() => onTextBlur && onTextBlur(idx)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      (e.target as HTMLElement).blur();
+                    }
+                  }}
+                  placeholder="输入字幕文本..."
                   className="w-full text-xs text-gray-800 bg-white border border-gray-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none"
                   rows={2}
                 />

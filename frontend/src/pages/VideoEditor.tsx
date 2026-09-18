@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { VideoPlayer } from '../components/VideoPlayer';
-import { SubtitleList, SubtitleItem } from '../components/SubtitleList';
+import { SubtitleList, SubtitleItem, SaveStatus } from '../components/SubtitleList';
 import { StrategyStudio } from '../components/StrategyStudio';
 import {
   fetchMaterials,
@@ -46,7 +46,8 @@ import {
   ChevronDown,
   Plus,
   X,
-  Upload
+  Upload,
+  AlertTriangle
 } from 'lucide-react';
 
 interface CorrectionItem {
@@ -145,6 +146,22 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
   const [strategy, setStrategy] = useState<EditingStrategy>(DEFAULT_STRATEGY);
   const [savingStrategy, setSavingStrategy] = useState<boolean>(false);
+
+  // 字幕与策略实时保存状态与成片变更检测
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [hasUnrenderedChanges, setHasUnrenderedChanges] = useState<boolean>(false);
+  const latestSubtitlesRef = useRef<SubtitleItem[]>([]);
+  const latestStrategyRef = useRef<EditingStrategy>(DEFAULT_STRATEGY);
+  const saveStatusTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    latestSubtitlesRef.current = subtitles;
+  }, [subtitles]);
+
+  useEffect(() => {
+    latestStrategyRef.current = strategy;
+  }, [strategy]);
 
   const loadProjectById = async (pid: string) => {
     if (!pid) return;
@@ -390,44 +407,81 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   }, [externalStrategyPlan, projectId]);
 
   const subtitleSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 统一字幕持久化提交（落库权威 SQLite，更新 saveStatus）
+  const commitSubtitlesSave = async (subsToSave?: SubtitleItem[]): Promise<boolean> => {
+    if (!projectId) return false;
+    const data = subsToSave || latestSubtitlesRef.current;
+    if (!data || data.length === 0) return false;
+    if (subtitleSaveTimeoutRef.current) {
+      clearTimeout(subtitleSaveTimeoutRef.current);
+      subtitleSaveTimeoutRef.current = null;
+    }
+    setSaveStatus('saving');
+    try {
+      await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data });
+      setSaveStatus('saved');
+      setLastSavedAt(Date.now());
+      if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+      saveStatusTimerRef.current = setTimeout(() => {
+        setSaveStatus(prev => (prev === 'saved' ? 'idle' : prev));
+      }, 3000);
+      return true;
+    } catch (e) {
+      console.error('Auto save subtitle failed', e);
+      setSaveStatus('error');
+      return false;
+    }
+  };
+
+  // 失焦即存 (Immediate Flush on Blur)
+  const handleTextBlur = async () => {
+    if (saveStatus === 'dirty') {
+      await commitSubtitlesSave(latestSubtitlesRef.current);
+    }
+  };
+
+  // 单句文本不可变更新 + 500ms 防抖提交
   const handleTextChange = (idx: number, newText: string) => {
     if (previewMode === 'rendered') {
-      setPreviewMode('interactive');
+      setHasUnrenderedChanges(true);
     }
-    const updated = [...subtitles];
-    updated[idx].corrected_text = newText;
+    const updated = subtitles.map((s, i) =>
+      i === idx ? { ...s, corrected_text: newText, is_manual_edited: true } : s
+    );
+    latestSubtitlesRef.current = updated;
     setSubtitles(updated);
+    setSaveStatus('dirty');
+    setHasUnrenderedChanges(true);
+
     if (!projectId) return;
     if (subtitleSaveTimeoutRef.current) {
       clearTimeout(subtitleSaveTimeoutRef.current);
     }
     subtitleSaveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated });
-      } catch (e) {
-        console.error('Auto save subtitle failed', e);
-      }
+      await commitSubtitlesSave(updated);
     }, 500);
   };
 
-  // 高亮词增删（手动来源标记 manual），与文本编辑共用同一条防抖持久化链路
+  // 高亮词增删（手动来源标记 manual），不可变更新
   const handleHighlightWordsChange = (idx: number, words: { word: string; source: 'glossary' | 'ai' | 'manual' }[]) => {
     if (previewMode === 'rendered') {
-      setPreviewMode('interactive');
+      setHasUnrenderedChanges(true);
     }
-    const updated = [...subtitles];
-    updated[idx] = { ...updated[idx], highlight_words: words, is_manual_edited: true };
+    const updated = subtitles.map((s, i) =>
+      i === idx ? { ...s, highlight_words: words as any, is_manual_edited: true } : s
+    );
+    latestSubtitlesRef.current = updated;
     setSubtitles(updated);
+    setSaveStatus('dirty');
+    setHasUnrenderedChanges(true);
+
     if (!projectId) return;
     if (subtitleSaveTimeoutRef.current) {
       clearTimeout(subtitleSaveTimeoutRef.current);
     }
     subtitleSaveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: updated });
-      } catch (e) {
-        console.error('Auto save highlight words failed', e);
-      }
+      await commitSubtitlesSave(updated);
     }, 500);
   };
 
@@ -435,9 +489,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const strategySaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const handleStrategyChange = (newStrategy: EditingStrategy) => {
     if (previewMode === 'rendered') {
-      setPreviewMode('interactive');
+      setHasUnrenderedChanges(true);
     }
     setStrategy(newStrategy);
+    latestStrategyRef.current = newStrategy;
+    setHasUnrenderedChanges(true);
     if (!projectId) return;
     if (strategySaveTimeoutRef.current) {
       clearTimeout(strategySaveTimeoutRef.current);
@@ -453,12 +509,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   const handleStrategyCommit = async (committedStrategy: EditingStrategy) => {
     if (previewMode === 'rendered') {
-      setPreviewMode('interactive');
+      setHasUnrenderedChanges(true);
     }
     if (strategySaveTimeoutRef.current) {
       clearTimeout(strategySaveTimeoutRef.current);
     }
     setStrategy(committedStrategy);
+    latestStrategyRef.current = committedStrategy;
+    setHasUnrenderedChanges(true);
     if (projectId) {
       try {
         await updateProjectStrategy(projectId, committedStrategy);
@@ -495,6 +553,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       });
       if (res.data.updated_subtitles && res.data.updated_subtitles.length > 0) {
         setSubtitles(res.data.updated_subtitles);
+        latestSubtitlesRef.current = res.data.updated_subtitles;
       }
       setLastEngineUsed(res.data.harness_engine_used);
       setAiFeedback(res.data.explanation);
@@ -511,11 +570,26 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     setRendering(true);
     setAiFeedback(null);
     try {
-      // 1. 同步最新字幕与策略
+      // 1. 前置守卫：强制取消未完成防抖，链式同步落盘最新字幕与策略
+      if (subtitleSaveTimeoutRef.current) {
+        clearTimeout(subtitleSaveTimeoutRef.current);
+        subtitleSaveTimeoutRef.current = null;
+      }
+      if (strategySaveTimeoutRef.current) {
+        clearTimeout(strategySaveTimeoutRef.current);
+        strategySaveTimeoutRef.current = null;
+      }
+
+      setSaveStatus('saving');
+      const subsToSave = latestSubtitlesRef.current.length > 0 ? latestSubtitlesRef.current : subtitles;
+      const stratToSave = latestStrategyRef.current || strategy;
+
       await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
-        subtitles: subtitles
+        subtitles: subsToSave
       });
-      await updateProjectStrategy(projectId, strategy);
+      await updateProjectStrategy(projectId, stratToSave);
+      setSaveStatus('saved');
+      setLastSavedAt(Date.now());
 
       // 2. 发起高质量复合渲染 (Lanczos 算法 + CRF 18 高清画质 + 原生 Emoji 横幅 + ASS 高亮字幕)
       const res = await renderProject(projectId);
@@ -531,6 +605,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           sizeMb: res.output_file_size_mb || 0,
         });
         setPreviewMode('rendered');
+        setHasUnrenderedChanges(false);
         setAiFeedback('🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。');
       }
     } catch (err: any) {
@@ -795,6 +870,31 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             </div>
           </div>
 
+          {/* 成片模式下内容已修改告警条 */}
+          {previewMode === 'rendered' && hasUnrenderedChanges && (
+            <div className="w-full mb-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300/80 rounded-xl flex items-center justify-between text-[11px] text-amber-900 shadow-xs animate-in fade-in flex-shrink-0">
+              <div className="flex items-center space-x-1.5 truncate mr-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                <span className="truncate font-medium">字幕或策略已修改，当前画面仍为上一版成片</span>
+              </div>
+              <div className="flex items-center space-x-1.5 flex-shrink-0">
+                <button
+                  onClick={() => setPreviewMode('interactive')}
+                  className="px-2 py-0.5 bg-white border border-amber-300 rounded-lg text-amber-800 hover:bg-amber-100 font-medium transition-all cursor-pointer"
+                >
+                  实时预览
+                </button>
+                <button
+                  onClick={handleRender}
+                  disabled={rendering}
+                  className="px-2.5 py-0.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 shadow-xs disabled:opacity-50 cursor-pointer"
+                >
+                  {rendering ? '合成中...' : '⚡ 重新合成'}
+                </button>
+              </div>
+            </div>
+          )}
+
           <VideoPlayer
             videoUrl={currentPreviewUrl}
             brolls={brolls}
@@ -854,9 +954,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               <SubtitleList
                 subtitles={subtitles}
                 currentTime={currentTime}
+                saveStatus={saveStatus}
+                lastSavedAt={lastSavedAt}
                 onSelectTime={setCurrentTime}
                 onTextChange={handleTextChange}
+                onTextBlur={handleTextBlur}
                 onHighlightWordsChange={handleHighlightWordsChange}
+                onRetrySave={() => commitSubtitlesSave(latestSubtitlesRef.current)}
               />
             ) : (
               <StrategyStudio

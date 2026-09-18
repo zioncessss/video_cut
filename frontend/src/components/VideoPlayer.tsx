@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
 import { EditingStrategy, BrollReplacement, Material, HighlightWord, getMediaUrl } from '../services/api';
 
@@ -165,28 +165,75 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [dragStartFontSize, setDragStartFontSize] = useState<number>(72);
   const [hoveredOverlay, setHoveredOverlay] = useState<DragTarget>(null);
 
-  // 动态视窗像素宽度监听 (用于响应式等比映射 1080P 画布尺寸，杜绝预览折行与成片单行撕裂)
-  const [containerWidth, setContainerWidth] = useState<number>(360);
-  useEffect(() => {
+  const is169 = aspectRatio === '16:9';
+
+  // 动态物理有效视口 (Active Video Viewport) 测量：排除 Letterbox/Pillarbox 黑边，精准 1:1 映射 1080P 画布
+  const [viewport, setViewport] = useState({
+    containerWidth: 360,
+    containerHeight: 640,
+    videoWidth: 360,
+    videoHeight: 640,
+    offsetX: 0,
+    offsetY: 0,
+    scaleFactor: 640 / 1920,
+  });
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+
+  const updateViewport = useCallback(() => {
     if (!containerRef.current) return;
-    const updateSize = () => {
-      if (containerRef.current) {
-        const w = containerRef.current.clientWidth;
-        if (w > 50) setContainerWidth(w);
-      }
-    };
-    updateSize();
-    const ro = new ResizeObserver(updateSize);
+    const cw = containerRef.current.clientWidth;
+    const ch = containerRef.current.clientHeight;
+    if (cw < 30 || ch < 30) return;
+
+    const targetAspect = is169 ? 16 / 9 : 9 / 16;
+    const containerAspect = cw / ch;
+
+    let vW = cw;
+    let vH = ch;
+    let offX = 0;
+    let offY = 0;
+
+    if (containerAspect > targetAspect) {
+      // 容器偏宽：高度撑满，左右黑边 (Pillarbox)
+      vH = ch;
+      vW = ch * targetAspect;
+      offX = (cw - vW) / 2;
+      offY = 0;
+    } else {
+      // 容器偏高：宽度撑满，上下黑边 (Letterbox)
+      vW = cw;
+      vH = cw / targetAspect;
+      offX = 0;
+      offY = (ch - vH) / 2;
+    }
+
+    const sFactor = is169 ? vW / 1920 : vH / 1920;
+    setViewport({
+      containerWidth: cw,
+      containerHeight: ch,
+      videoWidth: vW,
+      videoHeight: vH,
+      offsetX: offX,
+      offsetY: offY,
+      scaleFactor: sFactor,
+    });
+  }, [is169]);
+
+  useEffect(() => {
+    updateViewport();
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(() => {
+      updateViewport();
+    });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, []);
+  }, [updateViewport]);
 
   // 进度条平滑拖拽 Seeking 独立状态，防范播放时 timeupdate 引起滑块回弹抖动
   const [isSeeking, setIsSeeking] = useState<boolean>(false);
   const [seekTime, setSeekTime] = useState<number>(0);
   const [videoAspect, setVideoAspect] = useState<string>('9/16');
-
-  const is169 = aspectRatio === '16:9';
 
   const activeSubtitle = subtitles.find(
     s => currentTime >= s.start_time && currentTime <= s.end_time
@@ -214,6 +261,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       videoRef.current.currentTime = currentTime;
     }
   }, [currentTime, isSeeking]);
+
+  // 当 videoUrl 发生变更（如生成成片后携带新时间戳），主动调用 load() 破除浏览器视频解码缓存
+  useEffect(() => {
+    if (videoRef.current && videoUrl) {
+      videoRef.current.load();
+    }
+  }, [videoUrl]);
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
@@ -475,10 +529,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
+      const activeVW = viewportRef.current.videoWidth || rect.width;
+      const activeVH = viewportRef.current.videoHeight || rect.height;
+
       const deltaX = e.clientX - dragStartX;
       const deltaY = e.clientY - dragStartY;
-      const deltaPercentX = (deltaX / rect.width) * 100;
-      const deltaPercentY = (deltaY / rect.height) * 100;
+      const deltaPercentX = (deltaX / activeVW) * 100;
+      const deltaPercentY = (deltaY / activeVH) * 100;
 
       const currentStrat = strategyRef.current;
       const changeFn = onStrategyChangeRef.current;
@@ -506,7 +563,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       } else if (dragMode === 'resize-e' || dragMode === 'resize-w') {
         const factor = dragMode === 'resize-e' ? 1 : -1;
-        const deltaW = factor * (deltaX / rect.width) * 200;
+        const deltaW = factor * (deltaX / activeVW) * 200;
         const newWidth = Math.max(20, Math.min(96, Math.round(dragStartWidthPercent + deltaW)));
         if (dragTarget === 'banner') {
           if (newWidth !== currentStrat.banner_width_percent) {
@@ -537,7 +594,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           }
         }
       } else if (dragMode === 'resize-corner') {
-        const deltaW = (deltaX / rect.width) * 200;
+        const deltaW = (deltaX / activeVW) * 200;
         const deltaFont = Math.round(deltaY * 0.5);
         if (dragTarget === 'banner') {
           const newWidth = Math.max(20, Math.min(96, Math.round(dragStartWidthPercent + deltaW)));
@@ -572,8 +629,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, [dragTarget, dragMode, dragStartX, dragStartY, dragStartPosX, dragStartPosY, dragStartWidthPercent, dragStartFontSize, onStrategyCommit]);
 
-  // 1080P 画布视觉等比映射因子 (彻底消除预览窗口折行与压制 ASS 单行视觉撕裂)
-  const scaleFactor = containerWidth > 0 ? containerWidth / 1080 : 0.26;
+  // 1080P 画布视觉等比映射因子 (严格依据物理画面有效像素，彻底消除预览窗口折行与压制 ASS 视觉撕裂)
+  const scaleFactor = viewport.scaleFactor;
 
   // 1. 横幅：字号与尺寸动态计算
   const bannerFontSizeBase = strategy?.banner_font_size || (
@@ -662,7 +719,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* 实时分镜切入状态徽标 */}
         {activeBroll && !isRendered && (
-          <div className="absolute top-3 left-3 z-30 flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold shadow-lg backdrop-blur-md bg-black/85 text-white border border-white/20 animate-in fade-in duration-150 select-none pointer-events-none">
+          <div
+            style={{
+              left: `${viewport.offsetX + 12}px`,
+              top: `${viewport.offsetY + 12}px`,
+            }}
+            className="absolute z-30 flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold shadow-lg backdrop-blur-md bg-black/85 text-white border border-white/20 animate-in fade-in duration-150 select-none pointer-events-none"
+          >
             <span className={`w-2 h-2 rounded-full animate-pulse ${
               activeBroll.material_category === 'venue' ? 'bg-blue-400' :
               activeBroll.material_category === 'lesson' ? 'bg-emerald-400' : 'bg-purple-400'
@@ -679,7 +742,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* 当播放渲染导出的 MP4 成片时，由于滤镜与 ASS 已物理压制进视频流，跳过 DOM 虚拟层避免双重叠加 */}
         {!isRendered && (
-          <>
+          <div
+            style={{
+              position: 'absolute',
+              left: `${viewport.offsetX}px`,
+              top: `${viewport.offsetY}px`,
+              width: `${viewport.videoWidth}px`,
+              height: `${viewport.videoHeight}px`,
+              pointerEvents: 'none',
+            }}
+            className="select-none overflow-visible z-20"
+          >
             {/* 1. 顶部挂顶 Title 横幅 (支持 2D 拖拽、边界手柄拉伸与字号缩放) */}
             {hasBanner && (
               <div
@@ -694,7 +767,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMouseLeave={() => !dragTarget && setHoveredOverlay(null)}
                 onMouseDown={(e) => handleStartMove(e, 'banner', bannerPosX, bannerPosY)}
                 title="按住中心可拖拽位置，拖拽边框手柄可拉宽拉高"
-                className={`absolute text-center z-20 select-none ${
+                className={`absolute text-center z-20 select-none pointer-events-auto ${
                   dragTarget === 'banner'
                     ? 'ring-2 ring-purple-400/80 rounded-full opacity-95 transition-none cursor-grabbing'
                     : 'cursor-grab'
@@ -755,7 +828,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMouseLeave={() => !dragTarget && setHoveredOverlay(null)}
                 onMouseDown={(e) => handleStartMove(e, 'watermark', wmPosX, wmPosY)}
                 title="按住中心可拖拽位置，拖拽边框手柄可缩放字号"
-                className={`absolute z-20 text-white rounded-md whitespace-nowrap w-max max-w-none backdrop-blur-xs tracking-tight select-none shadow-sm px-2.5 py-1 font-medium ${
+                className={`absolute z-20 text-white rounded-md whitespace-nowrap w-max max-w-none backdrop-blur-xs tracking-tight select-none shadow-sm px-2.5 py-1 font-medium pointer-events-auto ${
                   dragTarget === 'watermark'
                     ? 'ring-2 ring-emerald-400/90 opacity-95 transition-none cursor-grabbing'
                     : 'cursor-grab'
@@ -797,16 +870,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMouseLeave={() => !dragTarget && setHoveredOverlay(null)}
                 onMouseDown={(e) => handleStartMove(e, 'subtitle', currentPosX, currentPosY)}
                 title="按住中心可自由拖动位置，拖拽边框手柄可拉宽拉高"
-                className={`absolute text-center z-20 select-none ${
+                className={`absolute text-center z-20 select-none pointer-events-auto ${
                   dragTarget === 'subtitle'
                     ? 'ring-2 ring-blue-400/80 rounded-2xl opacity-95 transition-none cursor-grabbing'
                     : 'cursor-grab'
                 }`}
               >
                 <div
+                  style={{
+                    fontFamily: '"Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif',
+                  }}
                   className={`inline-block ${
                     strategy?.subtitle_width_percent ? 'w-full' : ''
-                  } px-3 py-1.5 rounded-xl transition-all ${getThemeClass()} leading-relaxed`}
+                  } px-3 py-1.5 rounded-xl transition-all ${getThemeClass()} leading-snug tracking-tight`}
                 >
                   {renderSubtitleText()}
                 </div>
@@ -828,7 +904,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 )}
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
 

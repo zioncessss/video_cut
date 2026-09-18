@@ -50,7 +50,7 @@ auto_commit:
     message: "[Spec Kit] Add tasks"
   after_implement:
     enabled: true
-    message: "feat(006): MiniMax ASR 极速语音识别与大模型智能剪辑接入及离线降级"
+    message: "feat(007): 字幕实时保存状态反馈与成片预览所见即所得同步"
   after_checklist:
     enabled: false
     message: "[Spec Kit] Add checklist"
