@@ -106,6 +106,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         # 1. 固化 ASR 转写（自然句层，不切割）与智能合并
         _set_progress(req.talking_head_id, PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
         raw_segments = asr_runner.transcribe(full_th_path)
+        raw_segments = asr_runner.filter_filler_segments(raw_segments)
 
         # 2. Harness 上下文专有词纠偏（在自然句层面做：完整句模型不会重新断句，
         #    句集一致性守卫不再因句中碎片而触发回退——T038 管线顺序调整）
@@ -113,10 +114,21 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
         correction_res = await get_active_harness().correct_subtitles(correction_req)
 
-        # 2.5 黄金短句切割：在纠偏后的自然句上执行 6~12 字视读切分
-        corrected_segments: List[Dict[str, Any]] = []
-        for clause in correction_res.updated_subtitles:
-            corrected_segments.extend(asr_runner.split_into_readable_segments([clause]))
+        # 2.4 过滤纯语气填充词与无意义口癖占位符（如 '呃'、'额' 等独立碎词）
+        valid_clauses = asr_runner.filter_filler_segments(correction_res.updated_subtitles)
+
+        # 2.5 黄金自然句切分（带防孤字/防碎尾保护，单行上限弹性 18~22 字）
+        split_segments = asr_runner.split_into_readable_segments(valid_clauses, max_chars=18, soft_max=22)
+
+        # 2.6 全局跨句碎片平滑合并（彻底消除“面签费”、“费用明细表”等跨句微短碎片与走马灯）
+        corrected_segments = asr_runner.merge_short_segments(
+            split_segments,
+            min_chars=4,
+            min_duration=1.0,
+            max_chars=20,
+            max_gap=0.6,
+            max_duration=4.2
+        )
 
         # 3.5 AI 分镜决策（稀疏 Cue Sheet 契约 + 双层 60%~70% 黄金编排）
         scene_decisions: Dict[str, SceneDecision] = {}

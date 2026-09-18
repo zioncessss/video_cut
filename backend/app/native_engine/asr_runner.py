@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
+import re
 
 class ASRRunner:
     def __init__(self):
@@ -23,15 +24,43 @@ class ASRRunner:
             print(f"Audio extraction error: {e}")
             return False
 
-    def split_into_readable_segments(self, segments: List[Dict[str, Any]], max_chars: int = 18) -> List[Dict[str, Any]]:
+    FILLER_PATTERN = re.compile(r'^[呃额嗯唔啊诶哎呀喔噢]+[，。？！…\s]*$|^[eE][hH]|[uU][mM]|[aA][hH]$')
+
+    def filter_filler_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        针对口播短视频进行 8~18 字自然意群与视读切分（彻底废除 14 字机械硬切）：
-        1. 优先基于物理词级时间戳（words）进行整词分组，严格取真实声学起止时间；
-        2. 若无词级时间戳，采用中文自然语法停顿（标点、语气词、连词引词）进行语义切片，绝不机械等分劈裂词语。
+        过滤纯语气填充词与无意义口癖占位符（如 '呃'、'额'、'嗯'、'唔' 等独立微短片段），
+        彻底杜绝其成为独立字幕卡片或产生无意义分镜占位。
+        """
+        cleaned: List[Dict[str, Any]] = []
+        for s in segments:
+            text = (s.get("corrected_text") or s.get("raw_text") or "").strip()
+            dur = s.get("end_time", 0.0) - s.get("start_time", 0.0)
+            if self.FILLER_PATTERN.match(text) and (dur < 0.8 or len(text) <= 2):
+                continue
+            cleaned.append(s)
+        return cleaned
+
+    def split_into_readable_segments(
+        self,
+        segments: List[Dict[str, Any]],
+        max_chars: int = 18,
+        soft_max: Optional[int] = None,
+        min_chunk: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        针对口播短视频进行 8~18 字自然意群与视读切分（带防孤字、防碎尾与弹性意群保护）：
+        1. 针对健康单行（<= soft_max，默认 20~22 字），不盲目硬拆，完整保留自然意群（如“还有一个就是大家通常不知道的就是模拟费”19字完整保留）；
+        2. 若长句必须切分，执行严格的防孤字保护：严禁剩余字数 < min_chunk (5字)，彻底根除诸如“模拟 / 费”、“要多 / 少钱”等荒谬单字碎尾；
+        3. 优先在自然标点、语气助词、语法连词或声学停顿处切分；
+        4. 切分后自动执行局部微短碎片吸附。
         """
         refined_segments = []
         import re
 
+        if soft_max is None:
+            soft_max = max(max_chars + 2, 22) if max_chars >= 16 else max_chars
+
+        CONJ_PATTERN = re.compile(r'^(在|从|到|让|如果|但是|然后|因为|所以|比如|还有|而且|可以说是|特别是|也就是|大家)')
         # 中文自然意群切分正则：在语气词后、或在自然引词/连词前断句（防御性负向前瞻避免拆开"像我们在"等）
         split_pattern = re.compile(
             r'(?<=[呢吧啊吗呀啦哒哦哈])|'
@@ -45,69 +74,85 @@ class ASRRunner:
             duration = max(0.2, end - start)
             words = seg.get("words") or []
 
-            # 如果句子本身字数健康且无需拆分，直接保留完整意群
-            if len(text) <= max_chars:
+            # 如果句子本身字数在弹性安全范围内，直接完整保留完整意群
+            if len(text) <= soft_max:
                 refined_segments.append(seg)
                 continue
 
             # 方案 A：具备真实物理词时间戳（word_timestamps=True）
             if words and isinstance(words, list) and len(words) > 1:
                 curr_words = []
-                for w in words:
+                clause_chunks = []
+                for idx_w, w in enumerate(words):
+                    curr_words.append(w)
                     curr_len = sum(len(x.get("word", "")) for x in curr_words)
-                    w_word = w.get("word", "")
-                    next_len = len(w_word)
-                    gap = round(w.get("start", 0.0) - curr_words[-1].get("end", 0.0), 3) if curr_words else 0.0
+                    rem_words = words[idx_w + 1:]
+                    rem_len = sum(len(x.get("word", "")) for x in rem_words)
 
-                    # 弹性断句准则（8~18字）：
-                    # 1. 字数达到健康单行（>=8字）且遇到明显声学停顿（>=0.25s）或单句字数即将超过上限（>18字）时收敛分段；
-                    # 2. 若停顿很明显（>=0.4s），字数达标（>=6字）也允许分段，确保口播呼吸节奏自然；
-                    # 3. 绝不在词组内部截半腰斩。
-                    should_split_words = (
-                        curr_words and (
-                            (curr_len + next_len > max_chars) or
-                            (curr_len >= 8 and gap >= 0.25) or
-                            (curr_len >= 6 and gap >= 0.40)
-                        )
+                    if not rem_words:
+                        break
+
+                    next_w = rem_words[0]
+                    gap = round(next_w.get("start", 0.0) - w.get("end", 0.0), 3)
+
+                    # 若当前字数加上剩余字数已在 soft_max 范围内，不再强行切断，直接留给整句
+                    if curr_len + rem_len <= soft_max:
+                        continue
+
+                    # 防孤字保护准则：剩余字数必须 >= min_chunk (5字)，严防 1~4 字单字/孤儿碎尾
+                    has_safe_tail = (rem_len >= min_chunk)
+                    should_split_here = has_safe_tail and (
+                        (curr_len >= max_chars) or
+                        (curr_len >= 8 and gap >= 0.22) or
+                        (curr_len >= 6 and gap >= 0.40) or
+                        (curr_len >= 8 and bool(CONJ_PATTERN.match("".join(x.get("word", "") for x in rem_words[:2]))))
                     )
-                    if should_split_words:
+
+                    if should_split_here:
                         w_text = "".join(x.get("word", "") for x in curr_words).strip()
                         if w_text:
                             sub = dict(seg)
-                            sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                            sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments) + len(clause_chunks)}"
                             sub["start_time"] = round(curr_words[0].get("start", start), 3)
                             sub["end_time"] = round(curr_words[-1].get("end", end), 3)
                             sub["raw_text"] = w_text
                             sub["corrected_text"] = w_text
-                            sub["words"] = curr_words
-                            refined_segments.append(sub)
-                        curr_words = [w]
-                    else:
-                        curr_words.append(w)
+                            sub["words"] = list(curr_words)
+                            clause_chunks.append(sub)
+                        curr_words = []
+
                 if curr_words:
                     w_text = "".join(x.get("word", "") for x in curr_words).strip()
-                    if w_text:
+                    if clause_chunks and len(w_text) < min_chunk:
+                        # 孤儿碎尾安全吸附进前一段
+                        clause_chunks[-1]["end_time"] = round(curr_words[-1].get("end", end), 3)
+                        clause_chunks[-1]["raw_text"] += w_text
+                        clause_chunks[-1]["corrected_text"] += w_text
+                        clause_chunks[-1]["words"] = (clause_chunks[-1].get("words") or []) + list(curr_words)
+                    elif w_text:
                         sub = dict(seg)
-                        sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                        sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments) + len(clause_chunks)}"
                         sub["start_time"] = round(curr_words[0].get("start", start), 3)
                         sub["end_time"] = round(curr_words[-1].get("end", end), 3)
                         sub["raw_text"] = w_text
                         sub["corrected_text"] = w_text
-                        sub["words"] = curr_words
-                        refined_segments.append(sub)
+                        sub["words"] = list(curr_words)
+                        clause_chunks.append(sub)
+
+                refined_segments.extend(clause_chunks)
                 continue
 
             # 方案 B：无词级时间戳，采用自然语法意群与标点智能切分（彻底废除 chunk_len=10 机械截断）
             raw_clauses = [c.strip() for c in re.split(r'[,，;；!！?？。、\s]+', text) if c.strip()]
             final_sub_chunks = []
             for clause in raw_clauses:
-                if len(clause) <= max_chars:
+                if len(clause) <= soft_max:
                     final_sub_chunks.append(clause)
                 else:
                     parts = [p.strip() for p in split_pattern.split(clause) if p and p.strip()]
                     expanded_parts = []
                     for p in parts:
-                        if len(p) <= max_chars:
+                        if len(p) <= soft_max:
                             expanded_parts.append(p)
                         else:
                             # 尝试按常见助词/介词切分
@@ -180,7 +225,7 @@ class ASRRunner:
         短视频口播字幕黄金平滑合并策略（两轮自适应聚合，8~18字弹性）：
         第一轮：优先将相邻的微短词连缀合并（如 "评论区" + "找我" + "聊一下吧" -> "评论区找我聊一下吧"），
         避免前序饱满句子过早将后续呼吁短句拆散；
-        第二轮：对于仍然孤立的极小微碎片词（<1.0s 或 <=3字），智能吸附至前后语句中，彻底消除走马灯式的碎词闪烁。
+        第二轮：对于仍然孤立的极小微碎片词（<1.0s 或 <=4字），智能吸附至前后语句中，彻底消除走马灯式的碎词闪烁。
         合并时同步合并 words 列表，完整保留声学物理时间戳。
         """
         import re
@@ -207,10 +252,15 @@ class ASRRunner:
                 combined_len = len(curr_text) + len(nxt_text)
                 combined_dur = round(nxt.get("end_time", 0.0) - curr.get("start_time", 0.0), 3)
 
+                dur_curr = curr.get("end_time", 0.0) - curr.get("start_time", 0.0)
+                dur_nxt = nxt.get("end_time", 0.0) - nxt.get("start_time", 0.0)
+                is_curr_short = len(curr_text) <= min_chars or dur_curr < min_duration
+                is_nxt_short = len(nxt_text) <= min_chars or dur_nxt < min_duration
+
                 if not prev_ended and 0 <= gap <= max_gap and combined_len <= max_chars and combined_dur <= max_duration:
-                    if is_short(curr) or is_short(nxt):
+                    if is_curr_short or is_nxt_short:
                         # 如果当前已是字数时长健康的完整句子(>=8字且>=1.5s)，且后续连续皆为短片段，留给后续短片段自主聚合
-                        if not is_short(curr) and i + 2 < len(segments) and is_short(nxt) and is_short(segments[i + 2]):
+                        if not is_curr_short and i + 2 < len(segments) and is_nxt_short and is_short(segments[i + 2]):
                             break
 
                         curr["end_time"] = nxt.get("end_time", curr["end_time"])
@@ -245,7 +295,9 @@ class ASRRunner:
             dur = s.get("end_time", 0.0) - s.get("start_time", 0.0)
             is_lone_micro = len(curr_text) <= min_chars or dur < min_duration
 
-            if not prev_ended and 0 <= gap <= max_gap and combined_len <= max_chars and combined_dur <= max_duration and is_lone_micro:
+            # 为孤立微碎片词设置微弹性字数上限 (max_chars + 2，如 20 字)，确保诸如 18 + 1 的孤儿能被强力吸附
+            micro_limit = max_chars + 2 if is_lone_micro else max_chars
+            if not prev_ended and 0 <= gap <= max_gap and combined_len <= micro_limit and combined_dur <= max_duration and is_lone_micro:
                 prev["end_time"] = s.get("end_time", prev["end_time"])
                 prev["raw_text"] = prev_text + curr_text
                 prev["corrected_text"] = prev.get("corrected_text", prev_text) + s.get("corrected_text", curr_text)
@@ -355,7 +407,7 @@ class ASRRunner:
                     "words": list(current_words)
                 })
 
-        return raw_segments
+        return self.filter_filler_segments(raw_segments)
 
     def transcribe_minimax(
         self,

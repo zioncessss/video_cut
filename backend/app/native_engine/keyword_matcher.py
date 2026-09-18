@@ -76,24 +76,32 @@ def build_highlight_words(
     返回 [{"word": "...", "source": "glossary|ai", "color": "...", "category": "..."}, ...]
     """
     merged: List[Dict[str, Any]] = []
-    seen = set()
+    word_map: Dict[str, Dict[str, Any]] = {}
 
     def _add(word: str, source: str, color: Optional[str] = None, cat: Optional[str] = None):
         w = (word or "").strip()
-        if not w or w in seen:
+        if not w:
             return
-        seen.add(w)
+        if w in word_map:
+            # 词库唯一事实源：若词库也命中该词，来源必须优先以 glossary 确定性为准
+            if source == "glossary":
+                word_map[w]["source"] = "glossary"
+                if cat:
+                    word_map[w]["category"] = cat
+            return
         inferred = infer_highlight_style(w, cat)
         final_color = (color or inferred["color"]).upper()
         if not final_color.startswith("#"):
             final_color = f"#{final_color}"
         final_cat = cat or inferred["category"]
-        merged.append({
+        entry = {
             "word": w,
             "source": source,
             "color": final_color,
             "category": final_cat
-        })
+        }
+        word_map[w] = entry
+        merged.append(entry)
 
     # 1. 优先解析 AI 自主返回的高亮词及其色彩建议
     if ai_keywords and isinstance(ai_keywords, list):

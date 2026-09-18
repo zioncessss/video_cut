@@ -144,14 +144,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if isinstance(w, dict) and w.get("word"):
                     w_text = str(w["word"]).strip()
                     if w_text:
-                        # 转换 HEX 为 ASS 的 BGR 格式 (&HBBGGRR&)
-                        h_code = str(w.get("color") or hl_color_hex).strip().lstrip("#")
-                        if len(h_code) == 3:
-                            h_code = "".join(c * 2 for c in h_code)
-                        if len(h_code) == 6:
-                            ass_c = f"&H{h_code[4:6].upper()}{h_code[2:4].upper()}{h_code[0:2].upper()}&"
-                        else:
-                            ass_c = ass_hl_color
+                        word_color = str(w.get("color") or hl_color_hex).strip()
+                        ass_c = hex_to_ass_color(word_color)
                         word_ass_colors[w_text] = ass_c
                         matched.append(w_text)
         else:

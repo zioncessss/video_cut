@@ -90,3 +90,51 @@ def test_split_with_word_timestamps_preserves_acoustic_timing():
     # 第二段应是 '真的没有你们想的那么复杂'，时间严格取 5.2 ~ 7.9
     assert split_res[1]["start_time"] == 5.2
     assert split_res[1]["end_time"] == 7.9
+
+
+def test_anti_orphan_no_single_char_tail():
+    """验证防孤字/防碎尾保护：19字完整句（如'模拟费'）绝不拆出单字'费'孤儿卡片"""
+    clause_text = "还有一个就是大家通常不知道的就是模拟费"
+    words = [{"word": ch, "start": 22.5 + i * 0.2, "end": 22.5 + (i + 1) * 0.2} for i, ch in enumerate(clause_text)]
+    clause = [{
+        "id": "clause_sim_fee",
+        "start_time": 22.5,
+        "end_time": 22.5 + len(clause_text) * 0.2,
+        "raw_text": clause_text,
+        "corrected_text": clause_text,
+        "words": words
+    }]
+    split_res = asr_runner.split_into_readable_segments(clause, max_chars=18)
+    # 19 字处于 soft_max 弹性范围内，严禁拆成 18 + 1 孤字
+    assert len(split_res) == 1
+    assert split_res[0]["raw_text"] == clause_text
+    assert not any(len(s["raw_text"]) == 1 and s["raw_text"] == "费" for s in split_res)
+
+
+def test_filler_placeholder_filtering():
+    """验证独立语气助词/无意义口癖占位符（'呃'、'额'等）被彻底过滤，严防成为独立字幕"""
+    segments = [
+        {"start_time": 22.3, "end_time": 22.52, "raw_text": "呃", "corrected_text": "呃"},
+        {"start_time": 22.54, "end_time": 26.64, "raw_text": "还有一个就是大家通常不知道的就是模拟费", "corrected_text": "还有一个就是大家通常不知道的就是模拟费"},
+        {"start_time": 42.84, "end_time": 43.06, "raw_text": "呃", "corrected_text": "呃"},
+        {"start_time": 43.08, "end_time": 44.26, "raw_text": "可以滴滴我一下", "corrected_text": "可以滴滴我一下"},
+    ]
+    cleaned = asr_runner.filter_filler_segments(segments)
+    assert len(cleaned) == 2
+    assert cleaned[0]["raw_text"] == "还有一个就是大家通常不知道的就是模拟费"
+    assert cleaned[1]["raw_text"] == "可以滴滴我一下"
+    assert not any(s["raw_text"] == "呃" for s in cleaned)
+
+
+def test_global_merge_across_short_clauses():
+    """验证全局平滑合并：跨句微短碎片（如'还有一个就是保险费' + '面签费'）被智能吸收"""
+    segments = [
+        {"start_time": 11.50, "end_time": 13.16, "raw_text": "还有一个就是保险费", "corrected_text": "还有一个就是保险费"},
+        {"start_time": 13.26, "end_time": 13.86, "raw_text": "面签费", "corrected_text": "面签费"},
+        {"start_time": 13.86, "end_time": 15.56, "raw_text": "体检费这些加起来大概是一百", "corrected_text": "体检费这些加起来大概是一百"}
+    ]
+    merged = asr_runner.merge_short_segments(segments, min_chars=4, min_duration=1.0, max_chars=20, max_gap=0.6)
+    # 0.6s / 3字 的'面签费'应当吸附进前句'还有一个就是保险费'
+    assert len(merged) == 2
+    assert "还有一个就是保险费面签费" in merged[0]["raw_text"]
+
