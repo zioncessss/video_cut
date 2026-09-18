@@ -89,12 +89,36 @@ export const listModels = async (llmBaseUrl?: string, llmApiKey?: string): Promi
   return res.data;
 };
 
+export interface MiniMaxConnectionResult {
+  code: number;
+  message: string;
+  data: {
+    llm_status: string;
+    llm_latency_ms: number;
+    asr_status: string;
+    asr_latency_ms: number;
+    model_used: string;
+  };
+}
+
+export const testMiniMaxConnection = async (payload?: {
+  api_key?: string;
+  base_url?: string;
+  model?: string;
+}): Promise<MiniMaxConnectionResult> => {
+  const res = await axios.post(`${API_BASE}/settings/test-connection`, payload || {});
+  return res.data;
+};
+
 export const updateSettings = async (settings: {
   active_harness: string;
   llm_model?: string;
   llm_api_key?: string;
   llm_base_url?: string;
   llm_protocol?: string;
+  asr_provider?: string;
+  minimax_api_key?: string;
+  minimax_base_url?: string;
 }) => {
   const res = await axios.post(`${API_BASE}/settings`, settings);
   return res.data;

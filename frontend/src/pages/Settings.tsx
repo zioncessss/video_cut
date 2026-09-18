@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_BASE, testHarness, listModels, TestHarnessResult } from '../services/api';
-import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Save, Zap, Loader2, ListChecks } from 'lucide-react';
+import { API_BASE, testHarness, listModels, testMiniMaxConnection, TestHarnessResult, MiniMaxConnectionResult } from '../services/api';
+import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Save, Zap, Loader2, ListChecks, Sparkles, Mic, Activity } from 'lucide-react';
 
 export const Settings: React.FC = () => {
   const [activeHarness, setActiveHarness] = useState<string>('api');
+  const [asrProvider, setAsrProvider] = useState<string>('minimax');
   const [llmModel, setLlmModel] = useState<string>('GLM-5.3-Flash');
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [llmApiKeyMasked, setLlmApiKeyMasked] = useState<string>('');
@@ -19,10 +20,14 @@ export const Settings: React.FC = () => {
   const [saving, setSaving] = useState<boolean>(false);
   const [testing, setTesting] = useState<boolean>(false);
   const [testResult, setTestResult] = useState<TestHarnessResult | null>(null);
+  const [testingMiniMax, setTestingMiniMax] = useState<boolean>(false);
+  const [miniMaxTestResult, setMiniMaxTestResult] = useState<MiniMaxConnectionResult | null>(null);
+  const [miniMaxTestError, setMiniMaxTestError] = useState<string | null>(null);
 
   useEffect(() => {
     axios.get(`${API_BASE}/settings`).then(res => {
       setActiveHarness(res.data.active_harness);
+      setAsrProvider(res.data.asr_provider || 'minimax');
       setLlmModel(res.data.llm_model || '');
       // 凭据红线：后端不下发 key 明文，仅回显掩码；输入框留空表示保持现有 key
       setLlmApiKey('');
@@ -77,6 +82,33 @@ export const Settings: React.FC = () => {
     }
   };
 
+  const applyMiniMaxPreset = () => {
+    setActiveHarness('api');
+    setLlmBaseUrl('https://api.minimaxi.com/v1');
+    setLlmModel('MiniMax-Text-01');
+    setLlmProtocol('openai');
+    setAsrProvider('minimax');
+  };
+
+  const handleTestMiniMax = async () => {
+    setTestingMiniMax(true);
+    setMiniMaxTestResult(null);
+    setMiniMaxTestError(null);
+    try {
+      const res = await testMiniMaxConnection({
+        api_key: llmApiKey.trim() || undefined,
+        base_url: llmBaseUrl.trim() || undefined,
+        model: llmModel.trim() || undefined,
+      });
+      setMiniMaxTestResult(res);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.response?.data?.message || e.message || '连通性测试失败';
+      setMiniMaxTestError(detail);
+    } finally {
+      setTestingMiniMax(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -84,7 +116,8 @@ export const Settings: React.FC = () => {
         active_harness: activeHarness,
         llm_model: llmModel,
         llm_base_url: llmBaseUrl,
-        llm_protocol: llmProtocol
+        llm_protocol: llmProtocol,
+        asr_provider: asrProvider,
       };
       // 凭据红线：仅在用户输入了新 key 时才提交；留空 = 保持后端已存储的 key
       if (llmApiKey.trim()) {
@@ -163,18 +196,75 @@ export const Settings: React.FC = () => {
           )}
         </div>
 
+        {/* ASR 语音识别引擎选择 */}
+        <div className="pt-4 border-t border-gray-100">
+          <label className="block text-sm font-semibold text-gray-800 mb-3 flex items-center space-x-1.5">
+            <Mic className="w-4 h-4 text-indigo-600" />
+            <span>语音识别 (ASR) 引擎模式</span>
+          </label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[
+              {
+                id: 'minimax',
+                label: 'MiniMax 云端极速识别 (asr-1.0)',
+                desc: '2~4 秒极速转写，毫秒级字时间戳，零 CPU 占用；网络或鉴权异常时自动平滑回退 Faster-Whisper',
+                badge: '推荐 / 极速'
+              },
+              {
+                id: 'local',
+                label: '本地 Faster-Whisper (base)',
+                desc: '纯本地 CPU/GPU 离线运算，无需 API Key 与互联网连接，离线保底',
+                badge: '离线纯本地'
+              }
+            ].map(provider => {
+              const isSelected = asrProvider === provider.id;
+              return (
+                <button
+                  key={provider.id}
+                  onClick={() => setAsrProvider(provider.id)}
+                  className={`p-4 rounded-xl border text-left transition-all ${
+                    isSelected
+                      ? 'border-indigo-600 bg-indigo-50/30 ring-2 ring-indigo-600/10'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-gray-900">{provider.label}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                      isSelected ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      {provider.badge}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-500">{provider.desc}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* ===== 以下配置区随引擎切换：api=直连配置；codex/zcode=本地配置说明 ===== */}
         {activeHarness === 'api' && (
         <>
         {/* 直连 API 连接配置 */}
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-semibold text-gray-800 mb-1">
-              直连 API 配置 (Base URL / API Key)
-            </label>
-            <p className="text-[11px] text-gray-500 mb-2">
-              填写后字幕纠偏等固定格式任务将直连该端点；两者均留空则继承本地 <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">~/.codex/config.toml</code> 的代理配置。
-            </p>
+        <div className="space-y-4 pt-4 border-t border-gray-100">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                直连 API 配置 (Base URL / API Key)
+              </label>
+              <p className="text-[11px] text-gray-500">
+                填写后字幕纠偏等固定格式任务将直连该端点；配置 MiniMax Key 可同时生效 ASR 与 LLM。
+              </p>
+            </div>
+            <button
+              onClick={applyMiniMaxPreset}
+              className="self-start sm:self-auto flex items-center space-x-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-500/10 to-indigo-500/10 hover:from-blue-500/20 hover:to-indigo-500/20 text-indigo-700 text-xs font-semibold rounded-xl border border-indigo-200/60 transition-all shadow-sm"
+              title="一键将 Base URL 设为 MiniMax 生产地址并将模型切换为 MiniMax-Text-01"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+              <span>一键载入 MiniMax 预设</span>
+            </button>
           </div>
           <div className="grid grid-cols-1 gap-3">
             <input
@@ -266,6 +356,57 @@ export const Settings: React.FC = () => {
             <option value="anthropic" disabled>anthropic（敬请期待）</option>
             <option value="gemini" disabled>gemini（敬请期待）</option>
           </select>
+        </div>
+
+        {/* MiniMax 双通道连通性测试卡片 */}
+        <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div className="flex items-center space-x-2">
+              <Activity className="w-4 h-4 text-indigo-600" />
+              <span className="font-semibold text-xs text-gray-800">MiniMax 双通道健康探测 (ASR + LLM)</span>
+            </div>
+            <button
+              onClick={handleTestMiniMax}
+              disabled={testingMiniMax}
+              className="self-start sm:self-auto flex items-center space-x-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-3.5 py-2 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+            >
+              {testingMiniMax ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Zap className="w-3.5 h-3.5 text-amber-300" />
+              )}
+              <span>{testingMiniMax ? '正在探测双通道...' : '测试 MiniMax 连通性'}</span>
+            </button>
+          </div>
+
+          {miniMaxTestResult && (
+            <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-lg text-xs space-y-1.5">
+              <div className="flex items-center text-emerald-800 font-semibold space-x-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>{miniMaxTestResult.message || 'MiniMax 双通道健康探测通过！'}</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-2 border-t border-emerald-200/60 text-[11px] text-emerald-900">
+                <div className="bg-white/70 p-2.5 rounded-lg border border-emerald-200/40">
+                  <div className="font-semibold text-gray-700 mb-0.5">大模型通道 (LLM): <span className="text-emerald-700 font-medium">就绪 (HTTP 200)</span></div>
+                  <div className="text-[10px] text-gray-500">模型: {miniMaxTestResult.data.model_used} | 延迟: {miniMaxTestResult.data.llm_latency_ms} ms</div>
+                </div>
+                <div className="bg-white/70 p-2.5 rounded-lg border border-emerald-200/40">
+                  <div className="font-semibold text-gray-700 mb-0.5">极速语音识别 (ASR): <span className="text-emerald-700 font-medium">就绪 (HTTP 200)</span></div>
+                  <div className="text-[10px] text-gray-500">模型: asr-1.0 | 延迟: {miniMaxTestResult.data.asr_latency_ms} ms</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {miniMaxTestError && (
+            <div className="p-3 bg-red-50/80 border border-red-200 rounded-lg text-xs flex items-start space-x-2 text-red-900">
+              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold">MiniMax 连通性探测失败</div>
+                <div className="text-[11px] mt-0.5 text-red-700 break-all">{miniMaxTestError}</div>
+              </div>
+            </div>
+          )}
         </div>
         </>
         )}

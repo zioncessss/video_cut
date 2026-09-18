@@ -4,6 +4,15 @@ from pydantic import BaseModel, Field
 import uuid
 import time
 
+class ASRProvider(str, Enum):
+    MINIMAX = "minimax"
+    LOCAL = "local"
+
+class SubtitleWord(BaseModel):
+    word: str
+    start: float
+    end: float
+
 class MaterialCategory(str, Enum):
     TALKING_HEAD = "talking_head"
     VENUE = "venue"
@@ -48,6 +57,7 @@ class SubtitleSegment(BaseModel):
     matched_category: Optional[MaterialCategory] = None
     matched_keywords: List[str] = Field(default_factory=list)
     highlight_words: List[HighlightWord] = Field(default_factory=list)
+    words: List[SubtitleWord] = Field(default_factory=list)
     scene_decision: Optional[SceneDecision] = None
     broll_material_id: Optional[str] = None
     is_manual_edited: bool = False
@@ -177,4 +187,24 @@ class PipelineProgress(BaseModel):
     percent: int = 0
     message: str = ""
     updated_at: float = Field(default_factory=time.time)
+
+class EngineSettings(BaseModel):
+    active_harness: str = "api"
+    llm_model: str = "MiniMax-Text-01"
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_protocol: str = "openai"
+    asr_provider: str = ASRProvider.MINIMAX.value
+
+class SettingsResponse(BaseModel):
+    active_harness: str
+    llm_model: str
+    llm_api_key_masked: str
+    llm_api_key_configured: bool
+    llm_base_url: Optional[str] = None
+    llm_protocol: str = "openai"
+    asr_provider: str = ASRProvider.MINIMAX.value
+    detected_engines: Dict[str, bool] = Field(default_factory=dict)
+    engine_config: Dict[str, Any] = Field(default_factory=dict)
+    zcode_path: Optional[str] = None
 

@@ -1,7 +1,8 @@
 {
   "active_harness": "api",
-  "llm_api_key": "aee37d953164453ca31fd77f07687ff9.RPXUCkROaLo3Oaey",
-  "llm_base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-  "llm_model": "glm-5.3-flash",
-  "llm_protocol": "openai"
+  "llm_api_key": "sk-api-Msm3w4B5PE8fbapf3xutXCBuzL4VWNNXpNL3rvBpxGcVyC8KkuD1ekJS9LEKXSlGA4_NbpyoYm1imhk9yyutvQmmc02NAakGUAC9IfaPbEiUiLaBoPieTT8",
+  "llm_base_url": "https://api.minimaxi.com/v1",
+  "llm_model": "MiniMax-Text-01",
+  "llm_protocol": "openai",
+  "asr_provider": "minimax"
 }

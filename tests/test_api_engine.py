@@ -355,3 +355,57 @@ def test_list_models_endpoint_honest_failure(monkeypatch):
     assert body["code"] == 1
     assert "401" in body["message"]
     assert body["data"]["models"] == []
+
+
+def test_minimax_normalize_base_url():
+    """测试 MiniMax 等 API base_url 的自动规范化与 /v1 智能补全"""
+    assert llm_client.normalize_base_url("https://api.minimaxi.com") == "https://api.minimaxi.com/v1"
+    assert llm_client.normalize_base_url("https://api.minimaxi.com/v1") == "https://api.minimaxi.com/v1"
+    assert llm_client.normalize_base_url("https://api.minimaxi.com/v1/chat/completions") == "https://api.minimaxi.com/v1"
+    assert llm_client.normalize_base_url("https://api.openai.com") == "https://api.openai.com/v1"
+    assert llm_client.normalize_base_url("http://127.0.0.1:15721/v1") == "http://127.0.0.1:15721/v1"
+
+
+def test_minimax_text_01_correction_and_markdown_unwrap(monkeypatch):
+    """测试在 OpenAI 兼容格式下 MiniMax-Text-01 正常被识别与消费，markdown 代码块正确解包"""
+    captured = {}
+
+    minimax_markdown_response = (
+        "好的，为您进行智能字幕纠偏：\n"
+        "```json\n"
+        "{\n"
+        '  "subtitles": [\n'
+        '    {"id": "m1", "corrected_text": "欢迎来到科目二考场教练带你练车", "highlight_keywords": ["考场"]}\n'
+        "  ],\n"
+        '  "corrections": [\n'
+        '    {"subtitle_id": "m1", "original_text": "科二", "corrected_text": "科目二", "reason": "术语规范"}\n'
+        "  ]\n"
+        "}\n"
+        "```\n"
+        "纠偏完成！"
+    )
+
+    async def fake_stream(prompt, timeout=120.0, system=None, model_override=None, provider=None):
+        captured["prompt"] = prompt
+        return True, minimax_markdown_response, 450.0
+
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fake_stream)
+    monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {
+        "base_url": "https://api.minimaxi.com/v1",
+        "token": "sk-test-minimax",
+        "model": "MiniMax-Text-01",
+        "source": "设置页配置"
+    })
+
+    req = HarnessCorrectionRequest(
+        raw_subtitles=[{"id": "m1", "raw_text": "欢迎来到科二考场教练带你练车", "corrected_text": "欢迎来到科二考场教练带你练车"}]
+    )
+    res = asyncio.run(ApiHarnessBridge().correct_subtitles(req))
+
+    assert isinstance(res, HarnessCorrectionResponse)
+    assert res.harness_engine_used == "api"
+    assert res.updated_subtitles[0]["corrected_text"] == "欢迎来到科目二考场教练带你练车"
+    assert len(res.corrections_summary) >= 1
+    assert res.corrections_summary[0].original_text == "科二"
+    assert res.corrections_summary[0].corrected_text == "科目二"
+

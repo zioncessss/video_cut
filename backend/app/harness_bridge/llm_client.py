@@ -10,6 +10,20 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core import config
 
 
+def normalize_base_url(base_url: str) -> str:
+    """规范化 Base URL，智能补全 /v1 后缀与剔除多余子路径"""
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        url = url[:-len("/chat/completions")].rstrip("/")
+    if url.endswith("/v1"):
+        return url
+    if "api.minimaxi.com" in url or "api.openai.com" in url or "api.deepseek.com" in url:
+        return f"{url}/v1"
+    return url
+
+
 def resolve_api_provider() -> Optional[Dict[str, str]]:
     """解析直连提供方配置。
 
@@ -87,7 +101,7 @@ async def _chat_via_provider(
     import httpx
 
     start_time = time.time()
-    base_url = provider["base_url"].rstrip("/")
+    base_url = normalize_base_url(provider["base_url"])
     active_model = (model_override or provider.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
     messages = []
     if system:
@@ -160,7 +174,7 @@ async def chat_completion_stream_full(
     if not provider:
         return False, "未配置直连大模型提供方：请在设置页填写 base_url 与 api_key，或确保 ~/.codex/config.toml 存在", 0.0
     start_time = time.time()
-    base_url = provider["base_url"].rstrip("/")
+    base_url = normalize_base_url(provider["base_url"])
     active_model = (model_override or provider.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
     messages = []
     if system:
@@ -243,7 +257,7 @@ async def list_models(base_url: str, token: str = "", timeout: float = 15.0) -> 
     """
     import httpx
 
-    base = (base_url or "").strip().rstrip("/")
+    base = normalize_base_url(base_url)
     if not base:
         return False, [], "base_url 为空，无法获取模型列表"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -299,7 +313,7 @@ async def chat_completion_ttft(
     if not provider:
         return False, 0.0, "未配置直连大模型提供方：请在设置页填写 base_url 与 api_key，或确保 ~/.codex/config.toml 存在"
     start_time = time.time()
-    base_url = provider["base_url"].rstrip("/")
+    base_url = normalize_base_url(provider["base_url"])
     active_model = (model_override or provider.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
     messages = []
     if system:

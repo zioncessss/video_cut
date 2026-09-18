@@ -99,6 +99,24 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", get_codex_configured_model() or "glm-5.3-flash")
 LLM_PROTOCOL = os.getenv("LLM_PROTOCOL", "openai")  # 直连协议：openai（兼容 /chat/completions）；anthropic/gemini 预留
 
+ASR_PROVIDER = os.getenv("ASR_PROVIDER", "minimax")  # "minimax" | "local"
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+
+def get_minimax_api_key() -> str:
+    """获取 MiniMax API Key（优先独立 minimax_api_key，未配置则复用 llm_api_key）"""
+    return (os.getenv("MINIMAX_API_KEY", "").strip() or MINIMAX_API_KEY or LLM_API_KEY or "").strip()
+
+def get_minimax_base_url() -> str:
+    """获取 MiniMax API 根地址"""
+    url = os.getenv("MINIMAX_BASE_URL", "").strip() or MINIMAX_BASE_URL
+    if not url:
+        if "minimax" in (LLM_BASE_URL or "").lower():
+            url = LLM_BASE_URL
+        else:
+            url = "https://api.minimaxi.com/v1"
+    return url.rstrip("/")
+
 def get_default_harness() -> str:
     # 默认链：直连大模型 API 可解析（设置项或 codex 本地配置）时优先 api，字幕等固定格式任务最高效
     if LLM_API_KEY or get_codex_provider_config().get("base_url"):
@@ -113,7 +131,7 @@ DEFAULT_HARNESS = get_default_harness()
 ACTIVE_HARNESS = os.getenv("ACTIVE_HARNESS", DEFAULT_HARNESS)  # "api", "embedded", "codex", "zcode"
 
 def load_settings():
-    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROTOCOL
+    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROTOCOL, ASR_PROVIDER, MINIMAX_API_KEY, MINIMAX_BASE_URL
     codex_model = get_codex_configured_model()
     if SETTINGS_FILE.exists():
         try:
@@ -124,6 +142,9 @@ def load_settings():
                 LLM_API_KEY = data.get("llm_api_key", LLM_API_KEY)
                 LLM_BASE_URL = data.get("llm_base_url", LLM_BASE_URL)
                 LLM_PROTOCOL = data.get("llm_protocol", LLM_PROTOCOL)
+                ASR_PROVIDER = data.get("asr_provider", ASR_PROVIDER)
+                MINIMAX_API_KEY = data.get("minimax_api_key", MINIMAX_API_KEY)
+                MINIMAX_BASE_URL = data.get("minimax_base_url", MINIMAX_BASE_URL)
                 stored_model = data.get("llm_model")
                 # 保护机制：如果当前处于 codex 引擎且本地 codex 真实配置了模型，强制对齐真实模型
                 if ACTIVE_HARNESS == "codex" and codex_model:
@@ -137,7 +158,7 @@ def load_settings():
 
 def save_settings(data: dict):
     import json
-    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROTOCOL
+    global ACTIVE_HARNESS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROTOCOL, ASR_PROVIDER, MINIMAX_API_KEY, MINIMAX_BASE_URL
     if "active_harness" in data:
         ACTIVE_HARNESS = data["active_harness"]
     if "llm_api_key" in data:
@@ -148,15 +169,28 @@ def save_settings(data: dict):
         LLM_MODEL = data["llm_model"]
     if "llm_protocol" in data:
         LLM_PROTOCOL = data["llm_protocol"]
+    if "asr_provider" in data:
+        ASR_PROVIDER = data["asr_provider"]
+    if "minimax_api_key" in data:
+        MINIMAX_API_KEY = data["minimax_api_key"]
+    if "minimax_base_url" in data:
+        MINIMAX_BASE_URL = data["minimax_base_url"]
 
     settings_file = _ensure_storage_path(SETTINGS_FILE)
-    settings_file.write_text(json.dumps({
+    payload = {
         "active_harness": ACTIVE_HARNESS,
         "llm_api_key": LLM_API_KEY,
         "llm_base_url": LLM_BASE_URL,
         "llm_model": LLM_MODEL,
-        "llm_protocol": LLM_PROTOCOL
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+        "llm_protocol": LLM_PROTOCOL,
+        "asr_provider": ASR_PROVIDER
+    }
+    if MINIMAX_API_KEY:
+        payload["minimax_api_key"] = MINIMAX_API_KEY
+    if MINIMAX_BASE_URL and MINIMAX_BASE_URL != "https://api.minimaxi.com/v1":
+        payload["minimax_base_url"] = MINIMAX_BASE_URL
+
+    settings_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 # 初始化读取已有配置
 load_settings()

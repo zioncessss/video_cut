@@ -2,7 +2,8 @@ import subprocess
 import json
 import os
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import httpx
 
 class ASRRunner:
     def __init__(self):
@@ -240,21 +241,126 @@ class ASRRunner:
 
         return pass2
 
-    def transcribe(self, video_path: Path) -> List[Dict[str, Any]]:
+    def parse_minimax_response(self, resp_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        对口播视频进行语音识别，返回【自然句层】的原始字幕（不切割）。
-
-        为什么不在这里做 6~12 字黄金切割：切割产生的句中碎片（如"…大改革我 / 们现学车…"）
-        会让后续 AI 纠偏倾向重新断句，触发句集一致性守卫而整块回退。正确顺序是：
-        先在自然句层面完成 AI 纠偏（完整句模型不会重断句），再由调用方执行黄金切割。
-
-        优先尝试 faster-whisper 并开启词级物理时间戳；真实素材（>10KB）失败时直接抛出异常，
-        绝不用示范文字兜底（真实执行铁律）。
+        将 MiniMax asr-1.0 接口 verbose_json 返回的逐字 segments 映射为系统标准的 words 与句子分段：
+        1. 遍历字级 segments，提取字符、起止时间戳；
+        2. 基于标点、声学静音间隙（gap >= 0.28s）、自然语气词与字数健康度划分自然句；
+        3. 每句包含 words: List[{word, start, end}]，保留完整的声学物理时间戳供后续高亮与黄金切分使用。
         """
         import re
-        audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
-        extracted = self.extract_audio(video_path, audio_tmp)
+        raw_segments = []
+        minimax_segments = resp_data.get("segments") or []
+        if not minimax_segments:
+            text = resp_data.get("text", "").strip()
+            if text:
+                return [{
+                    "start_time": 0.0,
+                    "end_time": float(resp_data.get("duration", 0.0)),
+                    "raw_text": text,
+                    "corrected_text": text,
+                    "words": []
+                }]
+            return []
 
+        current_words = []
+        for idx, item in enumerate(minimax_segments):
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            start = float(item.get("start", 0.0))
+            end = float(item.get("end", start))
+            is_punct = bool(re.search(r'^[,，;；!！?？。、\s]+$', text))
+
+            if not is_punct:
+                current_words.append({"word": text, "start": round(start, 3), "end": round(end, 3)})
+
+            next_start = float(minimax_segments[idx + 1].get("start", end)) if idx + 1 < len(minimax_segments) else end
+            gap = max(0.0, next_start - end)
+            curr_len = sum(len(x["word"]) for x in current_words)
+
+            should_break = (
+                is_punct or
+                (gap >= 0.28 and curr_len >= 4) or
+                (curr_len >= 6 and (gap >= 0.15 or text[-1:] in "呢吧啊吗呀啦哒哦哈")) or
+                curr_len >= 14
+            )
+            if should_break and current_words:
+                clause_text = "".join(x["word"] for x in current_words).strip()
+                clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
+                if clause_text:
+                    raw_segments.append({
+                        "start_time": current_words[0]["start"],
+                        "end_time": current_words[-1]["end"],
+                        "raw_text": clause_text,
+                        "corrected_text": clause_text,
+                        "words": list(current_words)
+                    })
+                current_words = []
+
+        if current_words:
+            clause_text = "".join(x["word"] for x in current_words).strip()
+            clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
+            if clause_text:
+                raw_segments.append({
+                    "start_time": current_words[0]["start"],
+                    "end_time": current_words[-1]["end"],
+                    "raw_text": clause_text,
+                    "corrected_text": clause_text,
+                    "words": list(current_words)
+                })
+
+        return raw_segments
+
+    def transcribe_minimax(
+        self,
+        audio_path: Path,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout: float = 60.0
+    ) -> List[Dict[str, Any]]:
+        """
+        通过 MiniMax 云端 asr-1.0 接口极速识别语音，获取字级时间戳。
+        """
+        from app.core import config
+        key = (api_key or config.get_minimax_api_key() or "").strip()
+        if not key:
+            raise ValueError("未配置 MiniMax API Key，无法使用 MiniMax 云端语音识别")
+
+        url = (base_url or config.get_minimax_base_url() or "https://api.minimaxi.com/v1").rstrip("/")
+        if not url.endswith("/speech_to_text"):
+            stt_endpoint = f"{url}/speech_to_text"
+        else:
+            stt_endpoint = url
+
+        headers = {
+            "Authorization": f"Bearer {key}"
+        }
+        data = {
+            "model": "asr-1.0",
+            "response_format": "verbose_json",
+            "timestamp_level": "word",
+            "stream": "false"
+        }
+
+        with open(audio_path, "rb") as f:
+            files = {
+                "file": (audio_path.name, f, "audio/wav")
+            }
+            res = httpx.post(stt_endpoint, headers=headers, data=data, files=files, timeout=timeout)
+            res.raise_for_status()
+            resp_json = res.json()
+
+        base_resp = resp_json.get("base_resp")
+        if base_resp and base_resp.get("status_code", 0) != 0:
+            msg = base_resp.get("status_msg", "MiniMax STT 识别接口返回错误")
+            raise RuntimeError(f"MiniMax ASR 接口错误: {msg} (code: {base_resp.get('status_code')})")
+
+        return self.parse_minimax_response(resp_json)
+
+    def _transcribe_local(self, video_path: Path, audio_tmp: Path, extracted: bool) -> List[Dict[str, Any]]:
+        """使用本地 Faster-Whisper 进行离线识别保底"""
+        import re
         raw_segments = []
         try:
             from faster_whisper import WhisperModel
@@ -265,7 +371,7 @@ class ASRRunner:
             from app.core.config import get_asr_initial_prompt
             initial_prompt = get_asr_initial_prompt() or None
             whisper_segments, _ = self._model.transcribe(
-                str(audio_tmp if extracted else video_path),
+                str(audio_tmp if extracted and audio_tmp.exists() else video_path),
                 language="zh",
                 word_timestamps=True,
                 initial_prompt=initial_prompt
@@ -355,7 +461,42 @@ class ASRRunner:
             except Exception:
                 pass
 
-        # 返回自然句层原始字幕；黄金切割由调用方在 AI 纠偏之后执行（T038 管线顺序调整）
         return raw_segments
+
+    def transcribe(self, video_path: Path) -> List[Dict[str, Any]]:
+        """
+        对口播视频进行语音识别，返回【自然句层】的原始字幕（不切割）。
+        智能路由策略：
+        1. 当 ASR_PROVIDER 为 "minimax" 且配置了 MiniMax Key 时，优先调用 MiniMax 云端 asr-1.0 极速识别；
+        2. 当网络超时、鉴权失败或 MiniMax 接口异常时，平滑降级至本地 faster-whisper；
+        3. 当 ASR_PROVIDER 为 "local" 或未配置 MiniMax Key 时，直接走本地 faster-whisper。
+        """
+        from app.core import config
+        audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
+        extracted = self.extract_audio(video_path, audio_tmp)
+        target_audio = audio_tmp if extracted and audio_tmp.exists() else video_path
+
+        asr_provider = getattr(config, "ASR_PROVIDER", "minimax")
+        minimax_key = config.get_minimax_api_key()
+
+        if asr_provider == "minimax" and minimax_key:
+            try:
+                print(f"[ASRRunner] 使用 MiniMax 云端极速 ASR 转写: {video_path.name}")
+                segments = self.transcribe_minimax(target_audio, api_key=minimax_key, base_url=config.get_minimax_base_url())
+                if segments:
+                    if audio_tmp.exists():
+                        try:
+                            audio_tmp.unlink()
+                        except Exception:
+                            pass
+                    return segments
+                print("[ASRRunner] MiniMax 返回空转写结果，降级至本地 Faster-Whisper")
+            except Exception as e:
+                print(f"[ASRRunner] MiniMax 云端识别异常 ({e})，平滑降级至本地 Faster-Whisper")
+        else:
+            if asr_provider == "minimax" and not minimax_key:
+                print("[ASRRunner] 未配置 MiniMax API Key，使用本地 Faster-Whisper")
+
+        return self._transcribe_local(video_path, audio_tmp, extracted)
 
 asr_runner = ASRRunner()

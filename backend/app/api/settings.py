@@ -1,17 +1,23 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import shutil
+import time
 from typing import Optional
+import httpx
 from app.core import config
+from app.harness_bridge.llm_client import normalize_base_url
 
 router = APIRouter()
 
 class SettingsPayload(BaseModel):
     active_harness: str  # "api", "embedded", "codex", "zcode"
-    llm_model: str = "GLM-5.3-Flash"
+    llm_model: str = "MiniMax-Text-01"
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_protocol: str = "openai"  # openai 兼容 /chat/completions；anthropic/gemini 预留
+    asr_provider: Optional[str] = None  # "minimax" | "local"
+    minimax_api_key: Optional[str] = None
+    minimax_base_url: Optional[str] = None
 
 @router.get("")
 async def get_settings():
@@ -32,6 +38,7 @@ async def get_settings():
         "llm_api_key_configured": bool(key),
         "llm_base_url": config.LLM_BASE_URL,
         "llm_protocol": config.LLM_PROTOCOL,
+        "asr_provider": config.ASR_PROVIDER,
         "detected_engines": {
             "api": has_api,
             "embedded": True,
@@ -40,7 +47,12 @@ async def get_settings():
         },
         # 各引擎实际生效的配置来源摘要（token 不下发）
         "engine_config": {
-            "api": {"base_url": config.LLM_BASE_URL, "has_key": bool(config.LLM_API_KEY), "model": config.LLM_MODEL},
+            "api": {
+                "base_url": config.LLM_BASE_URL,
+                "has_key": bool(config.LLM_API_KEY),
+                "model": config.LLM_MODEL,
+                "asr_provider": config.ASR_PROVIDER
+            },
             "codex": {
                 "base_url": codex_local.get("base_url", ""),
                 "model": codex_local.get("model", ""),
@@ -54,6 +66,7 @@ async def get_settings():
     }
 
 @router.post("")
+@router.put("")
 async def update_settings(payload: SettingsPayload):
     save_data = {
         "active_harness": payload.active_harness,
@@ -64,6 +77,12 @@ async def update_settings(payload: SettingsPayload):
         save_data["llm_api_key"] = payload.llm_api_key
     if payload.llm_base_url is not None:
         save_data["llm_base_url"] = payload.llm_base_url
+    if payload.asr_provider is not None:
+        save_data["asr_provider"] = payload.asr_provider
+    if payload.minimax_api_key is not None:
+        save_data["minimax_api_key"] = payload.minimax_api_key
+    if payload.minimax_base_url is not None:
+        save_data["minimax_base_url"] = payload.minimax_base_url
 
     config.save_settings(save_data)
     return {"code": 0, "message": "Settings updated successfully", "data": payload}
@@ -141,5 +160,107 @@ async def test_harness(payload: TestHarnessPayload):
                 "message": "内置规则引擎就绪" if is_avail else "引擎不可用"
             }
         }
+
+class TestConnectionPayload(BaseModel):
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+
+@router.post("/test-connection")
+async def test_connection(payload: Optional[TestConnectionPayload] = None):
+    """
+    MiniMax 综合连通性健康探测：
+    对 LLM (chat/completions) 和 STT (speech_to_text) 发送轻量探针，
+    返回双通道健康状态与精确耗时；若鉴权失败或网络故障抛出 500 明确异常。
+    """
+    api_key = ""
+    base_url = ""
+    model = ""
+    if payload:
+        api_key = (payload.api_key or "").strip()
+        base_url = (payload.base_url or "").strip()
+        model = (payload.model or "").strip()
+
+    api_key = api_key or config.get_minimax_api_key()
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="MiniMax 连通性测试失败: 未配置 MiniMax API Key，请在设置项中输入"
+        )
+
+    base_url = normalize_base_url(base_url or config.get_minimax_base_url() or "https://api.minimaxi.com/v1")
+    model = model or config.LLM_MODEL or "MiniMax-Text-01"
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    # 1. 探测 LLM 通道
+    llm_start = time.time()
+    try:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            llm_resp = await client.post(
+                f"{base_url}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5
+                },
+                headers=headers,
+                timeout=15.0
+            )
+            llm_latency_ms = round((time.time() - llm_start) * 1000, 1)
+            if llm_resp.status_code == 401:
+                raise HTTPException(status_code=500, detail=f"MiniMax LLM 鉴权失败 (HTTP 401): {llm_resp.text[:120]}")
+            elif llm_resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"MiniMax LLM 接口异常 (HTTP {llm_resp.status_code}): {llm_resp.text[:120]}")
+    except HTTPException:
+        raise
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=500, detail="MiniMax LLM 接口探测超时 (15s)")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MiniMax LLM 探测异常: {e}")
+
+    # 2. 探测 STT 通道 (speech_to_text)
+    stt_start = time.time()
+    dummy_wav_header = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+    try:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            stt_resp = await client.post(
+                f"{base_url}/speech_to_text",
+                headers=headers,
+                data={
+                    "model": "asr-1.0",
+                    "response_format": "verbose_json",
+                    "timestamp_level": "word",
+                    "stream": "false"
+                },
+                files={
+                    "file": ("test.wav", dummy_wav_header, "audio/wav")
+                },
+                timeout=15.0
+            )
+            asr_latency_ms = round((time.time() - stt_start) * 1000, 1)
+            if stt_resp.status_code == 401:
+                raise HTTPException(status_code=500, detail=f"MiniMax ASR 鉴权失败 (HTTP 401): {stt_resp.text[:120]}")
+            elif stt_resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"MiniMax ASR 接口异常 (HTTP {stt_resp.status_code}): {stt_resp.text[:120]}")
+    except HTTPException:
+        raise
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=500, detail="MiniMax ASR 接口探测超时 (15s)")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MiniMax ASR 探测异常: {e}")
+
+    return {
+        "code": 0,
+        "message": "MiniMax 双通道就绪",
+        "data": {
+            "llm_status": "ok",
+            "llm_latency_ms": llm_latency_ms,
+            "asr_status": "ok",
+            "asr_latency_ms": asr_latency_ms,
+            "model_used": model
+        }
+    }
+
 
 
