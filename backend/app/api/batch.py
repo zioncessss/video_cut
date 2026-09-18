@@ -251,18 +251,23 @@ async def get_batch_job(job_id: str):
         if mat:
             d["material_filename"] = mat.filename
             d["duration"] = mat.duration
+        p = None
         if i.project_id:
             p = project_storage_service.get_by_project_id(i.project_id)
+        if not p and i.material_id:
+            p = project_storage_service.get_by_material_id(i.material_id)
             if p:
-                d["project_title"] = p.title
-                d["task_dir"] = p.task_dir
-                d["cover_image_path"] = p.cover_image_path
-                if p.output_video_path:
-                    d["output_video_path"] = p.output_video_path
-                    full_path = STORAGE_DIR.parent / p.output_video_path
-                    if full_path.exists():
-                        d["output_absolute_path"] = str(full_path.resolve())
-                        d["output_file_size_mb"] = round(full_path.stat().st_size / (1024 * 1024), 2)
+                d["project_id"] = p.id
+        if p:
+            d["project_title"] = p.title
+            d["task_dir"] = p.task_dir
+            d["cover_image_path"] = p.cover_image_path
+            if p.output_video_path:
+                d["output_video_path"] = p.output_video_path
+                full_path = STORAGE_DIR.parent / p.output_video_path
+                if full_path.exists():
+                    d["output_absolute_path"] = str(full_path.resolve())
+                    d["output_file_size_mb"] = round(full_path.stat().st_size / (1024 * 1024), 2)
         items_out.append(d)
 
     return {
@@ -288,7 +293,8 @@ async def list_batch_jobs():
                 "status": j.status.value if hasattr(j.status, "value") else str(j.status),
                 "total_count": j.total_count,
                 "completed_count": j.completed_count,
-                "concurrency": j.concurrency
+                "concurrency": j.concurrency,
+                "created_at": getattr(j, "created_at", None)
             }
             for j in jobs
         ]

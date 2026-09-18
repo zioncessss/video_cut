@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
+import { app } from 'electron';
 
 export class EngineManager {
   private static process: ChildProcess | null = null;
@@ -63,7 +64,7 @@ export class EngineManager {
     // 双模式：打包形态优先 resources/engine/videocut-engine/（onedir 产物）；开发态回退 .venv uvicorn
     const sidecarDir = resolve(projectRoot, 'resources', 'engine', 'videocut-engine');
     const sidecarPath = resolve(sidecarDir, isWin ? 'videocut-engine.exe' : 'videocut-engine');
-    const useSidecar = existsSync(sidecarPath);
+    const useSidecar = (app.isPackaged || process.env.FORCE_SIDECAR === '1') && existsSync(sidecarPath);
 
     // 动态空闲端口：避免固定端口被占用导致引擎静默起不来
     try {

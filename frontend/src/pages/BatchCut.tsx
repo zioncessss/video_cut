@@ -42,6 +42,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const [jobs, setJobs] = useState<any[]>([]);
   const [jobDetails, setJobDetails] = useState<Record<string, any>>({});
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [showHistoryJobs, setShowHistoryJobs] = useState<boolean>(true);
 
   // 上传与批处理状态
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -339,7 +340,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
         </div>
       )}
 
-      {/* 3. 正在运行的批处理作业进度条与状态看板 */}
+      {/* 3.1 正在运行的批处理作业进度条与状态看板 */}
       {jobs.length > 0 && jobs.some(j => j.status !== 'finished') && (
         <div className="bg-white border border-blue-100 rounded-2xl p-4 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
@@ -391,6 +392,84 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* 3.2 历史已剪辑完成的批处理任务记录看板 */}
+      {jobs.filter(j => j.status === 'finished').length > 0 && (
+        <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Clock className="w-4 h-4 text-emerald-600" />
+              <h3 className="text-xs font-bold text-gray-800">
+                历史已剪辑任务记录 ({jobs.filter(j => j.status === 'finished').length} 个批次)
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowHistoryJobs(!showHistoryJobs)}
+              className="text-xs text-blue-600 hover:text-blue-700 font-medium cursor-pointer"
+            >
+              {showHistoryJobs ? '收起历史批次' : '展开查看任务明细'}
+            </button>
+          </div>
+
+          {showHistoryJobs && (
+            <div className="space-y-3 pt-1">
+              {jobs.filter(j => j.status === 'finished').map(j => {
+                const detail = jobDetails[j.job_id];
+                return (
+                  <div key={j.job_id} className="bg-gray-50/70 rounded-xl p-3 border border-gray-200/60 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-medium text-gray-700">批次: {j.job_id.substring(0, 8)}...</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-medium border border-emerald-200/60">
+                          已完成 {j.completed_count} / {j.total_count}
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-mono">并发: {j.concurrency}</span>
+                      </div>
+                      {j.created_at && (
+                        <span className="text-[11px] text-gray-400 font-mono">
+                          {formatDate(j.created_at)}
+                        </span>
+                      )}
+                    </div>
+
+                    {detail?.items && (
+                      <div className="space-y-1.5 pt-1">
+                        {detail.items.map((it: any, idx: number) => {
+                          const meta = ITEM_STATUS_META[it.status] || ITEM_STATUS_META.completed;
+                          return (
+                            <div key={idx} className="flex items-center justify-between text-[11px] bg-white px-3 py-1.5 rounded-lg border border-gray-100 shadow-2xs">
+                              <div className="flex items-center space-x-2 truncate">
+                                <span className="font-mono text-gray-400">#{idx + 1}</span>
+                                <span className="text-gray-700 font-medium truncate max-w-xs sm:max-w-md">
+                                  {it.project_title || it.material_filename || it.material_id}
+                                </span>
+                                <span className={`px-1.5 py-0.2 rounded text-[10px] ${meta.cls}`}>{meta.label}</span>
+                              </div>
+                              <div className="flex items-center space-x-3 text-gray-400 font-mono flex-shrink-0">
+                                {it.project_id && onNavigateToEditor && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToEditor(it.project_id, it.material_id)}
+                                    className="text-blue-600 hover:text-blue-700 hover:underline flex items-center space-x-1 cursor-pointer"
+                                  >
+                                    <span>在编辑器中打开</span>
+                                    <ExternalLink className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
