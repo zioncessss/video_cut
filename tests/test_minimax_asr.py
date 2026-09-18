@@ -104,41 +104,29 @@ def test_transcribe_minimax_auth_error(tmp_path):
         with pytest.raises(Exception):
             asr_runner.transcribe_minimax(dummy_wav, api_key="invalid-key")
 
-def test_transcribe_fallback_to_local_on_cloud_failure(tmp_path):
-    """测试当云端 ASR 异常（如超时或 500）时，transcribe 自动降级为本地转写"""
-    dummy_video = tmp_path / "test.mp4"
-    dummy_video.write_bytes(b"0" * 20000)  # > 10KB 模拟真实文件
-
-    with patch.object(asr_runner, "extract_audio", return_value=True), \
-         patch.object(asr_runner, "transcribe_minimax", side_effect=httpx.TimeoutException("Read timed out")), \
-         patch.object(asr_runner, "_transcribe_local", return_value=[
-             {"start_time": 0.0, "end_time": 2.0, "raw_text": "本地转写成功", "corrected_text": "本地转写成功"}
-         ]) as mock_local, \
-         patch("app.core.config.ASR_PROVIDER", "minimax"), \
-         patch("app.core.config.get_minimax_api_key", return_value="sk-test-key"):
-        
-        segments = asr_runner.transcribe(dummy_video)
-        assert len(segments) == 1
-        assert segments[0]["raw_text"] == "本地转写成功"
-        assert mock_local.called
-
-def test_transcribe_direct_local_when_provider_is_local(tmp_path):
-    """测试当 asr_provider 配置为 local 时，直接调用本地识别，不发起网络请求"""
+def test_transcribe_raises_on_cloud_failure_no_local_fallback(tmp_path):
+    """测试当云端 MiniMax ASR 异常（如超时或 500）时，transcribe 直接抛出真实异常，严禁静默回退本地"""
     dummy_video = tmp_path / "test.mp4"
     dummy_video.write_bytes(b"0" * 20000)
 
     with patch.object(asr_runner, "extract_audio", return_value=True), \
-         patch.object(asr_runner, "transcribe_minimax") as mock_minimax, \
-         patch.object(asr_runner, "_transcribe_local", return_value=[
-             {"start_time": 0.0, "end_time": 2.0, "raw_text": "本地优先识别", "corrected_text": "本地优先识别"}
-         ]) as mock_local, \
-         patch("app.core.config.ASR_PROVIDER", "local"):
+         patch.object(asr_runner, "transcribe_minimax", side_effect=httpx.TimeoutException("Read timed out")), \
+         patch("app.core.config.get_minimax_api_key", return_value="sk-test-key"):
         
-        segments = asr_runner.transcribe(dummy_video)
-        assert len(segments) == 1
-        assert segments[0]["raw_text"] == "本地优先识别"
-        assert not mock_minimax.called
-        assert mock_local.called
+        with pytest.raises(httpx.TimeoutException):
+            asr_runner.transcribe(dummy_video)
+
+def test_transcribe_raises_when_no_minimax_key(tmp_path):
+    """测试未配置 MiniMax Key 时，transcribe 直接抛出明确配置提示异常，严禁调用本地识别"""
+    dummy_video = tmp_path / "test.mp4"
+    dummy_video.write_bytes(b"0" * 20000)
+
+    with patch.object(asr_runner, "extract_audio", return_value=True), \
+         patch("app.core.config.get_minimax_api_key", return_value=""):
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            asr_runner.transcribe(dummy_video)
+        assert "未配置 MiniMax API Key" in str(exc_info.value)
 
 def test_trailing_punctuation_and_no_word_chopping():
     """测试词尾附带标点（如 '要报。'）被正确识别并剥离标点，触发分句且词中不含标点"""

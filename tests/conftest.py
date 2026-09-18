@@ -34,3 +34,41 @@ def _isolate_config_globals():
     for key, value in snapshot.items():
         setattr(app_config, key, value)
 
+
+@pytest.fixture(autouse=True)
+def _mock_dummy_transcribe_for_fake_test_files(monkeypatch):
+    """测试代码隔离（AGENTS.md）：仅针对虚拟测试生成的微型文件（<1KB 且非真实音视频）提供测试桩，真实运行绝不 mock"""
+    from app.native_engine.asr_runner import asr_runner
+    orig_transcribe = asr_runner.transcribe
+
+    def safe_transcribe(video_path):
+        if hasattr(video_path, "exists") and video_path.exists() and video_path.stat().st_size < 1024:
+            return [
+                {
+                    "start_time": 0.0,
+                    "end_time": 3.0,
+                    "raw_text": "测试第一句字幕",
+                    "corrected_text": "测试第一句字幕",
+                    "words": [
+                        {"word": "测试", "start": 0.0, "end": 1.0},
+                        {"word": "第一句", "start": 1.0, "end": 2.0},
+                        {"word": "字幕", "start": 2.0, "end": 3.0},
+                    ]
+                },
+                {
+                    "start_time": 3.2,
+                    "end_time": 6.0,
+                    "raw_text": "测试第二句学车场地实况",
+                    "corrected_text": "测试第二句学车场地实况",
+                    "words": [
+                        {"word": "测试", "start": 3.2, "end": 4.0},
+                        {"word": "第二句", "start": 4.0, "end": 5.0},
+                        {"word": "实况", "start": 5.0, "end": 6.0},
+                    ]
+                }
+            ]
+        return orig_transcribe(video_path)
+
+    monkeypatch.setattr(asr_runner, "transcribe", safe_transcribe)
+
+

@@ -703,7 +703,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               onClick={() => handleOneClickCutAndCorrect(false)}
               disabled={analyzing || !selectedThId}
               className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 cursor-pointer"
-              title="一键全自动：音频提取 -> faster-whisper 识别与黄金片段切分合并 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
+              title="一键全自动：音频提取 -> MiniMax 云端极速识别与字级时间戳意群切分 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
             >
               {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
               <span>{analyzing ? (oneClickStage || 'AI 智能剪辑中...') : '⚡ 智能剪辑 (AI Auto Cut)'}</span>

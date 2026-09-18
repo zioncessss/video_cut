@@ -404,143 +404,38 @@ class ASRRunner:
         return self.parse_minimax_response(resp_json)
 
     def _transcribe_local(self, video_path: Path, audio_tmp: Path, extracted: bool) -> List[Dict[str, Any]]:
-        """使用本地 Faster-Whisper 进行离线识别保底"""
-        import re
-        raw_segments = []
-        try:
-            from faster_whisper import WhisperModel
-            if self._model is None:
-                # 显式指定 compute_type="float32"，避免 Windows/CPU 报 float16 不支持的 warning
-                self._model = WhisperModel("base", device="cpu", compute_type="float32")
-            # 注入词库热词提示（storage/glossary.json），识别阶段即引导正确专名词，从源头减少错字
-            from app.core.config import get_asr_initial_prompt
-            initial_prompt = get_asr_initial_prompt() or None
-            whisper_segments, _ = self._model.transcribe(
-                str(audio_tmp if extracted and audio_tmp.exists() else video_path),
-                language="zh",
-                word_timestamps=True,
-                initial_prompt=initial_prompt
-            )
-            for seg in whisper_segments:
-                if seg.words:
-                    current_words = []
-                    for idx, w in enumerate(seg.words):
-                        current_words.append(w)
-                        clean_w = w.word.strip()
-                        is_punct = bool(re.search(r'[,，;；!！?？。、\s]$', clean_w))
-                        gap = (seg.words[idx + 1].start - w.end) if idx + 1 < len(seg.words) else 0.0
-                        curr_len = sum(len(x.word.strip()) for x in current_words)
-
-                        # 触发断句条件：遇到标点、或静音停顿>=0.28s、或已达6字以上且遇到>=0.15s停顿/语气词
-                        should_break = (
-                            is_punct or
-                            (gap >= 0.28 and curr_len >= 5) or
-                            (curr_len >= 6 and (gap >= 0.15 or clean_w[-1:] in "呢吧啊吗呀啦哒哦哈"))
-                        )
-                        if should_break:
-                            clause_text = "".join(x.word.strip() for x in current_words)
-                            clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
-                            if clause_text:
-                                raw_segments.append({
-                                    "start_time": round(current_words[0].start, 3),
-                                    "end_time": round(current_words[-1].end, 3),
-                                    "raw_text": clause_text,
-                                    "corrected_text": clause_text,
-                                    "words": [{"word": x.word.strip(), "start": round(x.start, 3), "end": round(x.end, 3)} for x in current_words]
-                                })
-                            current_words = []
-                    if current_words:
-                        clause_text = "".join(x.word.strip() for x in current_words)
-                        clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
-                        if clause_text:
-                            raw_segments.append({
-                                "start_time": round(current_words[0].start, 3),
-                                "end_time": round(current_words[-1].end, 3),
-                                "raw_text": clause_text,
-                                "corrected_text": clause_text,
-                                "words": [{"word": x.word.strip(), "start": round(x.start, 3), "end": round(x.end, 3)} for x in current_words]
-                            })
-                else:
-                    text = seg.text.strip()
-                    if text:
-                        raw_segments.append({
-                            "start_time": round(seg.start, 3),
-                            "end_time": round(seg.end, 3),
-                            "raw_text": text,
-                            "corrected_text": text
-                        })
-        except Exception as e:
-            print(f"[ASRRunner] Whisper inference error: {e}")
-            # 严防用假数据替代真实运行：对于真实视频素材（大小 > 10KB），严禁使用测试兜底句，直接向上抛出异常暴露问题
-            if video_path.exists() and video_path.stat().st_size > 10240:
-                raise RuntimeError(f"真实视频 ASR 语音识别失败，未能成功提取文字: {e}") from e
-
-            # 仅针对轻量虚拟的单元测试模拟文件允许基础结构回退
-            total_duration = 15.0
-            try:
-                from app.native_engine.storage import storage_service
-                meta = storage_service.probe_video_metadata(video_path)
-                if meta["duration"] > 0:
-                    total_duration = meta["duration"]
-            except Exception:
-                pass
-
-            sample_sentences = [
-                (0.0, min(4.5, total_duration * 0.3), "同学们好，今天带大家看看我们自建的五万平标准化训练场。"),
-                (min(4.5, total_duration * 0.3), min(9.0, total_duration * 0.6), "报名学车特别方便，一站式体检十分钟就能快速搞定。"),
-                (min(9.0, total_duration * 0.6), total_duration, "专业金牌教练手把手教学，科目二倒库轻松一把过。")
-            ]
-            for start, end, text in sample_sentences:
-                if start < total_duration:
-                    raw_segments.append({
-                        "start_time": round(start, 3),
-                        "end_time": round(min(end, total_duration), 3),
-                        "raw_text": text,
-                        "corrected_text": text
-                    })
-
-        if audio_tmp.exists():
-            try:
-                audio_tmp.unlink()
-            except Exception:
-                pass
-
-        return raw_segments
+        """本地 Faster-Whisper ASR 已全面停用，统一使用 MiniMax 云端极速识别"""
+        raise NotImplementedError("本地 ASR 已停用，系统统一接入 MiniMax 云端极速语音识别。")
 
     def transcribe(self, video_path: Path) -> List[Dict[str, Any]]:
         """
         对口播视频进行语音识别，返回【自然句层】的原始字幕（不切割）。
-        智能路由策略：
-        1. 当 ASR_PROVIDER 为 "minimax" 且配置了 MiniMax Key 时，优先调用 MiniMax 云端 asr-1.0 极速识别；
-        2. 当网络超时、鉴权失败或 MiniMax 接口异常时，平滑降级至本地 faster-whisper；
-        3. 当 ASR_PROVIDER 为 "local" 或未配置 MiniMax Key 时，直接走本地 faster-whisper。
+        统一调用 MiniMax 云端极速 ASR (asr-1.0)，获取毫秒级字时间戳。已彻底停用本地 Faster-Whisper。
         """
         from app.core import config
         audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
-        extracted = self.extract_audio(video_path, audio_tmp)
-        target_audio = audio_tmp if extracted and audio_tmp.exists() else video_path
+        try:
+            extracted = self.extract_audio(video_path, audio_tmp)
+            target_audio = audio_tmp if extracted and audio_tmp.exists() else video_path
 
-        asr_provider = getattr(config, "ASR_PROVIDER", "minimax")
-        minimax_key = config.get_minimax_api_key()
+            minimax_key = config.get_minimax_api_key()
+            if not minimax_key:
+                raise RuntimeError("未配置 MiniMax API Key，本地 ASR 已停用，请在系统设置中配置 MiniMax API Key")
 
-        if asr_provider == "minimax" and minimax_key:
-            try:
-                print(f"[ASRRunner] 使用 MiniMax 云端极速 ASR 转写: {video_path.name}")
-                segments = self.transcribe_minimax(target_audio, api_key=minimax_key, base_url=config.get_minimax_base_url())
-                if segments:
-                    if audio_tmp.exists():
-                        try:
-                            audio_tmp.unlink()
-                        except Exception:
-                            pass
-                    return segments
-                print("[ASRRunner] MiniMax 返回空转写结果，降级至本地 Faster-Whisper")
-            except Exception as e:
-                print(f"[ASRRunner] MiniMax 云端识别异常 ({e})，平滑降级至本地 Faster-Whisper")
-        else:
-            if asr_provider == "minimax" and not minimax_key:
-                print("[ASRRunner] 未配置 MiniMax API Key，使用本地 Faster-Whisper")
-
-        return self._transcribe_local(video_path, audio_tmp, extracted)
+            print(f"[ASRRunner] 使用 MiniMax 云端极速 ASR 转写: {video_path.name}")
+            segments = self.transcribe_minimax(
+                target_audio,
+                api_key=minimax_key,
+                base_url=config.get_minimax_base_url()
+            )
+            if not segments:
+                raise RuntimeError(f"MiniMax 云端 ASR 语音识别返回空结果: {video_path.name}")
+            return segments
+        finally:
+            if audio_tmp.exists():
+                try:
+                    audio_tmp.unlink()
+                except Exception:
+                    pass
 
 asr_runner = ASRRunner()

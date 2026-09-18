@@ -202,44 +202,16 @@ export const Settings: React.FC = () => {
             <Mic className="w-4 h-4 text-indigo-600" />
             <span>语音识别 (ASR) 引擎模式</span>
           </label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {[
-              {
-                id: 'minimax',
-                label: 'MiniMax 云端极速识别 (asr-1.0)',
-                desc: '2~4 秒极速转写，毫秒级字时间戳，零 CPU 占用；网络或鉴权异常时自动平滑回退 Faster-Whisper',
-                badge: '推荐 / 极速'
-              },
-              {
-                id: 'local',
-                label: '本地 Faster-Whisper (base)',
-                desc: '纯本地 CPU/GPU 离线运算，无需 API Key 与互联网连接，离线保底',
-                badge: '离线纯本地'
-              }
-            ].map(provider => {
-              const isSelected = asrProvider === provider.id;
-              return (
-                <button
-                  key={provider.id}
-                  onClick={() => setAsrProvider(provider.id)}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    isSelected
-                      ? 'border-indigo-600 bg-indigo-50/30 ring-2 ring-indigo-600/10'
-                      : 'border-gray-200 bg-white hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-xs text-gray-900">{provider.label}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                      isSelected ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {provider.badge}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-gray-500">{provider.desc}</p>
-                </button>
-              );
-            })}
+          <div className="p-4 rounded-xl border border-indigo-600 bg-indigo-50/30 ring-2 ring-indigo-600/10">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-semibold text-xs text-gray-900">MiniMax 云端极速识别 (asr-1.0)</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700">
+                云端专属 / 极速识别
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-600">
+              2~4 秒极速转写，提供毫秒级字级时间戳，零本地 CPU/GPU 负载与显存压力；本地 Faster-Whisper 已彻底停用。
+            </p>
           </div>
         </div>
 
