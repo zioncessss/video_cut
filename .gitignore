@@ -39,10 +39,17 @@ storage/materials/venue/*
 !storage/materials/venue/.gitkeep
 storage/materials/medical/*
 !storage/materials/medical/.gitkeep
+storage/materials/experience/*
+!storage/materials/experience/.gitkeep
 storage/materials/lesson/*
 !storage/materials/lesson/.gitkeep
 storage/outputs/*
 !storage/outputs/.gitkeep
+storage/tasks/*
+!storage/tasks/.gitkeep
+storage/projects/*
+!storage/projects/.gitkeep
+!storage/projects/f9122796-5629-49a3-b22a-2e52006dc393.json
 
 # Operating System & IDE
 .DS_Store
@@ -61,6 +68,10 @@ storage/legacy/
 out/
 dist/
 test_banner.png
+
+# PyInstaller Engine Packaging Build Artifacts
+build_engine/
+resources/engine/
 
 # Mimosa 安全扫描工具本地状态
 .mimosa/

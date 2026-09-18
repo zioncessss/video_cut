@@ -46,13 +46,11 @@ class StorageService:
                 self._cache = {}
 
     def _save_meta(self):
-        try:
-            META_FILE.write_text(
-                json.dumps([m.model_dump() for m in self._cache.values()], ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-        except Exception as e:
-            print(f"Error saving materials meta: {e}")
+        """已废弃的 JSON 影子写路径：SQLite 是素材元数据唯一权威存储。
+
+        保留空实现以兼容历史调用点；materials_meta.json 仅作为一次性迁移输入由 migrator 读取。
+        """
+        return
 
     def probe_video_metadata(self, filepath: Path) -> Dict[str, any]:
         """使用 ffprobe 探测视频时长、长宽、帧率"""

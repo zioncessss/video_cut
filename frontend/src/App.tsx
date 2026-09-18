@@ -130,12 +130,21 @@ export const App: React.FC = () => {
         )}
         {currentTab === 'editor' && (
           <VideoEditor
+            initialProjectId={activeProjectId}
             initialSelectedTalkingHeadId={selectedTalkingHeadId}
             onProjectLoaded={(pid) => setActiveProjectId(pid)}
             externalStrategyPlan={strategyPlan}
           />
         )}
-        {currentTab === 'batch' && <BatchCut />}
+        {currentTab === 'batch' && (
+          <BatchCut
+            onNavigateToEditor={(projId, matId) => {
+              if (matId) setSelectedTalkingHeadId(matId);
+              setActiveProjectId(projId);
+              setCurrentTab('editor');
+            }}
+          />
+        )}
         {currentTab === 'settings' && <Settings />}
       </main>
 

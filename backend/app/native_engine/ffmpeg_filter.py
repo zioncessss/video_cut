@@ -336,7 +336,9 @@ class FFmpegFilterComposer:
         for i, seg in enumerate(segs):
             if seg["kind"] == "broll":
                 seg["input_idx"] = len(inputs) // 2
-                inputs.extend(["-i", seg["path"]])
+                # -stream_loop -1：空镜素材短于窗口时长时循环补齐（trim duration 封顶），
+                # 杜绝素材过短导致该段提前 EOF、视频轨缩短与音画错位
+                inputs.extend(["-stream_loop", "-1", "-i", seg["path"]])
             filter_parts.append(
                 f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{scale_filter}[v_seg{i}];"
             )

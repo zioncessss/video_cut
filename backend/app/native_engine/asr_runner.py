@@ -25,36 +25,113 @@ class ASRRunner:
     def split_into_readable_segments(self, segments: List[Dict[str, Any]], max_chars: int = 14) -> List[Dict[str, Any]]:
         """
         针对口播短视频进行 6~12 字黄金视读切分：
-        将大于 max_chars 的长句依据标点（逗号、分号、顿号、空格）或平均比例拆分为连贯的短句，
-        并线性插值计算 start_time 和 end_time。
+        1. 优先基于物理词级时间戳（words）进行整词分组，严格取真实声学起止时间；
+        2. 若无词级时间戳，采用中文自然语法停顿（标点、语气词、连词引词）进行语义切片，绝不机械等分劈裂词语。
         """
         refined_segments = []
         import re
 
+        # 中文自然意群切分正则：在语气词后、或在自然引词/连词前断句（防御性负向前瞻避免拆开"像我们在"等）
+        split_pattern = re.compile(
+            r'(?<=[呢吧啊吗呀啦哒哦哈])|'
+            r'(?<!像)(?=(?:我们在|像我们在|像我们|我们|你们|他们|真的没有|真的|其实|大家|如果|但是|而且|然后|只要|不要|因为|所以|比如|另外|可以说是|特别))'
+        )
+
         for seg in segments:
-            text = seg.get("raw_text", "").strip()
+            text = (seg.get("corrected_text") or seg.get("raw_text", "")).strip()
             start = seg.get("start_time", 0.0)
             end = seg.get("end_time", start + 3.0)
             duration = max(0.2, end - start)
+            words = seg.get("words") or []
 
-            # 如果句子较短，直接保留
+            # 如果句子本身字数健康且无需拆分，直接保留
             if len(text) <= max_chars:
                 refined_segments.append(seg)
                 continue
 
-            # 尝试优先按常见短促停顿符（逗号、顿号、分号、感叹号、空格）分句
-            sub_clauses = [c.strip() for c in re.split(r'[,，;；!！、\s]+', text) if c.strip()]
-            
-            # 如果没有标点或者分割后仍有极长子句，按字数等分拆分
+            # 方案 A：具备真实物理词时间戳（word_timestamps=True）
+            if words and isinstance(words, list) and len(words) > 1:
+                curr_words = []
+                for w in words:
+                    curr_len = sum(len(x.get("word", "")) for x in curr_words)
+                    w_word = w.get("word", "")
+                    next_len = len(w_word)
+                    gap = round(w.get("start", 0.0) - curr_words[-1].get("end", 0.0), 3) if curr_words else 0.0
+
+                    # 达到推荐字数区间（>=5字）且遇到明显停顿（>=0.25s）或单句字数即将超标时收敛分段
+                    if curr_words and (curr_len + next_len > max_chars or (curr_len >= 5 and gap >= 0.25)):
+                        w_text = "".join(x.get("word", "") for x in curr_words).strip()
+                        if w_text:
+                            sub = dict(seg)
+                            sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                            sub["start_time"] = round(curr_words[0].get("start", start), 3)
+                            sub["end_time"] = round(curr_words[-1].get("end", end), 3)
+                            sub["raw_text"] = w_text
+                            sub["corrected_text"] = w_text
+                            sub["words"] = curr_words
+                            refined_segments.append(sub)
+                        curr_words = [w]
+                    else:
+                        curr_words.append(w)
+                if curr_words:
+                    w_text = "".join(x.get("word", "") for x in curr_words).strip()
+                    if w_text:
+                        sub = dict(seg)
+                        sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                        sub["start_time"] = round(curr_words[0].get("start", start), 3)
+                        sub["end_time"] = round(curr_words[-1].get("end", end), 3)
+                        sub["raw_text"] = w_text
+                        sub["corrected_text"] = w_text
+                        sub["words"] = curr_words
+                        refined_segments.append(sub)
+                continue
+
+            # 方案 B：无词级时间戳，采用自然语法意群与标点智能切分（彻底废除 chunk_len=10 机械截断）
+            raw_clauses = [c.strip() for c in re.split(r'[,，;；!！?？。、\s]+', text) if c.strip()]
             final_sub_chunks = []
-            for clause in sub_clauses:
+            for clause in raw_clauses:
                 if len(clause) <= max_chars:
                     final_sub_chunks.append(clause)
                 else:
-                    # 每 10-12 字等分切片
-                    chunk_len = 10
-                    for i in range(0, len(clause), chunk_len):
-                        final_sub_chunks.append(clause[i:i+chunk_len])
+                    parts = [p.strip() for p in split_pattern.split(clause) if p and p.strip()]
+                    expanded_parts = []
+                    for p in parts:
+                        if len(p) <= max_chars:
+                            expanded_parts.append(p)
+                        else:
+                            # 尝试按常见助词/介词切分
+                            sub_pieces = [sp for sp in re.split(r'(?<=[的了在和与到去及以从向])', p) if sp]
+                            temp = ""
+                            for sp in sub_pieces:
+                                if not temp:
+                                    temp = sp
+                                elif len(temp) + len(sp) <= max_chars:
+                                    temp += sp
+                                else:
+                                    expanded_parts.append(temp)
+                                    temp = sp
+                            if temp:
+                                expanded_parts.append(temp)
+                    final_parts = []
+                    for ep in expanded_parts:
+                        while len(ep) > max_chars + 2:
+                            split_idx = max_chars
+                            final_parts.append(ep[:split_idx])
+                            ep = ep[split_idx:]
+                        if ep:
+                            final_parts.append(ep)
+
+                    curr = ""
+                    for p in final_parts:
+                        if not curr:
+                            curr = p
+                        elif len(curr) + len(p) <= max_chars:
+                            curr += p
+                        else:
+                            final_sub_chunks.append(curr)
+                            curr = p
+                    if curr:
+                        final_sub_chunks.append(curr)
 
             if not final_sub_chunks:
                 refined_segments.append(seg)
@@ -74,8 +151,10 @@ class ASRRunner:
                 sub_seg["corrected_text"] = chunk
                 refined_segments.append(sub_seg)
                 curr_time = chunk_end
-        # 拆分长句后，紧接着执行短句碎片平滑合并，实现“长句切分 + 碎词聚合”的双向黄金视读优化
+
+        # 拆分后紧接着执行短句碎片平滑合并（保护连续呼吁词如"评论区找我聊一下吧"）
         return self.merge_short_segments(refined_segments, max_chars=max_chars)
+
 
     def merge_short_segments(
         self,
@@ -163,9 +242,14 @@ class ASRRunner:
 
     def transcribe(self, video_path: Path) -> List[Dict[str, Any]]:
         """
-        对口播视频进行语音识别。优先尝试 faster-whisper 并开启词级物理时间戳，
-        若未安装或环境受限，自动提供基于静音切分/示范字幕的鲁棒回退。
-        识别完成后自动经由 split_into_readable_segments 规范化为短视频黄金阅读字幕。
+        对口播视频进行语音识别，返回【自然句层】的原始字幕（不切割）。
+
+        为什么不在这里做 6~12 字黄金切割：切割产生的句中碎片（如"…大改革我 / 们现学车…"）
+        会让后续 AI 纠偏倾向重新断句，触发句集一致性守卫而整块回退。正确顺序是：
+        先在自然句层面完成 AI 纠偏（完整句模型不会重断句），再由调用方执行黄金切割。
+
+        优先尝试 faster-whisper 并开启词级物理时间戳；真实素材（>10KB）失败时直接抛出异常，
+        绝不用示范文字兜底（真实执行铁律）。
         """
         import re
         audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
@@ -189,10 +273,21 @@ class ASRRunner:
             for seg in whisper_segments:
                 if seg.words:
                     current_words = []
-                    for w in seg.words:
+                    for idx, w in enumerate(seg.words):
                         current_words.append(w)
                         clean_w = w.word.strip()
-                        if re.search(r'[,，;；!！?？。、\s]$', clean_w):
+                        is_punct = bool(re.search(r'[,，;；!！?？。、\s]$', clean_w))
+                        gap = (seg.words[idx + 1].start - w.end) if idx + 1 < len(seg.words) else 0.0
+                        curr_len = sum(len(x.word.strip()) for x in current_words)
+
+                        # 触发断句条件：遇到标点、或静音停顿>=0.28s、或已达6字以上且遇到>=0.15s停顿/语气词、或即将超字数
+                        should_break = (
+                            is_punct or
+                            (gap >= 0.28 and curr_len >= 4) or
+                            (curr_len >= 6 and (gap >= 0.15 or clean_w[-1:] in "呢吧啊吗呀啦哒哦哈")) or
+                            curr_len >= 14
+                        )
+                        if should_break:
                             clause_text = "".join(x.word.strip() for x in current_words)
                             clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
                             if clause_text:
@@ -200,7 +295,8 @@ class ASRRunner:
                                     "start_time": round(current_words[0].start, 3),
                                     "end_time": round(current_words[-1].end, 3),
                                     "raw_text": clause_text,
-                                    "corrected_text": clause_text
+                                    "corrected_text": clause_text,
+                                    "words": [{"word": x.word.strip(), "start": round(x.start, 3), "end": round(x.end, 3)} for x in current_words]
                                 })
                             current_words = []
                     if current_words:
@@ -211,7 +307,8 @@ class ASRRunner:
                                 "start_time": round(current_words[0].start, 3),
                                 "end_time": round(current_words[-1].end, 3),
                                 "raw_text": clause_text,
-                                "corrected_text": clause_text
+                                "corrected_text": clause_text,
+                                "words": [{"word": x.word.strip(), "start": round(x.start, 3), "end": round(x.end, 3)} for x in current_words]
                             })
                 else:
                     text = seg.text.strip()
@@ -258,7 +355,7 @@ class ASRRunner:
             except Exception:
                 pass
 
-        # 统一执行 6~12 字黄金短句拆分处理
-        return self.split_into_readable_segments(raw_segments)
+        # 返回自然句层原始字幕；黄金切割由调用方在 AI 纠偏之后执行（T038 管线顺序调整）
+        return raw_segments
 
 asr_runner = ASRRunner()

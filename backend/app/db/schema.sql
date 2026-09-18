@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'processing', 'completed', 'failed')),
     output_video_path TEXT,
     raw_asr_json TEXT,
+    last_engine_used TEXT DEFAULT NULL,
+    corrections_summary_json TEXT DEFAULT NULL,
+    correction_latency_ms REAL DEFAULT NULL,
+    brolls_json TEXT DEFAULT NULL,
+    task_dir TEXT DEFAULT NULL,
+    cover_image_path TEXT DEFAULT NULL,
+    cover_source TEXT DEFAULT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY(talking_head_id) REFERENCES materials(id) ON DELETE CASCADE
@@ -43,6 +50,8 @@ CREATE TABLE IF NOT EXISTS subtitles (
     matched_category TEXT,
     matched_keywords_json TEXT DEFAULT '[]',
     broll_material_id TEXT,
+    highlight_words_json TEXT DEFAULT '[]',
+    scene_decision_json TEXT DEFAULT NULL,
     is_manual_edited INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );

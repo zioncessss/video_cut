@@ -9,12 +9,16 @@ import {
   fetchSettings,
   updateProjectStrategy,
   fetchProjectByMaterial,
+  fetchProjectById,
+  fetchAllProjects,
+  uploadMaterial,
   analyzeAndCutVideo,
   renderProject,
   openFolder,
   fetchProjectProgress,
   PipelineProgress,
   Material,
+  ProjectSummary,
   EditingStrategy,
   API_BASE,
   getMediaUrl
@@ -36,7 +40,11 @@ import {
   Check,
   Film,
   Edit3,
-  Image as ImageIcon
+  Image as ImageIcon,
+  ChevronDown,
+  Plus,
+  X,
+  Upload
 } from 'lucide-react';
 
 interface CorrectionItem {
@@ -53,6 +61,7 @@ interface VideoEditorProps {
     updated_subtitles?: any[];
     updated_brolls?: any[];
   } | null;
+  initialProjectId?: string | null;
   initialSelectedTalkingHeadId?: string | null;
 }
 
@@ -87,11 +96,16 @@ const DEFAULT_STRATEGY: EditingStrategy = {
 export const VideoEditor: React.FC<VideoEditorProps> = ({
   onProjectLoaded,
   externalStrategyPlan,
+  initialProjectId,
   initialSelectedTalkingHeadId,
 }) => {
   const [talkingHeads, setTalkingHeads] = useState<Material[]>([]);
   const [selectedThId, setSelectedThId] = useState<string>(initialSelectedTalkingHeadId || '');
-  const [projectId, setProjectId] = useState<string>('');
+  const [projectId, setProjectId] = useState<string>(initialProjectId || '');
+  const [allProjects, setAllProjects] = useState<ProjectSummary[]>([]);
+  const [showProjectPicker, setShowProjectPicker] = useState<boolean>(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
@@ -127,6 +141,48 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
   const [strategy, setStrategy] = useState<EditingStrategy>(DEFAULT_STRATEGY);
   const [savingStrategy, setSavingStrategy] = useState<boolean>(false);
+
+  const loadProjectById = async (pid: string) => {
+    if (!pid) return;
+    setLoadingProject(true);
+    try {
+      const proj = await fetchProjectById(pid);
+      if (proj && proj.id) {
+        setProjectId(proj.id);
+        if (proj.talking_head_id) {
+          setSelectedThId(proj.talking_head_id);
+        }
+        if (onProjectLoaded) onProjectLoaded(proj.id);
+        setSubtitles(proj.subtitles || []);
+        if (proj.strategy) setStrategy(proj.strategy);
+        if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
+          setAspectRatio(proj.aspect_ratio as any);
+        }
+        if (proj.output_video_path) {
+          const mediaUrl = getMediaUrl(proj.output_video_path);
+          setOutputVideoUrl(mediaUrl);
+          setOutputTimestamp(Date.now());
+          setExportInfo({
+            url: mediaUrl,
+            filename: proj.output_filename || proj.output_video_path.split('/').pop() || 'output.mp4',
+            absolutePath: proj.output_absolute_path || '',
+            sizeMb: proj.output_file_size_mb || 0,
+          });
+          setPreviewMode('rendered');
+        } else {
+          setOutputVideoUrl('');
+          setExportInfo(null);
+          setPreviewMode('interactive');
+        }
+        setIsCachedProject(true);
+        setAiFeedback(`已秒级载入工程 ${proj.title}（共 ${proj.subtitles?.length || 0} 句字幕）`);
+      }
+    } catch (e) {
+      console.error('载入指定工程失败:', e);
+    } finally {
+      setLoadingProject(false);
+    }
+  };
 
   const loadProjectForMaterial = async (matId: string) => {
     if (!matId) return;
@@ -174,10 +230,33 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
+  const handleUploadTalkingHead = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    try {
+      setAnalyzing(true);
+      const newMat = await uploadMaterial('talking_head', file);
+      const updatedMaterials = await fetchMaterials('talking_head');
+      setTalkingHeads(updatedMaterials);
+      setSelectedThId(newMat.id);
+      await loadProjectForMaterial(newMat.id);
+      setAiFeedback(`口播视频 ${file.name} 上传就绪！点击「智能初剪与纠偏」即可开启剪辑。`);
+      fetchAllProjects().then(setAllProjects).catch(() => {});
+    } catch (err: any) {
+      alert(`上传口播视频失败: ${err?.response?.data?.detail || err.message}`);
+    } finally {
+      setAnalyzing(false);
+      if (uploadInputRef.current) uploadInputRef.current.value = '';
+    }
+  };
+
   useEffect(() => {
+    fetchAllProjects().then(setAllProjects).catch(() => {});
     fetchMaterials('talking_head').then(data => {
       setTalkingHeads(data);
-      if (initialSelectedTalkingHeadId && data.some(d => d.id === initialSelectedTalkingHeadId)) {
+      if (initialProjectId) {
+        loadProjectById(initialProjectId);
+      } else if (initialSelectedTalkingHeadId && data.some(d => d.id === initialSelectedTalkingHeadId)) {
         setSelectedThId(initialSelectedTalkingHeadId);
       } else if (data.length > 0 && !selectedThId) {
         setSelectedThId(data[0].id);
@@ -188,17 +267,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setActiveEngine(s.active_harness || 'codex');
       setActiveModel(s.llm_model || 'GLM-5.3-Flash');
     }).catch(() => {});
-  }, [initialSelectedTalkingHeadId]);
+  }, [initialSelectedTalkingHeadId, initialProjectId]);
 
   useEffect(() => {
-    if (selectedThId) {
+    if (selectedThId && !initialProjectId) {
       const curMat = talkingHeads.find(t => t.id === selectedThId);
       if (curMat && curMat.width && curMat.height && curMat.width > curMat.height) {
         setAspectRatio('16:9');
       }
       loadProjectForMaterial(selectedThId);
     }
-  }, [selectedThId, talkingHeads]);
+  }, [selectedThId]);
 
   const handleAnalyze = async (force: boolean = false) => {
     return handleOneClickCutAndCorrect(force);
@@ -461,18 +540,48 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     <div className="flex flex-col h-full max-h-full max-w-7xl mx-auto p-3 overflow-hidden">
       {/* 顶部操作条：口播素材选择、引擎状态徽章、智能剪辑触发 */}
       <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs mb-2.5 gap-2 flex-shrink-0">
-        <div className="flex items-center space-x-2.5">
-          <label className="text-xs font-semibold text-gray-700">口播主视频:</label>
-          <select
-            value={selectedThId}
-            onChange={e => setSelectedThId(e.target.value)}
-            className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
+        <div className="flex items-center space-x-2">
+          {/* 隐藏文件输入框用于快速上传口播视频 */}
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept="video/*,.mp4,.mov,.mkv,.avi,.webm"
+            className="hidden"
+            onChange={handleUploadTalkingHead}
+          />
+
+          {/* 视频工程卡片选择按钮（点击展开排列好的视频卡片） */}
+          <button
+            type="button"
+            onClick={() => {
+              fetchAllProjects().then(setAllProjects).catch(() => {});
+              setShowProjectPicker(true);
+            }}
+            className="flex items-center space-x-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-1.5 text-xs text-gray-800 transition-all cursor-pointer shadow-xs"
+            title="点击切换视频工程（卡片网格排列）"
           >
-            {talkingHeads.length === 0 && <option value="">暂无口播视频，请先在素材库上传</option>}
-            {talkingHeads.map(t => (
-              <option key={t.id} value={t.id}>{t.filename} ({t.duration.toFixed(1)}s)</option>
-            ))}
-          </select>
+            <Film className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+            <span className="font-semibold max-w-[160px] truncate">
+              {talkingHeads.find(t => t.id === selectedThId)?.filename || '选择/切换视频工程'}
+            </span>
+            {selectedThId && (
+              <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
+                ({talkingHeads.find(t => t.id === selectedThId)?.duration?.toFixed(1)}s)
+              </span>
+            )}
+            <ChevronDown className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+          </button>
+
+          {/* 剪辑工作台单独上传口播视频直接开剪按钮 */}
+          <button
+            type="button"
+            onClick={() => uploadInputRef.current?.click()}
+            className="flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-medium border border-blue-200/60 transition-colors cursor-pointer shadow-xs"
+            title="上传新口播视频就地开剪"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>+ 上传口播</span>
+          </button>
 
           {/* 比例切换 (9:16 竖屏 / 16:9 横屏) */}
           <div className="flex items-center space-x-1 bg-gray-100 p-1 rounded-xl border border-gray-200/80">
@@ -845,6 +954,96 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           </div>
         )}
       </div>
+
+      {/* 视频工程卡片网格选择抽屉/弹窗 */}
+      {showProjectPicker && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[80vh] shadow-2xl border border-gray-200 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+              <div className="flex items-center space-x-2">
+                <Film className="w-4 h-4 text-blue-600" />
+                <h3 className="text-sm font-bold text-gray-900">选择剪辑视频工程 (卡片排列)</h3>
+                <span className="text-xs text-gray-400 font-mono">({talkingHeads.length} 个视频)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProjectPicker(false);
+                    uploadInputRef.current?.click();
+                  }}
+                  className="flex items-center space-x-1 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs rounded-lg font-medium cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>上传新口播</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowProjectPicker(false)}
+                  className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1">
+              {talkingHeads.length === 0 ? (
+                <div className="py-12 text-center text-xs text-gray-400">
+                  暂无口播视频，点击右上角「上传新口播」添加
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {talkingHeads.map(t => {
+                    const isSelected = t.id === selectedThId;
+                    const matchedProj = allProjects.find(p => p.talking_head_id === t.id);
+                    const coverUrl = matchedProj?.cover_image_path ? getMediaUrl(matchedProj.cover_image_path) : '';
+                    return (
+                      <div
+                        key={t.id}
+                        onClick={() => {
+                          setSelectedThId(t.id);
+                          if (matchedProj) {
+                            loadProjectById(matchedProj.id);
+                          } else {
+                            loadProjectForMaterial(t.id);
+                          }
+                          setShowProjectPicker(false);
+                        }}
+                        className={`border rounded-xl p-2.5 transition-all cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? 'border-blue-500 bg-blue-50/40 ring-2 ring-blue-500/20'
+                            : 'border-gray-200 hover:border-blue-300 bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden mb-2 relative flex items-center justify-center">
+                          {coverUrl ? (
+                            <img src={coverUrl} alt={t.filename} className="w-full h-full object-cover" />
+                          ) : (
+                            <Film className="w-6 h-6 text-gray-600" />
+                          )}
+                          <span className="absolute bottom-1 right-1 text-[10px] px-1 py-0.5 rounded bg-black/70 text-white font-mono">
+                            {t.duration ? `${t.duration.toFixed(1)}s` : ''}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-gray-800 truncate" title={t.filename}>
+                            {t.filename}
+                          </p>
+                          <div className="flex items-center justify-between text-[10px] text-gray-400 mt-1">
+                            <span>{matchedProj ? (matchedProj.status === 'completed' ? '已合成成片' : '已初剪') : '待剪辑'}</span>
+                            {isSelected && <span className="text-blue-600 font-bold">当前工程</span>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

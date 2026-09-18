@@ -54,10 +54,10 @@ def test_api_ai_highlight_merged_with_glossary_priority(monkeypatch):
         ensure_ascii=False,
     )
 
-    async def fake_chat(prompt, timeout=30.0, system=None, model_override=None, provider=None):
+    async def fake_chat(prompt, timeout=120.0, system=None, model_override=None, provider=None):
         return True, canned, 88.8
 
-    monkeypatch.setattr(llm_client, "chat_completion", fake_chat)
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fake_chat)
     monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {"base_url": "http://x/v1", "token": "t", "model": "m", "source": "测试"})
 
     req = HarnessCorrectionRequest(

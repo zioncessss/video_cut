@@ -5,11 +5,14 @@ from typing import Dict, List, Tuple
 
 # 基础工作区与存储路径
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-STORAGE_DIR = ROOT_DIR / "storage"
+# 数据根目录可被环境变量注入（sidecar 打包模式由 Electron 主进程指定便携目录）
+VIDEOCUT_STORAGE_DIR = os.getenv("VIDEOCUT_STORAGE_DIR", "").strip()
+STORAGE_DIR = Path(VIDEOCUT_STORAGE_DIR) if VIDEOCUT_STORAGE_DIR else ROOT_DIR / "storage"
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
 COVERS_DIR = STORAGE_DIR / "covers"     # 005: 工程封面（截帧/上传）
+TASKS_DIR = STORAGE_DIR / "tasks"       # 005-US11: 独立工程文件夹目录（日期+时间）
 DB_PATH = Path(os.getenv("VIDEOCUT_DB_PATH", str(STORAGE_DIR / "videocut.db")))
 
 # 素材分类定义（experience 为原 medical 体检分类的扩展升级：学员全流程体验空镜）
@@ -19,8 +22,19 @@ CATEGORY_DIRS: Dict[str, Path] = {
 }
 
 # 确保所有目录存在
-for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR, PROJECTS_DIR, COVERS_DIR]:
+for p in list(CATEGORY_DIRS.values()) + [OUTPUTS_DIR, PROJECTS_DIR, COVERS_DIR, TASKS_DIR]:
     p.mkdir(parents=True, exist_ok=True)
+
+def create_task_dir(title: str = "clip") -> Path:
+    """按 YYYYMMDD_HHMMSS_{safe_title} 创建并返回专属独立工程目录"""
+    import datetime
+    import re
+    safe_title = re.sub(r'[^A-Za-z0-9\u4e00-\u9fff_-]', '_', title)[:32].strip('_') or "clip"
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = f"{ts}_{safe_title}"
+    task_path = TASKS_DIR / dir_name
+    task_path.mkdir(parents=True, exist_ok=True)
+    return task_path
 
 # 允许的视频扩展名
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}

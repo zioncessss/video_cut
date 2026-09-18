@@ -12,6 +12,8 @@
       "corrected_text": "从今年九月份开始湖州驾校",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -23,6 +25,8 @@
       "corrected_text": "从今年九月份开始",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -34,6 +38,8 @@
       "corrected_text": "湖州驾校迎来大改革",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -45,6 +51,8 @@
       "corrected_text": "我们现在学车通通一口价",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -58,6 +66,8 @@
       "matched_keywords": [
         "练车"
       ],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
       "is_manual_edited": false
     },
@@ -69,6 +79,8 @@
       "corrected_text": "不收补训费",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -80,6 +92,8 @@
       "corrected_text": "不收燃油费不收模拟费",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -91,6 +105,8 @@
       "corrected_text": "从科一到科四",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -105,6 +121,8 @@
         "教练",
         "手把手"
       ],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
       "is_manual_edited": false
     },
@@ -116,6 +134,8 @@
       "corrected_text": "如果想知道我们驾校在哪里",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -127,6 +147,8 @@
       "corrected_text": "点红心加关注，我来",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -138,6 +160,8 @@
       "corrected_text": "点红心加关注",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     },
@@ -149,13 +173,15 @@
       "corrected_text": "评论区找我聊一下吧",
       "matched_category": null,
       "matched_keywords": [],
+      "highlight_words": [],
+      "scene_decision": null,
       "broll_material_id": null,
       "is_manual_edited": false
     }
   ],
   "broll_replacements": [
     {
-      "id": "3f5fc629-13fb-404a-a477-172f1362421e",
+      "id": "9260a8fb-c9ae-476b-9924-b08887f3ffbd",
       "start_time": 9.36,
       "end_time": 10.38,
       "material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
@@ -163,7 +189,7 @@
       "playback_mode": "fit"
     },
     {
-      "id": "110cde34-b215-434a-9985-23e9da775ecb",
+      "id": "9919b6a8-4e5b-4059-a0ca-735d6d1c1429",
       "start_time": 15.98,
       "end_time": 17.96,
       "material_id": "c40e6284-f1b3-41c6-81e3-34bd3c663333",
@@ -183,6 +209,7 @@
     "highlight_color": "#10B981",
     "highlight_scale": true,
     "custom_highlight_words": [],
+    "transition_style": "cut",
     "enable_top_banner": true,
     "banner_main_title": "科目二一把过秘籍",
     "banner_sub_title": "教练手把手教学",
@@ -202,11 +229,11 @@
     "watermark_opacity": 0.9,
     "broll_pacing": "standard"
   },
-  "status": "draft",
-  "output_video_path": null,
-  "output_absolute_path": null,
-  "output_filename": null,
-  "output_file_size_mb": null,
+  "status": "completed",
+  "output_video_path": "storage/outputs/output_0a1f79c8-070d-41f9-9bae-a671dc956e30_9_16_1789653191.mp4",
+  "output_absolute_path": "D:\\project\\video_cut\\storage\\outputs\\output_0a1f79c8-070d-41f9-9bae-a671dc956e30_9_16_1789653191.mp4",
+  "output_filename": "output_0a1f79c8-070d-41f9-9bae-a671dc956e30_9_16_1789653191.mp4",
+  "output_file_size_mb": 23.95,
   "raw_asr_segments": [
     {
       "start_time": 0.54,
@@ -288,8 +315,11 @@
     }
   ],
   "corrections_summary": null,
+  "pipeline_notes": null,
+  "cover_image_path": null,
+  "cover_source": null,
   "last_engine_used": null,
   "correction_latency_ms": null,
   "created_at": 1789609597.4255388,
-  "updated_at": 1789631271.1238003
+  "updated_at": 1789653200.6773667
 }

@@ -6,8 +6,102 @@ from app.core.config import DB_PATH
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
+
+def _ensure_columns(conn) -> None:
+    """幂等增量列自愈（init_db 与 get_db_connection 共用此唯一清单）。
+
+    schema.sql 的运行时平滑迁移：全部为字面量 DDL，已存在的列因重复添加失败被安全忽略。
+    新增列只在此登记一次，两处入口自动生效。
+    """
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN banner_size TEXT NOT NULL DEFAULT 'medium';")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_y INTEGER NOT NULL DEFAULT 6;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_x INTEGER NOT NULL DEFAULT 50;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN banner_font_size INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN banner_width_percent INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN watermark_size TEXT NOT NULL DEFAULT 'medium';")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_y INTEGER DEFAULT 4;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_x INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN watermark_font_size INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_size INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN last_engine_used TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN corrections_summary_json TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN correction_latency_ms REAL DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN brolls_json TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN highlight_words_json TEXT DEFAULT '[]';")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN scene_decision_json TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE batch_jobs ADD COLUMN payload_json TEXT;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN task_dir TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN cover_image_path TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN cover_source TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    conn.commit()
+
+
 def init_db(db_path: Optional[Path] = None):
-    """初始化数据库并应用 schema.sql"""
+    """初始化数据库并应用 schema.sql 与增量列自愈"""
     target_path = db_path or DB_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -18,72 +112,7 @@ def init_db(db_path: Optional[Path] = None):
         if SCHEMA_PATH.exists():
             with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
                 conn.executescript(f.read())
-
-        # 平滑迁移 strategies 新字段（全部为静态字面量 DDL，已存在的列因重复添加失败被安全忽略）
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_size TEXT NOT NULL DEFAULT 'medium';")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_y INTEGER NOT NULL DEFAULT 6;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_x INTEGER NOT NULL DEFAULT 50;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_size TEXT NOT NULL DEFAULT 'medium';")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_y INTEGER DEFAULT 4;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_x INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_width_percent INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-
-        # 平滑迁移 projects AI 纠错状态字段
-        try:
-            conn.execute("ALTER TABLE projects ADD COLUMN last_engine_used TEXT DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE projects ADD COLUMN corrections_summary_json TEXT DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE projects ADD COLUMN correction_latency_ms REAL DEFAULT NULL;")
-        except Exception:
-            pass
-        # 005: 批量任务逐项状态列
-        try:
-            conn.execute("ALTER TABLE batch_jobs ADD COLUMN payload_json TEXT;")
-        except Exception:
-            pass
-        conn.commit()
+        _ensure_columns(conn)
 
 @contextmanager
 def get_db_connection(db_path: Optional[Path] = None) -> Generator[sqlite3.Connection, None, None]:
@@ -97,61 +126,18 @@ def get_db_connection(db_path: Optional[Path] = None) -> Generator[sqlite3.Conne
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA busy_timeout = 5000;")
 
-    # 防御性自愈：如果数据库未建表（如单测独立调用场景），自动应用 schema
+    # 防御性自愈：如果数据库未建表（如单测独立调用场景），自动应用 schema；
+    # 已建表则同样应用共享的增量列自愈清单（projects 新列等在此补齐）
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='materials';")
     if not cursor.fetchone():
         if SCHEMA_PATH.exists():
             with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
                 conn.executescript(f.read())
-            conn.commit()
-    else:
-        # 兼容旧库补全 strategies 新字段（静态字面量 DDL）
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_size TEXT NOT NULL DEFAULT 'medium';")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_y INTEGER NOT NULL DEFAULT 6;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_position_x INTEGER NOT NULL DEFAULT 50;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_size TEXT NOT NULL DEFAULT 'medium';")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_y INTEGER DEFAULT 4;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_position_x INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN watermark_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_size INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN banner_width_percent INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
-        except Exception:
-            pass
+        _ensure_columns(conn)
         conn.commit()
+    else:
+        _ensure_columns(conn)
     cursor.close()
     try:
         yield conn

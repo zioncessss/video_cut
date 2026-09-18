@@ -42,11 +42,11 @@ def test_factory_registers_api_and_tier_b_excludes_it():
 
 
 def test_api_correct_subtitles_contract_and_glossary_net(monkeypatch):
-    async def fake_chat(prompt, timeout=30.0, system=None, model_override=None):
+    async def fake_stream(prompt, timeout=120.0, system=None, model_override=None, provider=None):
         assert "纠偏" in prompt, "提示词必须来自词库工厂"
         return True, CANNED_LLM_OUTPUT, 123.4
 
-    monkeypatch.setattr(llm_client, "chat_completion", fake_chat)
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fake_stream)
     monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {"base_url": "http://x/v1", "token": "t", "model": "m", "source": "测试"})
 
     res = asyncio.run(ApiHarnessBridge().correct_subtitles(_make_request()))
@@ -54,6 +54,59 @@ def test_api_correct_subtitles_contract_and_glossary_net(monkeypatch):
     assert res.harness_engine_used == "api"
     # 模型漏纠的 '科尔' 被词库兜底补纠
     assert res.updated_subtitles[0]["corrected_text"] == "欢迎来到科目二考场教练带你练车"
+
+
+def test_api_correction_chunks_large_batch(monkeypatch):
+    """超过 12 句自动分块：13 句应产生 2 次请求且结果全量合并，句子绝不丢失"""
+    calls = []
+    ids_per_call = [[f"s{i}" for i in range(12)], [f"s{i}" for i in range(12, 13)]]
+
+    async def fake_stream(prompt, timeout=120.0, system=None, model_override=None, provider=None):
+        idx = len(calls)
+        calls.append(prompt)
+        ids = ids_per_call[idx]
+        return True, json.dumps(
+            {"subtitles": [{"id": i, "corrected_text": f"已纠{i}"} for i in ids], "corrections": []},
+            ensure_ascii=False,
+        ), 10.0
+
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fake_stream)
+    monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {"base_url": "http://x/v1", "token": "t", "model": "m", "source": "测试"})
+
+    raws = [{"id": f"s{i}", "raw_text": f"句子{i}", "corrected_text": f"句子{i}"} for i in range(13)]
+    res = asyncio.run(ApiHarnessBridge().correct_subtitles(HarnessCorrectionRequest(raw_subtitles=raws)))
+    assert len(calls) == 2, "13 句必须分为 2 块请求"
+    assert len(res.updated_subtitles) == 13
+    assert all(s["corrected_text"] == f"已纠{s['id']}" for s in res.updated_subtitles)
+    assert res.harness_engine_used == "api"
+
+
+def test_api_correction_partial_chunk_failure_degrades_only_that_chunk(monkeypatch):
+    """两块中一块失败：失败块降级词库纠偏，成功块保留 AI 结果，标注 partial fallback"""
+    ids_per_call = [[f"s{i}" for i in range(12)], [f"s{i}" for i in range(12, 24)]]
+    state = {"calls": 0}
+
+    async def fake_stream(prompt, timeout=120.0, system=None, model_override=None, provider=None):
+        idx = state["calls"]
+        state["calls"] += 1
+        if idx == 0:
+            ids = ids_per_call[0]
+            return True, json.dumps(
+                {"subtitles": [{"id": i, "corrected_text": f"AI已纠{i}"} for i in ids], "corrections": []},
+                ensure_ascii=False,
+            ), 10.0
+        return False, "读取响应超时(120s)，模型未在时限内完成生成 [ReadTimeout]", 120000.0
+
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fake_stream)
+    monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {"base_url": "http://x/v1", "token": "t", "model": "m", "source": "测试"})
+
+    raws = [{"id": f"s{i}", "raw_text": "福州价效", "corrected_text": "福州价效"} for i in range(24)]
+    res = asyncio.run(ApiHarnessBridge().correct_subtitles(HarnessCorrectionRequest(raw_subtitles=raws)))
+    assert len(res.updated_subtitles) == 24, "任何块失败都不得丢句"
+    assert "partial fallback embedded" in res.harness_engine_used
+    # 第 1 块走 AI 结果，第 2 块降级词库（福州价效→湖州驾校）
+    assert res.updated_subtitles[0]["corrected_text"] == "AI已纠s0"
+    assert res.updated_subtitles[12]["corrected_text"] == "湖州驾校"
 
 
 def test_api_fallback_labeled_when_provider_missing(monkeypatch):
@@ -66,14 +119,14 @@ def test_api_fallback_labeled_when_provider_missing(monkeypatch):
 
 
 def test_api_fallback_labeled_when_llm_fails_or_malformed(monkeypatch):
-    async def fail_chat(prompt, timeout=30.0, system=None, model_override=None):
-        return False, "HTTP 502: bad gateway", 5.0
+    async def fail_stream(prompt, timeout=120.0, system=None, model_override=None, provider=None):
+        return False, "读取响应超时(120s)，模型未在时限内完成生成 [ReadTimeout]", 120000.0
 
-    monkeypatch.setattr(llm_client, "chat_completion", fail_chat)
+    monkeypatch.setattr(llm_client, "chat_completion_stream_full", fail_stream)
     monkeypatch.setattr(llm_client, "resolve_api_provider", lambda: {"base_url": "http://x/v1", "token": "t", "model": "m", "source": "测试"})
     res = asyncio.run(ApiHarnessBridge().correct_subtitles(_make_request()))
     assert "fallback embedded" in res.harness_engine_used
-    assert "502" in res.harness_engine_used or "HTTP" in res.harness_engine_used
+    assert "超时" in res.harness_engine_used
 
 
 def test_resolve_api_provider_prefers_settings(monkeypatch):

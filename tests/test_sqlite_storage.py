@@ -1,16 +1,54 @@
 import pytest
 import sqlite3
+import time as _time
 from pathlib import Path
 from app.db.session import init_db, get_db_connection
 from app.db.repository import MaterialRepository, ProjectRepository, SettingsRepository
 from app.db.migrator import migrate_legacy_data
-from app.models.entities import Material, MaterialCategory, CutProject, SubtitleSegment, EditingStrategy
+from app.models.entities import (
+    Material, MaterialCategory, CutProject, CutProjectStatus, SubtitleSegment, EditingStrategy,
+    BrollReplacement,
+)
 
 @pytest.fixture
 def test_db(tmp_path):
     db_file = tmp_path / "test_videocut.db"
     init_db(db_file)
     return db_file
+
+def test_project_roundtrip_preserves_ai_meta_and_broll_windows(test_db):
+    """Stage1 回归：保存→SQLite 重载后，AI 纠偏元数据与编排分镜时间线必须完整还原（不再丢失）"""
+    mrepo = MaterialRepository(test_db)
+    repo = ProjectRepository(test_db)
+    m = Material(category=MaterialCategory.TALKING_HEAD, filename="t.mp4",
+                 filepath="storage/materials/talking_head/t.mp4", duration=20.0, created_at=_time.time())
+    mrepo.save(m)
+
+    broll = BrollReplacement(start_time=0.5, end_time=4.5, material_id="mat-x",
+                             material_category=MaterialCategory.VENUE, playback_mode="loop")
+    p = CutProject(
+        title="roundtrip", talking_head_id=m.id,
+        subtitles=[SubtitleSegment(start_time=0.0, end_time=3.0, raw_text="原始句", corrected_text="修正句")],
+        broll_replacements=[broll],
+        corrections_summary=[{
+            "subtitle_id": "s1", "original_text": "航州", "corrected_text": "湖州",
+            "changes": [{"from": "航州", "to": "湖州", "reason": "语义纠错"}],
+        }],
+        last_engine_used="api",
+        correction_latency_ms=123.4,
+        status=CutProjectStatus.DRAFT,
+    )
+    repo.save(p)
+    loaded = repo.get_by_id(p.id)
+    assert loaded.last_engine_used == "api", "AI 纠偏引擎标注不得在重载后丢失"
+    assert loaded.correction_latency_ms == 123.4
+    assert loaded.corrections_summary[0]["corrected_text"] == "湖州"
+    # 分镜时间线从 brolls_json 完整还原（含 id 与 playback_mode，旧实现会丢失）
+    lb = loaded.broll_replacements[0]
+    assert lb.id == broll.id
+    assert lb.playback_mode == "loop"
+    assert abs(lb.end_time - 4.5) < 1e-6
+    assert lb.material_category == MaterialCategory.VENUE
 
 def test_sqlite_init_and_wal_mode(test_db):
     with get_db_connection(test_db) as conn:

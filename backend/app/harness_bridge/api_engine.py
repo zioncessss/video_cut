@@ -18,6 +18,12 @@ from app.harness_bridge.base import (
 from app.harness_bridge.embedded import EmbeddedHarnessBridge
 from app.harness_bridge.prompting import build_correction_prompt
 from app.harness_bridge import llm_client
+from app.core.config import apply_glossary_corrections
+
+# 纠偏分块：按 ≤12 句一块请求控制爆炸半径；流式收集完整回复（推理模型思考链长，
+# 非流式 45s 必超时——实测 11 句需 82s），流式下超时只约束 token 间空闲，生成本身不限时
+CORRECTION_CHUNK_SIZE = 12
+CORRECTION_STREAM_IDLE_TIMEOUT = 120.0
 
 
 class ApiHarnessBridge(BaseHarnessBridge):
@@ -47,19 +53,83 @@ class ApiHarnessBridge(BaseHarnessBridge):
             {"id": s.get("id"), "text": s.get("raw_text") or s.get("corrected_text", "")}
             for s in request.raw_subtitles
         ]
-        prompt = build_correction_prompt(clean_input)
+        chunks = [
+            clean_input[i:i + CORRECTION_CHUNK_SIZE]
+            for i in range(0, len(clean_input), CORRECTION_CHUNK_SIZE)
+        ] or [clean_input]
 
-        success, output_str, latency_ms = await llm_client.chat_completion(prompt, timeout=45.0)
-        if success:
-            data = llm_client.extract_json(output_str)
-            if isinstance(data, dict) and isinstance(data.get("subtitles"), list):
-                return self._assemble_response(request, data, latency_ms)
+        merged_subtitles: List[Dict[str, Any]] = []
+        merged_corrections: List[Dict[str, Any]] = []
+        failures: List[str] = []
+        latency_ms = 0.0
+        for idx, chunk in enumerate(chunks):
+            prompt = build_correction_prompt(chunk)
+            success, output_str, latency_ms = await llm_client.chat_completion_stream_full(
+                prompt, timeout=CORRECTION_STREAM_IDLE_TIMEOUT
+            )
+            data = llm_client.extract_json(output_str) if success else None
+            if success and isinstance(data, dict) and isinstance(data.get("subtitles"), list):
+                # 句集一致性校验：模型返回的 id 集合必须与输入完全一致，
+                # 防止模型自行合并/拆分/调序导致纠偏文本错位到别的句子上
+                sent_ids = {str(s.get("id")) for s in chunk}
+                returned_ids = {str(it.get("id")) for it in data["subtitles"] if isinstance(it, dict) and it.get("id")}
+                if sent_ids and returned_ids == sent_ids:
+                    merged_subtitles.extend(data.get("subtitles") or [])
+                    merged_corrections.extend(data.get("corrections") or [])
+                    continue
+                # 模型重新断句（输入为长句/碎片时常见）：模型的重断句恰恰更符合语言习惯——
+                # 取其纠偏全文作为整块内容，按比例重新映射回该块时间线（黄金切割本就是比例插值）
+                full_text = "".join(
+                    str(it.get("corrected_text") or "")
+                    for it in data["subtitles"]
+                    if isinstance(it, dict)
+                )
+                full_text, glossary_changes = apply_glossary_corrections(full_text)
+                if glossary_changes:
+                    merged_corrections.append({
+                        "subtitle_id": next(iter(sent_ids), ""),
+                        "original_text": "、".join(ch["from"] for ch in glossary_changes),
+                        "corrected_text": "、".join(ch["to"] for ch in glossary_changes),
+                        "changes": glossary_changes,
+                    })
+                if full_text.strip():
+                    try:
+                        from app.native_engine.asr_runner import asr_runner
+                        chunk_start = min(float(s.get("start_time", 0) or 0) for s in chunk)
+                        chunk_end = max(float(s.get("end_time", 0) or 0) for s in chunk)
+                        pieces = asr_runner.split_into_readable_segments([{
+                            "id": f"{next(iter(sent_ids), 'chunk')}-rs",
+                            "start_time": chunk_start,
+                            "end_time": chunk_end,
+                            "corrected_text": full_text,
+                        }])
+                        if pieces:
+                            merged_subtitles.extend(pieces)
+                            continue
+                    except Exception as split_err:
+                        print(f"[ApiEngine] 重断句重映射失败，回退词库: {split_err}")
+                reason = "模型返回句集与输入不一致，已回退词库纠偏"
+            else:
+                reason = output_str[:80] if not success else "解析失败"
+            # 该块失败：词库确定性兜底，句子绝不丢失；原因如实记录
+            failures.append(f"块{idx + 1}/{len(chunks)}: {reason}")
+            for s in chunk:
+                text, _ = apply_glossary_corrections(str(s.get("text", "")))
+                merged_subtitles.append({"id": s.get("id"), "corrected_text": text})
 
-        # 解析失败/网络失败：降级词库确定性纠偏，引擎标识如实标注降级链
-        fallback_res = await self._fallback.correct_subtitles(request)
-        fallback_res.harness_engine_used = f"api (fallback embedded: {('解析失败' if success else output_str[:80])})"
-        fallback_res.latency_ms = round(latency_ms, 1)
-        return fallback_res
+        if len(failures) == len(chunks):
+            # 全部块失败：整体降级 embedded，引擎标识如实标注降级链
+            fallback_res = await self._fallback.correct_subtitles(request)
+            fallback_res.harness_engine_used = f"api (fallback embedded: {failures[0]})"
+            fallback_res.latency_ms = round(latency_ms, 1)
+            return fallback_res
+
+        res = self._assemble_response(
+            request, {"subtitles": merged_subtitles, "corrections": merged_corrections}, latency_ms
+        )
+        if failures:
+            res.harness_engine_used = f"api (partial fallback embedded: {'; '.join(failures)})"
+        return res
 
     def _assemble_response(
         self,
@@ -115,14 +185,15 @@ class ApiHarnessBridge(BaseHarnessBridge):
         )
 
     async def decide_scenes(self, subtitles: List[Dict[str, Any]]):
-        """AI 分镜决策通道：150s 超时（实测 91~127s），失败/解析失败如实返回 ok=False 由调用方降级"""
+        """AI 分镜决策通道：流式收集完整回复（推理模型思考链长，非流式易超时），
+        失败/解析失败如实返回 ok=False 由调用方降级关键词规则"""
         from app.native_engine.scene_decision import parse_decisions
 
         if not await self.is_available():
             return [], "api (unavailable)", 0.0, False
         from app.harness_bridge.prompting import build_scene_decision_prompt
         prompt = build_scene_decision_prompt(subtitles)
-        success, output_str, latency_ms = await llm_client.chat_completion(prompt, timeout=150.0)
+        success, output_str, latency_ms = await llm_client.chat_completion_stream_full(prompt, timeout=180.0)
         if success:
             decisions = parse_decisions(output_str)
             if decisions:

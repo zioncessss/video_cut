@@ -117,6 +117,7 @@ class CutProject(BaseModel):
     raw_asr_segments: Optional[List[Dict[str, Any]]] = None
     corrections_summary: Optional[List[Dict[str, Any]]] = None
     pipeline_notes: Optional[Dict[str, Any]] = None
+    task_dir: Optional[str] = None  # 005-US11: 独立工程文件夹目录（日期+时间）
     cover_image_path: Optional[str] = None
     cover_source: Optional[str] = None  # frame | upload | ai（ai 为规划中占位）
     last_engine_used: Optional[str] = None
@@ -144,6 +145,12 @@ class BatchJobItem(BaseModel):
     status: str = "queued"  # queued | running | completed | failed
     error: Optional[str] = None
     progress: int = 0
+    task_dir: Optional[str] = None
+    output_video_path: Optional[str] = None
+    output_absolute_path: Optional[str] = None
+    cover_image_path: Optional[str] = None
+    filename: Optional[str] = None
+    duration: Optional[float] = None
 
 class BatchJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

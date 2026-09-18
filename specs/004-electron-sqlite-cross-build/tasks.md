@@ -107,6 +107,10 @@
 - [x] T033 [P] LLM 调用分层：新增 `api` 直连引擎（OpenAI 兼容，共享 `llm_client.py` 传输层，设置页可配 model/apikey/baseurl/协议）承接字幕纠偏等固定格式任务；codex 直连 HTTP 逻辑并入共享层（不再吞异常）；开放式指令/聊天固定路由 Tier B（codex>zcode>embedded），chat 上下文瘦身为摘要
 - [x] T034 [P] embedded 引擎瘦身：仅保留词库确定性纠偏（Tier A 离线兜底）；删除假装会开放式指令/聊天的 Stub 与预置话术（改为显式报错）；删除全项目零消费方的 generate_batch_variations 死链（base 契约改为可选能力默认报错）；Ping 改为流式 TTFT 首 Token 延迟测量；/settings/list-models 兼容 OpenAI 与 codex 代理两种 /models 结构
 - [x] T035 [P] 引擎配置隔离：codex 提供方绑定 `codex_provider()`（只读本地 toml，与设置页 API 配置隔离），zcode 走本地 CLI 进程自身登录态；设置页配置区随引擎切换显示（api=直连配置，codex/zcode=本地配置说明卡），GET /settings 下发 engine_config 各引擎摘要（token 不下发）
+- [x] T036 [P] 批量三问题修复：① 纠偏超时根因（推理模型 11 句需 82s，非流式 45s 必超时）→ `chat_completion_stream_full` 流式完整收集 + 纠偏分块 ≤12 句 + 超时错误明确化；② 并发公式 2.0→1.5GB/槽、submit 支持指定并发（硬顶 8）；③ 批量页逐条明细 + 播放成片/打开成片目录按钮、详情接口回传成片绝对路径
+- [x] T037 [P] 纠偏句集一致性守卫：模型返回 id 集合与输入不一致（自行合并/拆分/调序）时整块回退词库纠偏，杜绝纠偏文本错位腐蚀；提示词补充逐句对应禁令
+- [ ] T038 存量碎片句的 AI 纠偏覆盖率：先在自然句（黄金切割前）层面做 AI 纠偏、再执行 14 字切割，使模型无需面对句中碎片（需重构 transcribe/analyze 管线顺序，待确认）
+- [x] T039 [P] 分镜编排层 plan_stable_windows：近邻合并防频闪（gap<0.8s 合并）、单镜时长钳制 [2s, 6s]（太长截断/太短延展或丢弃）、总覆盖收敛到 [40%,70%] 目标 60%；analyze 与 redecide_scenes 双入口接入；分镜提示词改为转折处切入+约六成覆盖编排要求；实测 22.7s 视频 2 窗各 6s 覆盖 53%，分类跨 venue/lesson/experience
 
 ### 待办
 - [ ] T031 存储单一真相源收敛：repository 补齐 6 字段 + broll 字段、schema/session DDL 单权威、停写 JSON 双写、迁移后归档 `storage/legacy/`

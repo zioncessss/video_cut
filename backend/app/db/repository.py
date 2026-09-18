@@ -10,6 +10,8 @@ from app.models.entities import (
     SubtitleSegment,
     BrollReplacement,
     EditingStrategy,
+    HighlightWord,
+    SceneDecision,
     BatchJob,
     BatchJobItem,
     BatchJobStatus
@@ -68,16 +70,29 @@ class ProjectRepository:
     def save(self, project: CutProject) -> CutProject:
         project.updated_at = time.time()
         raw_asr_json = json.dumps(project.raw_asr_segments, ensure_ascii=False) if project.raw_asr_segments else None
+        corrections_json = json.dumps(
+            [
+                (c.model_dump() if hasattr(c, "model_dump") else c)
+                for c in project.corrections_summary
+            ],
+            ensure_ascii=False,
+        ) if project.corrections_summary else None
+        brolls_json = json.dumps(
+            [b.model_dump() for b in project.broll_replacements], ensure_ascii=False
+        ) if project.broll_replacements else None
 
         with get_db_connection(self.db_path) as conn:
             # 0. 确保同一素材只保留最新唯一权威工程，清理同素材的其他历史记录
             conn.execute("DELETE FROM projects WHERE talking_head_id = ? AND id != ?", (project.talking_head_id, project.id))
 
-            # 1. 保存/更新 Project 主表
+            # 1. 保存/更新 Project 主表（含 AI 纠偏元数据与分镜时间线）
             conn.execute("""
                 INSERT OR REPLACE INTO projects
-                (id, title, talking_head_id, aspect_ratio, status, output_video_path, raw_asr_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, talking_head_id, aspect_ratio, status, output_video_path, raw_asr_json,
+                 last_engine_used, corrections_summary_json, correction_latency_ms, brolls_json,
+                 task_dir, cover_image_path, cover_source,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 project.id,
                 project.title,
@@ -86,19 +101,32 @@ class ProjectRepository:
                 project.status.value if hasattr(project.status, 'value') else str(project.status),
                 project.output_video_path,
                 raw_asr_json,
+                project.last_engine_used,
+                corrections_json,
+                project.correction_latency_ms,
+                brolls_json,
+                getattr(project, 'task_dir', None),
+                getattr(project, 'cover_image_path', None),
+                getattr(project, 'cover_source', None),
                 project.created_at,
                 project.updated_at
             ))
 
-            # 2. 保存/更新 Subtitles
+            # 2. 保存/更新 Subtitles（含高亮词与分镜决策）
             conn.execute("DELETE FROM subtitles WHERE project_id = ?", (project.id,))
             for idx, s in enumerate(project.subtitles):
                 kw_json = json.dumps(s.matched_keywords, ensure_ascii=False) if s.matched_keywords else '[]'
+                hw_json = json.dumps(
+                    [w.model_dump() if hasattr(w, 'model_dump') else w for w in (s.highlight_words or [])],
+                    ensure_ascii=False
+                ) if s.highlight_words else '[]'
+                sd_json = json.dumps(s.scene_decision.model_dump(), ensure_ascii=False) if s.scene_decision else None
                 cat_val = s.matched_category.value if (s.matched_category and hasattr(s.matched_category, 'value')) else (str(s.matched_category) if s.matched_category else None)
                 conn.execute("""
                     INSERT INTO subtitles
-                    (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category, matched_keywords_json, broll_material_id, is_manual_edited)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
+                     matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     s.id,
                     project.id,
@@ -110,6 +138,8 @@ class ProjectRepository:
                     cat_val,
                     kw_json,
                     s.broll_material_id,
+                    hw_json,
+                    sd_json,
                     1 if s.is_manual_edited else 0
                 ))
 
@@ -172,7 +202,20 @@ class ProjectRepository:
                 kw_list = json.loads(sub_row["matched_keywords_json"] or "[]")
             except Exception:
                 pass
-            
+            highlight_words = []
+            try:
+                raw_hw = json.loads(sub_row["highlight_words_json"] or "[]") if "highlight_words_json" in sub_row.keys() else []
+                highlight_words = [HighlightWord(**w) for w in raw_hw if isinstance(w, dict) and w.get("word")]
+            except Exception:
+                highlight_words = []
+            scene_decision = None
+            try:
+                raw_sd = json.loads(sub_row["scene_decision_json"]) if ("scene_decision_json" in sub_row.keys() and sub_row["scene_decision_json"]) else None
+                if raw_sd:
+                    scene_decision = SceneDecision(**raw_sd)
+            except Exception:
+                scene_decision = None
+
             cat_val = sub_row["matched_category"]
             cat_enum = MaterialCategory(cat_val) if cat_val else None
 
@@ -184,18 +227,12 @@ class ProjectRepository:
                 corrected_text=sub_row["corrected_text"],
                 matched_category=cat_enum,
                 matched_keywords=kw_list,
+                highlight_words=highlight_words,
+                scene_decision=scene_decision,
                 broll_material_id=sub_row["broll_material_id"],
                 is_manual_edited=bool(sub_row["is_manual_edited"])
             )
             subtitles.append(seg)
-
-            if sub_row["broll_material_id"]:
-                broll_cuts.append(BrollReplacement(
-                    start_time=sub_row["start_time"],
-                    end_time=sub_row["end_time"],
-                    material_id=sub_row["broll_material_id"],
-                    material_category=cat_enum
-                ))
 
         # 加载 strategy
         cur_strat = conn.execute("SELECT * FROM strategies WHERE project_id = ?", (project_id,))
@@ -247,6 +284,33 @@ class ProjectRepository:
             except Exception:
                 pass
 
+        # 分镜时间线：优先从 brolls_json 完整还原（含 id/playback_mode/编排后的时间窗），
+        # 旧库无该列数据时回退按字幕派生（保留兼容）
+        broll_cuts: List[BrollReplacement] = []
+        keys = row.keys()
+        if "brolls_json" in keys and row["brolls_json"]:
+            try:
+                for b in json.loads(row["brolls_json"]):
+                    broll_cuts.append(BrollReplacement(**b))
+            except Exception:
+                broll_cuts = []
+        if not broll_cuts:
+            for seg in subtitles:
+                if seg.broll_material_id:
+                    broll_cuts.append(BrollReplacement(
+                        start_time=seg.start_time,
+                        end_time=seg.end_time,
+                        material_id=seg.broll_material_id,
+                        material_category=seg.matched_category
+                    ))
+
+        corrections_summary = None
+        if "corrections_summary_json" in keys and row["corrections_summary_json"]:
+            try:
+                corrections_summary = json.loads(row["corrections_summary_json"])
+            except Exception:
+                corrections_summary = None
+
         return CutProject(
             id=row["id"],
             title=row["title"],
@@ -254,10 +318,16 @@ class ProjectRepository:
             aspect_ratio=row["aspect_ratio"],
             status=CutProjectStatus(row["status"]),
             output_video_path=row["output_video_path"],
+            task_dir=row["task_dir"] if "task_dir" in keys else None,
+            cover_image_path=row["cover_image_path"] if "cover_image_path" in keys else None,
+            cover_source=row["cover_source"] if "cover_source" in keys else None,
             raw_asr_segments=raw_asr,
             subtitles=subtitles,
             broll_replacements=broll_cuts,
             strategy=strat,
+            corrections_summary=corrections_summary,
+            last_engine_used=row["last_engine_used"] if "last_engine_used" in keys else None,
+            correction_latency_ms=row["correction_latency_ms"] if "correction_latency_ms" in keys and row["correction_latency_ms"] is not None else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         )

@@ -187,19 +187,16 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
         except Exception as e:
             print(f"[Migrator] 迁移 materials_meta.json 异常: {e}")
 
-    # 2. 迁移持久化剪辑工程
+    # 2. 迁移持久化剪辑工程（孤儿工程不删除，随有效工程一并归档，零丢失）
     if PROJECTS_DIR.exists():
         for p_file in PROJECTS_DIR.glob("*.json"):
             try:
                 with open(p_file, "r", encoding="utf-8") as f:
                     proj_data = json.load(f)
                     p = CutProject(**proj_data)
-                    # 严禁捏造虚假占位素材！若口播素材已被物理清理，此工程为孤儿残留，直接清理该文件并跳过
+                    # 严禁捏造虚假占位素材！若口播素材已被物理清理，此工程为孤儿残留，跳过导入（文件仍会归档）
                     if not mat_repo.get_by_id(p.talking_head_id):
-                        try:
-                            p_file.unlink()
-                        except Exception:
-                            pass
+                        print(f"[Migrator] 工程引用的口播素材不存在（孤儿残留，导入跳过）: {p_file.name}")
                         continue
 
                     if not proj_repo.get_by_id(p.id):
@@ -217,6 +214,28 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
                         settings_repo.set(k, str(v))
         except Exception as e:
             print(f"[Migrator] 迁移 settings.json 异常: {e}")
+
+    # 4. 归档已迁移的 JSON 源文件到 storage/legacy/（零丢失：只移动不删除）
+    def _archive_to_legacy(src: Path):
+        try:
+            LEGACY_DIR.mkdir(parents=True, exist_ok=True)
+            dest = LEGACY_DIR / src.name
+            if dest.exists():
+                dest = LEGACY_DIR / f"{src.stem}_{int(time.time())}{src.suffix}"
+            shutil.move(str(src), str(dest))
+        except Exception as e:
+            print(f"[Migrator] 归档 {src.name} 失败（保留原文件）: {e}")
+
+    if META_FILE.exists():
+        _archive_to_legacy(META_FILE)
+        print("[Migrator] materials_meta.json 已归档至 storage/legacy/")
+    if PROJECTS_DIR.exists():
+        archived = 0
+        for p_file in PROJECTS_DIR.glob("*.json"):
+            _archive_to_legacy(p_file)
+            archived += 1
+        if archived:
+            print(f"[Migrator] {archived} 个工程 JSON 已归档至 storage/legacy/")
 
     try:
         settings_repo.set("legacy_data_migrated", "1")

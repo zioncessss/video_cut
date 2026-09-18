@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, ensure_storage_path
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path
 import time
 from app.models.entities import (
     CutProject,
@@ -103,15 +103,20 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
     try:
         _set_progress(req.talking_head_id, PipelineStage.AUDIO_EXTRACTING, 15, "正在抽取高质量音频...")
 
-        # 1. 固化 ASR 转写与智能合并
-        _set_progress(req.talking_head_id, PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写与黄金短句合并中...")
+        # 1. 固化 ASR 转写（自然句层，不切割）与智能合并
+        _set_progress(req.talking_head_id, PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
         raw_segments = asr_runner.transcribe(full_th_path)
 
-        # 2. Harness 上下文驾校专有词纠偏
-        _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 75, "大模型行业专名词义智能纠偏中...")
+        # 2. Harness 上下文专有词纠偏（在自然句层面做：完整句模型不会重新断句，
+        #    句集一致性守卫不再因句中碎片而触发回退——T038 管线顺序调整）
+        _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "大模型行业专名词义智能纠偏中...")
         correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
         correction_res = await get_active_harness().correct_subtitles(correction_req)
-        corrected_segments = correction_res.updated_subtitles
+
+        # 2.5 黄金短句切割：在纠偏后的自然句上执行 6~12 字视读切分
+        corrected_segments: List[Dict[str, Any]] = []
+        for clause in correction_res.updated_subtitles:
+            corrected_segments.extend(asr_runner.split_into_readable_segments([clause]))
 
         # 3.5 AI 分镜决策（切哪类/时长/转场；不切区与节奏约束由确定性校验兜底）
         scene_decisions: Dict[str, SceneDecision] = {}
@@ -203,14 +208,54 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 broll_material_id=assigned_broll_id
             ))
 
+        # 4.5 分镜编排（体验硬约束）：合并防闪、单镜 2~6s 钳制、总覆盖收敛约六成；
+        # 编排后按窗口分类重新随机选材（AI/关键词决策只负责"哪里切、切哪类"）
+        if brolls:
+            from app.native_engine.scene_decision import plan_stable_windows
+            th_duration = float(talking_head.duration or 0.0)
+            if th_duration <= 0:
+                th_duration = max((float(b.end_time) for b in brolls), default=0.0)
+            planned = plan_stable_windows(
+                [{"start_time": b.start_time, "end_time": b.end_time,
+                  "material_category": b.material_category} for b in brolls],
+                total_duration=th_duration,
+            )
+            final_brolls: List[BrollReplacement] = []
+            for w in planned:
+                mats = cat_map.get(w["material_category"]) or []
+                if not mats:
+                    continue
+                m = secrets.choice(mats)
+                final_brolls.append(BrollReplacement(
+                    start_time=w["start_time"],
+                    end_time=w["end_time"],
+                    material_id=m.id,
+                    material_category=w["material_category"]
+                ))
+            brolls = final_brolls
+            # 字幕归窗：中点落在某分镜窗口内的字幕，关联该窗口素材（供工作台展示）
+            for s in subtitles:
+                mid = (s.start_time + s.end_time) / 2
+                for w in brolls:
+                    if w.start_time > mid:
+                        break
+                    if w.start_time <= mid <= w.end_time:
+                        s.broll_material_id = w.material_id
+                        break
+
         summary_list = [c.model_dump() for c in correction_res.corrections_summary] if hasattr(correction_res, 'corrections_summary') else []
         engine_name = correction_res.harness_engine_used if hasattr(correction_res, 'harness_engine_used') else "codex"
         latency_val = correction_res.latency_ms if hasattr(correction_res, 'latency_ms') else 0.0
+
+        # 独立工程文件夹：每个待剪口播视频进入剪辑阶段自动安排专属目录 YYYYMMDD_HHMMSS_{title}
+        task_dir_path = create_task_dir(Path(talking_head.filename).stem)
+        task_dir_rel = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
 
         project = CutProject(
             title=f"剪辑_{Path(talking_head.filename).stem}",
             talking_head_id=talking_head.id,
             aspect_ratio=req.aspect_ratio,
+            task_dir=task_dir_rel,
             subtitles=subtitles,
             broll_replacements=brolls,
             raw_asr_segments=raw_segments,
@@ -298,28 +343,50 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
         degraded = True
 
     # 依据新决策整体重建空镜窗口（随机落定素材），并持久化到字幕与工程
-    new_brolls: List[BrollReplacement] = []
+    # 依据决策产出原始窗口，经编排层稳定化（合并防闪/单镜 2~6s 钳制/覆盖率收敛约六成）后再随机选材
+    raw_spans: List[Dict[str, Any]] = []
     for s in p.subtitles:
         sd = scene_decisions.get(s.id)
-        if sd:
-            if sd.broll_category:
-                mats = storage_service.list_materials(sd.broll_category)
-                if mats:
-                    m = secrets.choice(mats)
-                    sd.material_id = m.id
-                    s.broll_material_id = m.id
-                    new_brolls.append(BrollReplacement(
-                        start_time=s.start_time,
-                        end_time=min(s.start_time + sd.broll_duration, s.end_time) if sd.broll_duration > 0 else s.end_time,
-                        material_id=m.id,
-                        material_category=sd.broll_category
-                    ))
-                else:
-                    sd.reason = (sd.reason + "；该分类暂无素材，自动跳过").strip("；")
-                    s.broll_material_id = None
-            else:
-                s.broll_material_id = None
-            s.scene_decision = sd
+        if not sd:
+            continue
+        s.scene_decision = sd
+        if sd.broll_category and sd.broll_duration > 0:
+            raw_spans.append({
+                "start_time": s.start_time,
+                "end_time": min(s.start_time + sd.broll_duration, s.end_time) if sd.broll_duration > 0 else s.end_time,
+                "material_category": sd.broll_category
+            })
+
+    total_duration = max((s.end_time for s in p.subtitles), default=0.0)
+    from app.native_engine.scene_decision import plan_stable_windows
+    planned = plan_stable_windows(raw_spans, total_duration=total_duration)
+
+    new_brolls: List[BrollReplacement] = []
+    for w in planned:
+        mats = storage_service.list_materials(w["material_category"]) or []
+        if not mats:
+            continue
+        m = secrets.choice(mats)
+        new_brolls.append(BrollReplacement(
+            start_time=w["start_time"],
+            end_time=w["end_time"],
+            material_id=m.id,
+            material_category=w["material_category"]
+        ))
+
+    # 字幕归窗：中点落在某分镜窗口内的字幕，关联该窗口素材
+    for s in p.subtitles:
+        s.broll_material_id = None
+        mid = (s.start_time + s.end_time) / 2
+        for b in new_brolls:
+            if b.start_time > mid:
+                break
+            if b.start_time <= mid <= b.end_time:
+                s.broll_material_id = b.material_id
+                sd = scene_decisions.get(s.id)
+                if sd:
+                    sd.material_id = b.material_id
+                break
 
     p.broll_replacements = new_brolls
     p.pipeline_notes = {**(p.pipeline_notes or {}), "scene_decision_engine": engine_used, "scene_decision_degraded": degraded}
@@ -379,6 +446,15 @@ async def render_project(project_id: str):
 
     p.status = CutProjectStatus.PROCESSING
 
+    # 独立工程目录：确保专属目录存在，所有渲染成果（成片、字幕、音频、封面）落入独立目录
+    if not p.task_dir:
+        stem_name = Path(th.filename).stem if th.filename else "clip"
+        task_dir_path = create_task_dir(stem_name)
+        p.task_dir = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
+
+    target_task_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+    target_task_dir.mkdir(parents=True, exist_ok=True)
+
     # 记录前一次的输出文件路径，渲染成功后再安全清理，避免覆盖同名文件产生 Windows 文件句柄锁冲突
     old_output_path = None
     if p.output_video_path:
@@ -386,7 +462,7 @@ async def render_project(project_id: str):
 
     timestamp = int(time.time())
     output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}_{timestamp}.mp4"
-    output_path = OUTPUTS_DIR / output_filename
+    output_path = target_task_dir / output_filename
 
     # 1. 如果用户策略设为纯口播 (talking_only)，清空参与渲染的空镜
     broll_cuts_payload = []
@@ -409,17 +485,16 @@ async def render_project(project_id: str):
                         "transition": transition_seconds
                     })
 
-    # 2. 生成 ASS 高级高亮字幕文件与 SRT 文件
-    ass_filename = f"output_{p.id}_{timestamp}.ass"
-    ass_path = OUTPUTS_DIR / ass_filename
+    # 2. 生成 ASS 高级高亮字幕文件与 SRT 文件至专属任务目录
+    ass_path = target_task_dir / "subtitles.ass"
     generate_ass_file(
         [s.model_dump() for s in p.subtitles],
         ass_path,
         strategy=p.strategy.model_dump()
     )
 
-    srt_filename = f"output_{p.id}_{timestamp}.srt"
-    generate_srt_file([s.model_dump() for s in p.subtitles], OUTPUTS_DIR / srt_filename)
+    srt_path = target_task_dir / "subtitles.srt"
+    generate_srt_file([s.model_dump() for s in p.subtitles], srt_path)
 
     # 3. 复合渲染：空镜平替 + ASS字幕 + 顶部横幅 + 水印
     full_th_path = STORAGE_DIR.parent / th.filepath
@@ -441,10 +516,25 @@ async def render_project(project_id: str):
 
     if success and output_path.exists():
         p.status = CutProjectStatus.COMPLETED
-        p.output_video_path = f"storage/outputs/{output_filename}"
+        p.output_video_path = f"{p.task_dir}/{output_filename}"
         p.output_absolute_path = str(output_path.resolve())
         p.output_filename = output_filename
         p.output_file_size_mb = round(output_path.stat().st_size / (1024 * 1024), 2)
+
+        # 自动抽取 0.5s 默认封面帧（若尚未生成封面），便于在成片网格中直接显示缩略图
+        if not p.cover_image_path:
+            try:
+                import subprocess
+                cover_dest = target_task_dir / "cover.jpg"
+                c_proc = subprocess.run([
+                    "ffmpeg", "-y", "-ss", "0.500", "-i", str(output_path),
+                    "-frames:v", "1", "-q:v", "3", str(cover_dest)
+                ], capture_output=True, timeout=10)
+                if c_proc.returncode == 0 and cover_dest.exists():
+                    p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                    p.cover_source = "frame"
+            except Exception as e:
+                print(f"[render] 自动抽取封面跳过: {e}")
 
         # 安全清理上一版渲染产物，防止磁盘膨胀，若被播放器占用则静默忽略
         if old_output_path and old_output_path.exists() and old_output_path != output_path.resolve():
@@ -477,6 +567,19 @@ async def set_project_cover(project_id: str, req: CoverRequest):
     if req.source == "ai":
         raise HTTPException(status_code=501, detail="AI 封面生成规划中，敬请期待")
 
+    # 确定保存封面的目标目录：若有独立任务目录优先保存在专属目录
+    if p.task_dir:
+        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        cover_name = "cover.jpg"
+        cover_path = target_dir / cover_name
+        rel_cover = f"{p.task_dir}/{cover_name}"
+    else:
+        ts = int(time.time())
+        cover_name = f"cover_{p.id}_{ts}.jpg"
+        cover_path = COVERS_DIR / cover_name
+        rel_cover = f"storage/covers/{cover_name}"
+
     if req.source == "frame":
         if not p.output_video_path:
             raise HTTPException(status_code=400, detail="该工程尚未生成成片，无法截帧")
@@ -492,9 +595,6 @@ async def set_project_cover(project_id: str, req: CoverRequest):
         if not _re.fullmatch(r"\d+\.\d{3}", ss_value):
             ss_value = "0.000"
 
-        ts = int(time.time())
-        cover_name = f"cover_{p.id}_{ts}.jpg"
-        cover_path = COVERS_DIR / cover_name
         proc = subprocess.run([
             "ffmpeg", "-y",
             "-ss", ss_value,
@@ -504,7 +604,7 @@ async def set_project_cover(project_id: str, req: CoverRequest):
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         if proc.returncode != 0 or not cover_path.exists():
             raise HTTPException(status_code=500, detail="截帧失败：请确认 FFmpeg 可用后重试")
-        p.cover_image_path = f"storage/covers/{cover_name}"
+        p.cover_image_path = rel_cover
         p.cover_source = "frame"
     elif req.source == "upload":
         if not req.image_base64:
@@ -515,11 +615,8 @@ async def set_project_cover(project_id: str, req: CoverRequest):
             raise HTTPException(status_code=400, detail="图片 base64 解码失败")
         if len(img_bytes) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
-        ts = int(time.time())
-        cover_name = f"cover_{p.id}_{ts}.jpg"
-        cover_path = COVERS_DIR / cover_name
         cover_path.write_bytes(img_bytes)
-        p.cover_image_path = f"storage/covers/{cover_name}"
+        p.cover_image_path = rel_cover
         p.cover_source = "upload"
     else:
         raise HTTPException(status_code=400, detail=f"不支持的封面来源: {req.source}")
@@ -536,15 +633,27 @@ async def set_project_cover(project_id: str, req: CoverRequest):
 
 class OpenFolderRequest(BaseModel):
     path: Optional[str] = None
+    project_id: Optional[str] = None
 
 @router.post("/open-folder")
 async def open_folder(req: OpenFolderRequest = OpenFolderRequest()):
-    """在系统的文件管理器 (Windows Explorer) 中高亮选中文件或打开导出输出文件夹"""
+    """在系统的文件管理器 (Windows Explorer) 中高亮选中文件或打开独立任务文件夹"""
     import sys
     import subprocess
 
     target_path = None
-    if req.path:
+    if req.project_id:
+        p = project_storage_service.get_by_project_id(req.project_id)
+        if p:
+            if p.task_dir:
+                td = (STORAGE_DIR.parent / p.task_dir).resolve()
+                if td.exists():
+                    target_path = td
+            if not target_path and p.output_video_path:
+                vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
+                if vp.exists():
+                    target_path = vp
+    elif req.path:
         p = Path(req.path)
         if p.is_absolute():
             target_path = p
@@ -552,7 +661,7 @@ async def open_folder(req: OpenFolderRequest = OpenFolderRequest()):
             target_path = (STORAGE_DIR.parent / req.path).resolve()
 
     if not target_path or not target_path.exists():
-        target_path = OUTPUTS_DIR.resolve()
+        target_path = TASKS_DIR.resolve() if TASKS_DIR.exists() else OUTPUTS_DIR.resolve()
 
     try:
         if sys.platform == "win32":
@@ -572,5 +681,11 @@ async def open_folder(req: OpenFolderRequest = OpenFolderRequest()):
         return {"code": 0, "message": "已成功唤起文件管理器", "path": str(target_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"打开文件目录失败: {str(e)}")
+
+@router.get("", response_model=List[CutProject])
+async def list_projects():
+    """获取所有剪辑工程列表（供成片网格、快速切换、状态展示）"""
+    projects = project_storage_service.list_all_projects()
+    return [_enrich_project_export_meta(p) for p in projects]
 
 

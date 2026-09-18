@@ -196,23 +196,101 @@ Web 应用：`backend/app/`（FastAPI）+ `frontend/src/`（React SPA）+ `tests
 
 ---
 
+## Phase 12: User Story 9 — ASR 物理词时间戳与语义自然断句 (Priority: P1) 🎯
+
+**Goal**: 彻底消除 10 字机械等分导致的腰斩错位，基于物理声学词时间戳与中文语义停顿切分子句，词语完整、时间精准
+
+**Independent Test**: 输入长句口播，断言切分后词组（“没有”、“我们”、“安吉这边”）完整不跨句切断，每句 6~12 字，时间戳精准吻合发音
+
+- [x] T040 [P] [US9] 在 tests/test_subtitle_merge.py 新增自然语义断句与词时间戳测试用例：断言长口播输入切分后词组不被切碎且起止时间严格对应发音，无线性平摊
+- [x] T041 [US9] 重构 backend/app/native_engine/asr_runner.py 中的 `transcribe` 与 `split_into_readable_segments`：彻底移除 `chunk_len = 10` 等分切片，利用 Whisper 词物理时间戳（word_timestamps=True）及自然意群停顿进行 6~12 字黄金切分
+- [x] T042 [US9] 运行 `pytest tests/test_subtitle_merge.py` 验证断句重构单测全部通过
+
+---
+
+## Phase 13: User Story 10 — 开场分镜节奏优化与前序空镜补齐 (Priority: P1)
+
+**Goal**: 开场 1.5s~2s 保持口播真人出镜（建立主播人设与信任），2s 后出现地理场地词（如“湖州驾校 / 安吉校区”）可自然切入 2.0s~3.5s 场地空镜
+
+**Independent Test**: 真实口播测试，断言 2s 后命中场地词的句子获得空镜决策，报价手势句依然 100% 保持真人出镜
+
+- [x] T043 [P] [US10] 在 tests/test_scene_decision.py 新增开场分镜节奏测试：验证 2s 后的地域词（安吉/湖州）成功生成场地空镜，且报价手势句依然不切
+- [x] T044 [US10] 修改 backend/app/harness_bridge/prompting.py `build_scene_decision_prompt`：更新开场规则为“开场前 1.5~2 秒真人出镜亮相（建立主播信任感与人设），2 秒后若提到地域/校区/场地或流程，可自然切入相应空镜（如 venue/experience）”
+- [x] T045 [US10] 修改 backend/app/native_engine/scene_decision.py `_infer_part` 与 `validate_and_clip`：不再根据 `index == 0` 恒判 hook 全裁，改基于时间戳（start_time < 1.8s 为 hook 保护），允许 2s 后命中 venue/experience 的句子生成 2.0s~3.5s 分镜决策
+- [x] T046 [US10] 运行 `pytest tests/test_scene_decision.py` 验证开场分镜规则放宽与手势保护单测全绿
+
+---
+
+## Phase 14: User Story 11 — 独立工程目录规划 (Priority: P1)
+
+**Goal**: 建立 `storage/tasks/YYYYMMDD_HHMMSS_{视频名}/` 架构，将原始视频、音频、字幕、压制成片与封面统一独立归档
+
+**Independent Test**: 剪辑一个视频，检查磁盘在 storage/tasks/ 下是否创建了格式为 YYYYMMDD_HHMMSS 的独立文件夹并完整存放所有产物
+
+- [x] T047 [P] [US11] 在 backend/app/core/config.py 新增 `TASKS_DIR = STORAGE_DIR / "tasks"`，启动时自动创建；新增 `create_task_dir(title: str) -> Path` 按 `YYYYMMDD_HHMMSS_{safe_stem}` 生成独立工程工作区
+- [x] T048 [US11] 更新 backend/app/models/entities.py 与 backend/app/db/repository.py：在 `CutProject` 模型中新增 `task_dir: Optional[str] = None` 字段并持久化到 SQLite
+- [x] T049 [US11] 重构 backend/app/api/editor.py 工程创建与渲染归档逻辑：新工程中间音频、.srt/.ass 字幕、压制成片统一保存在专属 `task_dir` 目录下，并提供返回工程目录与打开所在文件夹的能力
+
+---
+
+## Phase 15: User Story 12 — 批量混剪生产中心重构 (Priority: P1)
+
+**Goal**: 批量混剪页面作为核心生产中心，支持口播多视频直接上传，实时多阶段进度看板，成片以卡片网格整齐排列（显示封面、时长、时间、打开文件夹、播放），点击卡片直接下钻到剪辑工作台
+
+**Independent Test**: 在批量混剪页面多选视频上传，看到各任务实时进度，完成后呈现卡片网格，点击卡片直接跳入工作台精修
+
+- [x] T050 [P] [US12] 在 backend/app/api/batch.py 新增 `POST /api/v1/batch/upload-and-cut` 端点：支持多口播视频一次性上传，自动为每个视频创建 `YYYYMMDD_HHMMSS` 独立工程目录并投递批量剪辑作业
+- [x] T051 [US12] 重构 frontend/src/pages/BatchCut.tsx：增加批量口播视频拖拽/多选上传区；增加实时多阶段进度条看板；彻底用成片卡片网格 (Card Grid) 取代旧日志列表，每张卡片展示成片缩略图、文件名、时长、生成时间、播放按钮与打开文件夹按钮；卡片配备「单点进入工作台」按钮，支持跳转携带 project_id
+
+---
+
+## Phase 16: User Story 13 — 剪辑工作台单传入口与 Title/水印圆点交互重塑 (Priority: P1)
+
+**Goal**: 工作台支持直接拖入/上传单视频开剪；彻底移除“成片评审后可开启”阻断文案，重构 Title 横幅与品牌水印为直观圆点开关（点击开启实心、再点空心取消）
+
+**Independent Test**: 在策略工坊点击开启 Title 与水印，确认圆点高亮实心，再次点击变为空心取消；工作台工具栏点击单传视频即可开剪
+
+- [x] T052 [P] [US13] 修改 frontend/src/components/StrategyStudio.tsx：彻底移除“已关闭（成片评审后可开启）”阻断说明文案；重构 Title 挂顶横幅与品牌水印为直观的圆点 Toggle / Checkbox（点击开启高亮实心圆点、再次点击恢复空心圆点取消），即点即改
+- [x] T053 [US13] 重构 frontend/src/pages/VideoEditor.tsx：彻底移除顶部原生 `<select>` 下拉框，替换为工程视频卡片展开抽屉/横栏；顶部工具栏增加「+ 上传口播视频」就地开剪按钮；接收从批量混剪页面携带的 initialProjectId 或 URL 参数，实现秒级载入目标工程
+
+---
+
+## Phase 17: User Story 14 — 素材管理库纯化 (Priority: P2)
+
+**Goal**: 从素材库彻底剥离 `talking_head` 口播分镜标签页，纯化为三大纯空镜库（场地、体验、教学），引导待剪口播前往批量混剪或工作台
+
+**Independent Test**: 打开素材库页面，确认仅有场地空镜、体验空镜、教学学车空镜 3 个标签，顶部有口播上传指引提示
+
+- [x] T054 [US14] 修改 frontend/src/pages/AssetLibrary.tsx：移除 `talking_head` 标签页，仅保留【场地空镜】、【体验空镜】、【教学学车空镜】三大分类；并在页面顶部添加指引提示：“口播主视频请前往「批量混剪」或「剪辑工作台」上传”
+
+---
+
+## Phase 18: Polish & E2E Validation
+
+- [x] T055 前端代码执行 `pnpm build` 确认零 TypeScript 报错、零样式引用警告
+- [x] T056 运行全量回归测试确认全部测试绿色通过
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
 
 ```
-Phase 1 Setup (T001 基线)
-  └→ Phase 2 Foundational (T002~T005, 阻塞一切)
-       ├→ Phase 3 US1 (T006)                    ── 独立，最先行（MVP 面子）
-       ├→ Phase 4 US2 (T007~T010)               ── 依赖 Foundational
-       │    └→ Phase 5 US3 (T011~T013)          ── 依赖 US2 数据结构
-       │         └→ ★ MVP 达成（US1+US2+US3）
-       ├→ Phase 6 US4 (T014~T017)               ── 独立于 US1~3（建议在 US5 前完成：决策枚举依赖 experience）
-       │    └→ Phase 7 US5 (T018~T027)          ── 依赖 Foundational + US4
-       │         └→ Phase 8 US6 (T028~T031)     ── 依赖 US5 流水线稳定
-       ├→ Phase 9 US7 (T032~T033)               ── 独立，可随时插入
-       └→ Phase 10 US8 (T034~T036)              ── 依赖 Foundational，独立于其他故事
-            └→ Phase 11 Polish (T037~T039)      ── 依赖全部目标故事完成
+Phase 1 Setup
+  └→ Phase 2 Foundational
+       ├→ Phase 3 US1 (界面收敛)
+       ├→ Phase 4 US2 (双引擎高亮) → Phase 5 US3 (时间轴调整)
+       ├→ Phase 6 US4 (体验空镜) → Phase 7 US5 (AI分镜决策) → Phase 8 US6 (批量基础)
+       ├→ Phase 9 US7 (默认关闭)
+       ├→ Phase 10 US8 (封面预留)
+       ├→ Phase 12 US9 (物理词时间戳与语义断句) ── 核心质量攻坚
+       ├→ Phase 13 US10 (开场分镜节奏优化)
+       ├→ Phase 14 US11 (YYYYMMDD_HHMMSS 独立目录)
+       ├→ Phase 15 US12 (批量生产中心 & 卡片网格)
+       ├→ Phase 16 US13 (工作台单传 & 水印圆点开关)
+       └→ Phase 17 US14 (素材库纯化)
+            └→ Phase 18 Polish (编译与测试收尾)
 ```
 
 ### User Story Dependencies

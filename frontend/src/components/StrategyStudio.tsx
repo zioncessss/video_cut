@@ -426,22 +426,32 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
       {/* 3. 顶部 Title 挂顶横幅 */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center space-x-1.5">
+          <div className="flex items-center space-x-2">
             <Type className="w-4 h-4 text-purple-600" />
-            <h3 className="font-semibold text-xs text-gray-800">顶部 Title 挂顶横幅 (可调位置与大小)</h3>
-            {!strategy.enable_top_banner && (
-              <span className="text-[10px] text-gray-400">已关闭（成片评审后可开启）</span>
-            )}
+            <h3 className="font-semibold text-xs text-gray-800">顶部 Title 挂顶横幅</h3>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+              strategy.enable_top_banner ? 'bg-purple-50 text-purple-600' : 'bg-gray-100 text-gray-400'
+            }`}>
+              {strategy.enable_top_banner ? '已开启' : '未开启'}
+            </span>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={strategy.enable_top_banner}
-              onChange={e => update({ enable_top_banner: e.target.checked })}
-              className="sr-only peer"
+          {/* 圆点 Toggle 开关：点击开启，并出现圆点可再次点击取消 */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={strategy.enable_top_banner}
+            onClick={() => update({ enable_top_banner: !strategy.enable_top_banner })}
+            className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+              strategy.enable_top_banner ? 'bg-purple-600' : 'bg-gray-300'
+            }`}
+            title={strategy.enable_top_banner ? '点击取消 Title 横幅' : '点击开启 Title 横幅'}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                strategy.enable_top_banner ? 'translate-x-4' : 'translate-x-0'
+              }`}
             />
-            <div className="w-8 h-4.5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-purple-600"></div>
-          </label>
+          </button>
         </div>
 
         {strategy.enable_top_banner && (
@@ -642,22 +652,32 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
       {/* 4. 品牌防搬运水印角标 */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center space-x-1.5">
+          <div className="flex items-center space-x-2">
             <Shield className="w-4 h-4 text-emerald-600" />
-            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标 (可调位置与大小)</h3>
-            {!strategy.enable_watermark && (
-              <span className="text-[10px] text-gray-400">已关闭（成片评审后可开启）</span>
-            )}
+            <h3 className="font-semibold text-xs text-gray-800">品牌水印角标</h3>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+              strategy.enable_watermark ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'
+            }`}>
+              {strategy.enable_watermark ? '已开启' : '未开启'}
+            </span>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={strategy.enable_watermark}
-              onChange={e => update({ enable_watermark: e.target.checked })}
-              className="sr-only peer"
+          {/* 圆点 Toggle 开关：点击开启，并出现圆点可再次点击取消 */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={strategy.enable_watermark}
+            onClick={() => update({ enable_watermark: !strategy.enable_watermark })}
+            className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+              strategy.enable_watermark ? 'bg-emerald-600' : 'bg-gray-300'
+            }`}
+            title={strategy.enable_watermark ? '点击取消水印' : '点击开启水印'}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                strategy.enable_watermark ? 'translate-x-4' : 'translate-x-0'
+              }`}
             />
-            <div className="w-8 h-4.5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-emerald-600"></div>
-          </label>
+          </button>
         </div>
 
         {strategy.enable_watermark && (

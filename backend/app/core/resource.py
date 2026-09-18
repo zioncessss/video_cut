@@ -42,7 +42,9 @@ def get_hardware_metrics() -> HardwareMetrics:
     gpu_acc = detect_gpu_accelerator()
 
     # 并发公式：基于可用物理内存与CPU核心数自适应计算
-    calc_concurrency = max(1, min(cores // 2, int(mem_avail_gb // 2.0)))
+    # 单槽位内存预算 1.5GB（whisper base float32 ≈1GB + NVENC 渲染 ≈0.5GB），
+    # 旧值 2.0GB 在 16GB 机器上过于保守（可用 5GB 时只给 2 并发）
+    calc_concurrency = max(1, min(cores // 2, int(mem_avail_gb // 1.5)))
 
     return HardwareMetrics(
         cpu_cores=cores,

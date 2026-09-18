@@ -5,7 +5,7 @@ api / codex 桥接器共用：提供方解析、/chat/completions（备用 /resp
 """
 import json
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core import config
 
@@ -110,10 +110,12 @@ async def _chat_via_provider(
                     return True, content, (time.time() - start_time) * 1000
                 return False, f"直连响应 200 但未含正文（model={active_model}）", (time.time() - start_time) * 1000
             return False, f"直连 /chat/completions 失败 HTTP {resp.status_code}: {resp.text[:200]}", (time.time() - start_time) * 1000
+    except httpx.TimeoutException as e:
+        last_err = f"读取响应超时({timeout:.0f}s)，模型未在时限内完成生成（提示词过大或模型过慢，建议减小单次请求句数）[{e.__class__.__name__}]"
     except httpx.HTTPError as e:
-        last_err = f"直连 /chat/completions 网络异常: {e}"
+        last_err = f"直连 /chat/completions 网络异常: {str(e) or e.__class__.__name__}"
     except Exception as e:
-        last_err = f"直连 /chat/completions 异常: {e}"
+        last_err = f"直连 /chat/completions 异常: {str(e) or e.__class__.__name__}"
 
     # 备用：本地 codex 代理的 /responses 端点（仅本地代理提供该协议；
     # 远端供应商如 open.bigmodel.cn 返回 404，重试只会白白再等一轮，直接返回首因错误）
@@ -136,6 +138,80 @@ async def _chat_via_provider(
             return False, f"备用 /responses 失败 HTTP {resp.status_code}: {resp.text[:200]}（首因：{last_err}）", (time.time() - start_time) * 1000
     except Exception as e:
         return False, f"{last_err}；备用 /responses 亦异常: {e}", (time.time() - start_time) * 1000
+
+
+async def chat_completion_stream_full(
+    prompt: str,
+    timeout: float = 120.0,
+    system: Optional[str] = None,
+    model_override: Optional[str] = None,
+    provider: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, str, float]:
+    """流式请求并收集完整回复。
+
+    推理模型（如 glm-5.3-flash）思考链很长，非流式一次性等待完整生成极易触发读超时
+    （实测 11 句纠偏需 82s）；流式下 timeout 只约束"相邻 token 间空闲"，token 持续流出
+    即不会超时，生成本身不限时。超长生成任务的正确姿势。
+    返回 (成功, 完整正文, 耗时ms)。
+    """
+    import httpx
+
+    provider = provider or resolve_api_provider()
+    if not provider:
+        return False, "未配置直连大模型提供方：请在设置页填写 base_url 与 api_key，或确保 ~/.codex/config.toml 存在", 0.0
+    start_time = time.time()
+    base_url = provider["base_url"].rstrip("/")
+    active_model = (model_override or provider.get("model") or config.LLM_MODEL or "glm-5.3-flash").strip()
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    headers = {"Authorization": f"Bearer {provider['token']}"} if provider["token"] else {}
+    # 分段超时：连接 10s，相邻块读取 timeout s（token 流动即不触发），整体生成不限时
+    req_timeout = httpx.Timeout(10.0, read=timeout, write=10.0, pool=10.0)
+
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    try:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                f"{base_url}/chat/completions",
+                json={"model": active_model, "messages": messages, "stream": True},
+                headers=headers,
+                timeout=req_timeout,
+            ) as resp:
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    return False, f"流式请求失败 HTTP {resp.status_code}: {body[:200]}", (time.time() - start_time) * 1000
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(payload)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    choices = data.get("choices") or [{}]
+                    delta = (choices[0].get("delta") or {}) if choices else {}
+                    if delta.get("content"):
+                        content_parts.append(str(delta["content"]))
+                    if delta.get("reasoning_content"):
+                        reasoning_parts.append(str(delta["reasoning_content"]))
+        text = "".join(content_parts).strip() or "".join(reasoning_parts).strip()
+        if not text:
+            return False, f"流式连接正常结束但未收到任何内容（model={active_model}）", (time.time() - start_time) * 1000
+        return True, text, (time.time() - start_time) * 1000
+    except httpx.TimeoutException as e:
+        return False, f"流式读取空闲超时({timeout:.0f}s)，token 流中断 [{e.__class__.__name__}]", (time.time() - start_time) * 1000
+    except httpx.HTTPError as e:
+        return False, f"流式网络异常: {str(e) or e.__class__.__name__}", (time.time() - start_time) * 1000
+    except Exception as e:
+        return False, f"流式请求异常: {str(e) or e.__class__.__name__}", (time.time() - start_time) * 1000
 
 
 def _model_name(item: Any) -> Optional[str]:

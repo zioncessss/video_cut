@@ -1,8 +1,9 @@
-"""AI 分镜决策：解析、确定性校验裁剪（双保险）与关键词规则降级。
+"""AI 分镜决策：解析、确定性校验裁剪（双保险）、稳定性编排与关键词规则降级。
 
 设计依据 specs/005-auto-edit-pipeline/research.md R8（真实口播风格模型）：
-四类硬性不切区（开场钩子/价格手势句/结尾CTA/情绪叙事）+ 节奏约束（不相邻连续切、占比≤40%）。
-AI 输出永不直接信任，必须经过 validate_and_clip 的确定性约束。
+四类硬性不切区（开场钩子/价格手势句/结尾CTA/情绪叙事）在 validate_and_clip 兜底；
+节奏与覆盖（防频闪合并、单镜 2~6s 钳制、总覆盖收敛约 2/3）由 plan_stable_windows 编排层统一负责。
+AI 输出永不直接信任，必须经过确定性校验与编排。
 """
 import re
 from pathlib import Path
@@ -21,6 +22,122 @@ _CTA_RE = re.compile(r"滴滴我|找我聊|点红心|点个红心|关注一下|�
 MAX_BROLL_RATIO = 0.40
 DEFAULT_FALLBACK_RATIO = 0.60   # 降级规则：默认切句长的 60%
 HARD_CUT_TRANSITION = 0.0
+
+# ===== 成片分镜编排（体验硬约束，凌驾于 AI 决策之上）=====
+MIN_WINDOW_SECONDS = 2.0    # 频闪下限：短于该值的单镜观感为"闪一下"，必须延展或丢弃
+MAX_WINDOW_SECONDS = 6.0    # 单镜单调上限：超长分镜截断
+HARD_MAX_WINDOW_SECONDS = 10.0  # 覆盖率不足下限时的延展硬上限（连续镜头不闪切，可接受）
+MERGE_GAP_SECONDS = 0.8     # 相邻窗口间隔小于此值合并为一个连续分镜，避免快闪交替
+EDGE_GAP_SECONDS = 0.3      # 编排后相邻窗口间保留的最小口播间隔
+COVERAGE_MIN = 0.40         # 空镜总时长占片长比例下限
+COVERAGE_MAX = 0.70         # 占比上限
+COVERAGE_TARGET = 0.60      # 目标中心（约 2/3，略保守）
+
+
+def plan_stable_windows(raw_spans: List[Dict[str, Any]], total_duration: float) -> List[Dict[str, Any]]:
+    """把逐句零散的空镜窗口编排成稳定的成片分镜时间线（确定性，无 AI）。
+
+    输入 raw_spans: [{start_time, end_time, material_category}]（AI/关键词决策的原始窗口）。
+    编排规则：
+      1) 相邻窗口间隔 < MERGE_GAP 时合并，消除"闪一下闪一下"的快闪交替；
+      2) 单镜时长钳制到 [MIN, MAX]：太长截断；太短向右延展（J-cut：画面延续、口播继续），
+         延展不到下限则整窗丢弃——宁可少切不可闪切；
+      3) 总覆盖时长收敛到 [COVERAGE_MIN, COVERAGE_TARGET]×片长（约 2/3）：
+         不足时按剩余空间向右轮转延展，超上限时从最长窗开始截断（不低于下限）。
+    """
+    total_duration = max(0.0, float(total_duration or 0.0))
+    spans: List[Dict[str, Any]] = []
+    for s in raw_spans or []:
+        try:
+            start = max(0.0, float(s.get("start_time", 0.0)))
+            end = float(s.get("end_time", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if end - start <= 0.05:
+            continue
+        if total_duration > 0:
+            end = min(end, total_duration)
+        if end <= start:
+            continue
+        spans.append({"start_time": start, "end_time": end,
+                      "material_category": s.get("material_category")})
+    spans.sort(key=lambda w: w["start_time"])
+    if not spans:
+        return []
+    if total_duration <= 0:
+        total_duration = max(w["end_time"] for w in spans)
+
+    # 1. 近邻合并（消除快闪交替）
+    merged: List[Dict[str, Any]] = []
+    for w in spans:
+        if merged and w["start_time"] - merged[-1]["end_time"] < MERGE_GAP_SECONDS:
+            merged[-1]["end_time"] = max(merged[-1]["end_time"], w["end_time"])
+        else:
+            merged.append(dict(w))
+
+    # 2. 单镜时长钳制：太长截断；太短向右延展至下限，延不动则丢弃
+    clamped: List[Dict[str, Any]] = []
+    for i, w in enumerate(merged):
+        start = w["start_time"]
+        next_start = merged[i + 1]["start_time"] - EDGE_GAP_SECONDS if i + 1 < len(merged) else total_duration
+        room_right = max(start, next_start)
+        dur = w["end_time"] - start
+        if dur < MIN_WINDOW_SECONDS:
+            extended_end = min(start + MAX_WINDOW_SECONDS, room_right, total_duration)
+            if extended_end - start >= MIN_WINDOW_SECONDS:
+                clamped.append({"start_time": start, "end_time": extended_end,
+                                "material_category": w["material_category"]})
+            # 延展后仍不足下限 → 丢弃（宁可少切不可闪切）
+            continue
+        end = min(w["end_time"], start + MAX_WINDOW_SECONDS, room_right)
+        if end - start < MIN_WINDOW_SECONDS:
+            end = w["end_time"]  # 右侧空间不足时保留原长（间隔侵占 ≤ EDGE_GAP 可容忍）
+        clamped.append({"start_time": start, "end_time": end, "material_category": w["material_category"]})
+    if not clamped:
+        return []
+
+    # 3. 覆盖率收敛
+    def _span(ws: List[Dict[str, Any]]) -> float:
+        return sum(w["end_time"] - w["start_time"] for w in ws)
+
+    result = clamped
+    upper = COVERAGE_MAX * total_duration
+    target = COVERAGE_TARGET * total_duration
+    # 3a. 超上限：从最长窗开始截（不低于下限），裁不动则整窗移除
+    while result and _span(result) > upper + 1e-6:
+        w = max(result, key=lambda x: x["end_time"] - x["start_time"])
+        cur = w["end_time"] - w["start_time"]
+        cut = min(cur - MIN_WINDOW_SECONDS, _span(result) - upper)
+        if cut <= 1e-6:
+            result.remove(w)
+        else:
+            w["end_time"] -= cut
+    # 3b. 低于目标：轮转向右延展。常规上限 MAX；覆盖率仍低于下限时放宽到
+    #     HARD_MAX（连续镜头不闪切，可接受），确保覆盖率硬性达标
+    while _span(result) < max(target, COVERAGE_MIN * total_duration) - 1e-6:
+        progressed = False
+        span_now = _span(result)
+        hard_cap = HARD_MAX_WINDOW_SECONDS if span_now < COVERAGE_MIN * total_duration else MAX_WINDOW_SECONDS
+        for i, w in enumerate(result):
+            if _span(result) >= max(target, COVERAGE_MIN * total_duration) - 1e-6:
+                break
+            cur = w["end_time"] - w["start_time"]
+            if cur >= hard_cap - 1e-6:
+                continue
+            next_start = result[i + 1]["start_time"] - EDGE_GAP_SECONDS if i + 1 < len(result) else total_duration
+            new_end = min(w["start_time"] + hard_cap, max(next_start, w["end_time"]), total_duration)
+            grow = min(new_end - w["end_time"], max(target, COVERAGE_MIN * total_duration) - _span(result))
+            if grow > 1e-6:
+                w["end_time"] += grow
+                progressed = True
+        if not progressed:
+            break
+
+    return [
+        {"start_time": round(w["start_time"], 3), "end_time": round(w["end_time"], 3),
+         "material_category": w["material_category"]}
+        for w in sorted(result, key=lambda x: x["start_time"])
+    ]
 
 
 def load_fixture_subtitles(path: Path) -> List[Dict[str, Any]]:
@@ -46,9 +163,9 @@ def parse_decisions(raw: str) -> List[Dict[str, Any]]:
     return []
 
 
-def _infer_part(index: int, text: str, declared: Optional[str]) -> str:
-    """part 推断：首句恒为 hook；CTA 话术正则兜底；其余尊重 AI 声明"""
-    if index == 0:
+def _infer_part(index: int, text: str, declared: Optional[str], start_time: float = 0.0) -> str:
+    """part 推断：开场 1.8s 以内的首句判定为 hook；CTA 话术正则兜底；其余尊重 AI 声明"""
+    if start_time < 1.8 and index == 0:
         return "hook"
     if _CTA_RE.search(text or ""):
         return "cta"
@@ -68,15 +185,18 @@ def validate_and_clip(subtitles: List[Dict[str, Any]], decisions: List[Dict[str,
         sid = str(sub.get("id"))
         raw = by_id.get(sid, {})
         text = str(sub.get("corrected_text") or sub.get("raw_text") or "")
-        duration = max(0.0, float(sub.get("end_time", 0.0)) - float(sub.get("start_time", 0.0)))
+        sub_start = max(0.0, float(sub.get("start_time", 0.0)))
+        duration = max(0.0, float(sub.get("end_time", 0.0)) - sub_start)
 
-        part = _infer_part(index, text, raw.get("part"))
+        part = _infer_part(index, text, raw.get("part"), start_time=sub_start)
         broll = raw.get("broll")
         broll_cat = MaterialCategory(broll) if broll in VALID_BROLL else None
         reason = str(raw.get("reason") or "")
 
         # 规则 1/2：不切区强制 null（AI 误判也裁）
-        if part in ("hook", "cta") or _is_price_gesture(text):
+        # 开场保护：开播 1.8s 以内强制真人出镜，2s 之后若提到场地/校区/体验等核心语义，允许自然切入分镜
+        is_opening_hook = (part == "hook" and sub_start < 1.8)
+        if is_opening_hook or part == "cta" or _is_price_gesture(text):
             if broll_cat is not None:
                 reason = (reason + "；已由不切区规则强制裁掉").strip("；")
             broll_cat = None
@@ -103,26 +223,8 @@ def validate_and_clip(subtitles: List[Dict[str, Any]], decisions: List[Dict[str,
                                transition_seconds=round(trans, 3), reason=reason)
         enriched.append((sub, sd))
 
-    # 规则 5：不相邻连续切——相邻两句均切时裁掉后句
-    for i in range(1, len(enriched)):
-        prev_sd = enriched[i - 1][1]
-        cur_sub, cur_sd = enriched[i]
-        if prev_sd.broll_category is not None and cur_sd.broll_category is not None:
-            cur_sd.broll_category = None
-            cur_sd.broll_duration = 0.0
-            cur_sd.reason = (cur_sd.reason + "；已由相邻间隔规则裁掉").strip("；")
-
-    # 规则 6：全片空镜占比 ≤ 40%，超限按单处时长从大到小依次裁
-    total = sum(max(0.0, float(s.get("end_time", 0.0)) - float(s.get("start_time", 0.0))) for s, _ in enriched)
-    if total > 0:
-        kept = [(s, sd) for s, sd in enriched if sd.broll_category is not None]
-        ratio = sum(sd.broll_duration for _, sd in kept) / total
-        while kept and ratio > MAX_BROLL_RATIO:
-            largest = max(kept, key=lambda pair: pair[1].broll_duration)
-            largest[1].broll_category = None
-            largest[1].reason = (largest[1].reason + "；已由占比上限规则裁掉").strip("；")
-            kept.remove(largest)
-            ratio = sum(sd.broll_duration for _, sd in kept) / total
+    # 规则 5/6（不相邻裁剪、占比 ≤40% 上限）已移除：节奏稳定与覆盖率改由
+    # plan_stable_windows 编排层统一负责（合并防闪 + 时长钳制 + 覆盖率收敛到约 2/3）。
 
     return {str(s.get("id")): sd for s, sd in enriched}
 

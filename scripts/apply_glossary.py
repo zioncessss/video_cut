@@ -30,6 +30,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "backend"))
 
 from app.core.config import (  # noqa: E402
+    DB_PATH,
     SERVER_HOST,
     SERVER_PORT,
     STORAGE_DIR,
@@ -37,7 +38,7 @@ from app.core.config import (  # noqa: E402
     load_glossary,
 )
 
-DB_PATH = STORAGE_DIR / "videocut.db"
+DB_PATH = Path(DB_PATH)  # 权威库路径：尊重 VIDEOCUT_DB_PATH 环境变量，勿手写固定路径
 PROJECTS_DIR = STORAGE_DIR / "projects"
 BACKUP_DIR = STORAGE_DIR / "backups"
 

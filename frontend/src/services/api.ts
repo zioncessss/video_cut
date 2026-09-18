@@ -1,6 +1,11 @@
 import axios from 'axios';
 
-export const API_BASE = 'http://localhost:18888/api/v1';
+// API 基地址解析优先级：Electron bridge（sidecar 动态端口）→ 构建期环境变量 → 默认开发端口
+export const API_BASE: string =
+  (typeof window !== 'undefined' &&
+    (window as unknown as { electronAPI?: { apiBase?: string } }).electronAPI?.apiBase) ||
+  ((import.meta as any).env && (import.meta as any).env.VITE_API_BASE) ||
+  'http://localhost:18888/api/v1';
 
 export const getMediaUrl = (filepath: string): string => {
   if (!filepath) return '';
@@ -284,6 +289,11 @@ export const fetchProjectByMaterial = async (materialId: string) => {
   return res.data;
 };
 
+export const fetchProjectById = async (projectId: string) => {
+  const res = await axios.get(`${API_BASE}/projects/${projectId}`);
+  return res.data;
+};
+
 export const analyzeAndCutVideo = async (
   talkingHeadId: string,
   options?: {
@@ -323,14 +333,69 @@ export const renderProject = async (projectId: string): Promise<RenderProjectRes
   return res.data;
 };
 
-export const openFolder = async (path?: string): Promise<{ code: number; message: string; path?: string }> => {
-  const res = await axios.post(`${API_BASE}/projects/open-folder`, { path });
+export const openFolder = async (path?: string, projectId?: string): Promise<{ code: number; message: string; path?: string }> => {
+  const res = await axios.post(`${API_BASE}/projects/open-folder`, { path, project_id: projectId });
   return res.data;
+};
+
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  talking_head_id: string;
+  aspect_ratio: string;
+  status: 'draft' | 'processing' | 'completed' | 'failed';
+  output_video_path?: string;
+  output_absolute_path?: string;
+  output_filename?: string;
+  output_file_size_mb?: number;
+  task_dir?: string;
+  cover_image_path?: string;
+  cover_source?: string;
+  created_at: number;
+  updated_at: number;
+  subtitles?: SubtitleSegment[];
+  broll_replacements?: any[];
+  strategy?: EditingStrategy;
+}
+
+export const fetchAllProjects = async (): Promise<ProjectSummary[]> => {
+  const res = await axios.get(`${API_BASE}/projects`);
+  return res.data;
+};
+
+export const uploadAndBatchCut = async (
+  files: File[],
+  aspectRatio: string = '9:16',
+  concurrency?: number
+) => {
+  const formData = new FormData();
+  files.forEach(f => formData.append('files', f));
+  formData.append('aspect_ratio', aspectRatio);
+  if (concurrency) {
+    formData.append('concurrency', String(concurrency));
+  }
+  const res = await axios.post(`${API_BASE}/batch/upload-and-cut`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  return res.data.data as { job_id: string; queued: number; concurrency: number };
+};
+
+export const importAndBatchCut = async (
+  filePaths: string[],
+  aspectRatio: string = '9:16',
+  concurrency?: number
+) => {
+  const res = await axios.post(`${API_BASE}/batch/import-and-cut`, {
+    file_paths: filePaths,
+    aspect_ratio: aspectRatio,
+    concurrency
+  });
+  return res.data.data as { job_id: string; queued: number; concurrency: number };
 };
 
 export interface PipelineProgress {
   project_id: string;
-  stage: 'idle' | 'audio_extracting' | 'asr_transcribing' | 'llm_correcting' | 'broll_matching' | 'completed' | 'failed';
+  stage: 'idle' | 'audio_extracting' | 'asr_transcribing' | 'llm_correcting' | 'scene_deciding' | 'broll_matching' | 'completed' | 'failed';
   percent: number;
   message: string;
   updated_at: number;
