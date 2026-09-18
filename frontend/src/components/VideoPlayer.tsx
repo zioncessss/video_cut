@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
-import { EditingStrategy, BrollReplacement, Material, getMediaUrl } from '../services/api';
+import { EditingStrategy, BrollReplacement, Material, HighlightWord, getMediaUrl } from '../services/api';
 
 interface VideoPlayerProps {
   videoUrl?: string;
@@ -11,6 +11,7 @@ interface VideoPlayerProps {
     end_time: number;
     corrected_text: string;
     matched_keywords?: string[];
+    highlight_words?: HighlightWord[];
   }>;
   currentTime: number;
   onTimeUpdate: (time: number) => void;
@@ -306,11 +307,33 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return <span>{text}</span>;
     }
 
-    const keywords = [
-      ...(activeSubtitle.matched_keywords || []),
-      ...(strat.custom_highlight_words || [])
-    ].filter(Boolean);
+    // 优先构建词汇与专属颜色映射表
+    const hlColorMap = new Map<string, string>();
+    if (activeSubtitle.highlight_words && activeSubtitle.highlight_words.length > 0) {
+      activeSubtitle.highlight_words.forEach(hw => {
+        if (hw.word && hw.word.trim()) {
+          hlColorMap.set(hw.word.trim(), hw.color || strat.highlight_color || '#FACC15');
+        }
+      });
+    }
 
+    // 合并自定义词
+    (strat.custom_highlight_words || []).forEach(cw => {
+      const c = (cw || '').trim();
+      if (c && !hlColorMap.has(c)) {
+        hlColorMap.set(c, strat.highlight_color || '#FACC15');
+      }
+    });
+
+    // 降级兼容旧 matched_keywords
+    (activeSubtitle.matched_keywords || []).forEach(kw => {
+      const k = (kw || '').trim();
+      if (k && !hlColorMap.has(k)) {
+        hlColorMap.set(k, strat.highlight_color || '#FACC15');
+      }
+    });
+
+    const keywords = Array.from(hlColorMap.keys());
     if (keywords.length === 0) {
       return <span>{text}</span>;
     }
@@ -324,14 +347,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return (
       <span>
         {parts.map((part, i) => {
-          const isKeyword = keywords.includes(part);
-          if (isKeyword) {
+          if (hlColorMap.has(part)) {
+            const wordColor = hlColorMap.get(part) || strat.highlight_color || '#FACC15';
+            const upper = wordColor.toUpperCase();
+            const isWhite = upper === '#FFFFFF' || upper === '#FFF';
             return (
               <span
                 key={i}
                 style={{
-                  color: strat.highlight_color || '#FACC15',
-                  textShadow: `0 0 10px ${strat.highlight_color || '#FACC15'}80, 0 2px 4px rgba(0,0,0,0.9)`
+                  color: wordColor,
+                  textShadow: isWhite
+                    ? '0 0 12px rgba(255,255,255,0.95), 0 2px 6px rgba(0,0,0,0.95)'
+                    : `0 0 10px ${wordColor}80, 0 2px 4px rgba(0,0,0,0.9)`
                 }}
                 className={`font-black mx-0.5 inline-block transition-all ${
                   strat.highlight_scale ? 'scale-110 tracking-wide font-extrabold' : ''

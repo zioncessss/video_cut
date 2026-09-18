@@ -132,3 +132,63 @@ def test_keyword_priority_lesson_venue_experience():
     assert res3["matched_category"] == "experience"
     assert "体检" in res3["matched_keywords"]
 
+
+def test_highlight_words_colors_and_categories():
+    """测试高亮词多色支持：地名亮蓝、费用亮红、白色高亮与考点金黄"""
+    from app.native_engine.keyword_matcher import build_highlight_words
+
+    text = "在杭州学车只要2980全包并且科目二一把过"
+    ai_kws = [
+        {"word": "杭州", "color": "#38BDF8", "category": "location"},
+        {"word": "2980", "color": "#EF4444", "category": "price"},
+        {"word": "全包", "color": "#FFFFFF", "category": "white"},
+        {"word": "一把过", "color": "#FACC15", "category": "exam"}
+    ]
+
+    res = build_highlight_words(text, ai_keywords=ai_kws)
+    res_map = {item["word"]: item for item in res}
+
+    assert "杭州" in res_map
+    assert res_map["杭州"]["color"] == "#38BDF8"
+    assert res_map["杭州"]["category"] == "location"
+
+    assert "2980" in res_map
+    assert res_map["2980"]["color"] == "#EF4444"
+    assert res_map["2980"]["category"] == "price"
+
+    assert "全包" in res_map
+    assert res_map["全包"]["color"] == "#FFFFFF"
+    assert res_map["全包"]["category"] == "white"
+
+    assert "一把过" in res_map
+    assert res_map["一把过"]["color"] == "#FACC15"
+
+
+def test_subtitle_styler_ass_per_word_colors(tmp_path):
+    """测试 ASS 字幕渲染引擎针对不同高亮词（含白色、蓝色、红色）渲染对应的行内 BGR 色彩代码"""
+    from app.native_engine.subtitle_styler import generate_ass_file
+
+    subs = [
+        {
+            "start_time": 1.0,
+            "end_time": 4.0,
+            "corrected_text": "在杭州学车只要2980全包",
+            "highlight_words": [
+                {"word": "杭州", "color": "#38BDF8", "category": "location"},
+                {"word": "2980", "color": "#EF4444", "category": "price"},
+                {"word": "全包", "color": "#FFFFFF", "category": "white"},
+            ]
+        }
+    ]
+    out_ass = tmp_path / "test.ass"
+    generate_ass_file(subs, out_ass, strategy={"enable_highlight": True})
+    ass_content = out_ass.read_text(encoding="utf-8")
+
+    # 验证蓝底地名 38BDF8 -> ASS BGR &HF8BD38&
+    assert r"{\cF8BD38" in ass_content or r"{\c&HF8BD38&" in ass_content
+    # 验证红底价格 EF4444 -> ASS BGR &H4444EF&
+    assert r"{\c4444EF" in ass_content or r"{\c&H4444EF&" in ass_content
+    # 验证纯白高亮 FFFFFF -> ASS BGR &HFFFFFF&
+    assert r"{\cFFFFFF" in ass_content or r"{\c&HFFFFFF&" in ass_content
+
+

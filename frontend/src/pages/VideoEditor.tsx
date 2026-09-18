@@ -667,47 +667,30 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             )}
           </div>
 
-          {/* 智能剪辑主动作按钮 */}
+          {/* 智能剪辑统一主动作按钮：走完整全流程 */}
           {loadingProject ? (
             <div className="flex items-center space-x-1.5 bg-gray-100 text-gray-500 text-xs font-medium px-3.5 py-2 rounded-xl">
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-400" />
               <span>载入工程缓存中...</span>
             </div>
-          ) : isCachedProject && subtitles.length > 0 ? (
+          ) : (
             <div className="flex items-center space-x-2">
-              <span className="flex items-center space-x-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-xs font-medium px-3 py-2 rounded-xl">
-                <Database className="w-3.5 h-3.5 text-emerald-600" />
-                <span>工程已就绪 ({subtitles.length}句)</span>
-              </span>
+              {isCachedProject && subtitles.length > 0 && (
+                <span className="hidden sm:flex items-center space-x-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-xs font-medium px-3 py-2 rounded-xl">
+                  <Database className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>工程就绪 ({subtitles.length}句)</span>
+                </span>
+              )}
               <button
-                onClick={() => handleFastSceneDecision()}
-                disabled={analyzing || !projectId}
-                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-                title="⚡ 极速分镜：保留现有字幕，根据口播节奏重新智能编排练车、场地与体验空镜（1~2秒）"
-              >
-                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
-                <span>{analyzing ? (oneClickStage || '分镜决策中...') : '⚡ 智能剪辑 (分镜编排)'}</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => handleOneClickCutAndCorrect(true)}
                 disabled={analyzing || !selectedThId}
-                className="text-[11px] text-gray-400 hover:text-blue-600 px-1.5 py-1 hover:underline cursor-pointer transition-colors"
-                title="如需重新识别音频原声语音，可点击此处重跑全量 ASR 与文本纠偏"
+                className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 cursor-pointer"
+                title="一键全流程智能剪辑：音频提取 -> MiniMax 云端极速识别与字级时间戳意群切分 -> 大模型专词纠偏与多色高亮 -> AI 双层分镜编排"
               >
-                重跑全流程
+                {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+                <span>{analyzing ? (oneClickStage || 'AI 智能剪辑中...') : '⚡ 智能剪辑 (AI Auto Cut)'}</span>
               </button>
             </div>
-          ) : (
-            <button
-              onClick={() => handleOneClickCutAndCorrect(false)}
-              disabled={analyzing || !selectedThId}
-              className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 cursor-pointer"
-              title="一键全自动：音频提取 -> MiniMax 云端极速识别与字级时间戳意群切分 -> 大模型专词纠偏 -> 高亮词 -> AI 分镜决策"
-            >
-              {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
-              <span>{analyzing ? (oneClickStage || 'AI 智能剪辑中...') : '⚡ 智能剪辑 (AI Auto Cut)'}</span>
-            </button>
           )}
         </div>
       </div>

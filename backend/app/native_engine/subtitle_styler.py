@@ -135,15 +135,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end = format_timestamp_ass(sub.get("end_time", 0.0))
         text = sub.get("corrected_text") or sub.get("raw_text") or ""
         
-        # 提取当前片段要高亮的关键词列表：优先三源 highlight_words（glossary/ai/manual），
-        # 旧数据缺失该字段时回退 matched_keywords 兼容
+        # 提取当前片段要高亮的关键词列表与各自专属颜色
         hl_items = sub.get("highlight_words")
+        word_ass_colors: Dict[str, str] = {}
+        matched: List[str] = []
         if hl_items:
-            matched = [w.get("word", "") for w in hl_items if isinstance(w, dict) and w.get("word")]
+            for w in hl_items:
+                if isinstance(w, dict) and w.get("word"):
+                    w_text = str(w["word"]).strip()
+                    if w_text:
+                        # 转换 HEX 为 ASS 的 BGR 格式 (&HBBGGRR&)
+                        h_code = str(w.get("color") or hl_color_hex).strip().lstrip("#")
+                        if len(h_code) == 3:
+                            h_code = "".join(c * 2 for c in h_code)
+                        if len(h_code) == 6:
+                            ass_c = f"&H{h_code[4:6].upper()}{h_code[2:4].upper()}{h_code[0:2].upper()}&"
+                        else:
+                            ass_c = ass_hl_color
+                        word_ass_colors[w_text] = ass_c
+                        matched.append(w_text)
         else:
-            matched = list(sub.get("matched_keywords", []))
-        matched = matched + list(custom_words)
-        matched = [w.strip() for w in matched if w.strip()]
+            for kw in sub.get("matched_keywords", []):
+                kws = str(kw).strip()
+                if kws:
+                    word_ass_colors[kws] = ass_hl_color
+                    matched.append(kws)
+
+        for cw in custom_words:
+            cws = str(cw).strip()
+            if cws and cws not in word_ass_colors:
+                word_ass_colors[cws] = ass_hl_color
+                matched.append(cws)
 
         styled_text = text
         if enable_hl and matched and text:
@@ -151,9 +173,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             matched.sort(key=len, reverse=True)
             pattern = "(" + "|".join(re.escape(w) for w in matched) + ")"
             # ASS 行内高亮变色: {\c&H...&\b1\fscx110\fscy110}高亮词{\r\fscx100\fscy100}
-            # 使用函数替换规避 re.sub 反斜杠转义与 FormFeed (\x0c) 字符损坏问题
             def _hl_replace(m):
-                return r"{\c" + ass_hl_color + r"\b1" + scale_tag + "}" + m.group(0) + r"{\r" + reset_scale_tag + "}"
+                w_str = m.group(0)
+                w_color = word_ass_colors.get(w_str, ass_hl_color)
+                return r"{\c" + w_color + r"\b1" + scale_tag + "}" + w_str + r"{\r" + reset_scale_tag + "}"
             try:
                 styled_text = re.sub(pattern, _hl_replace, text)
             except Exception:

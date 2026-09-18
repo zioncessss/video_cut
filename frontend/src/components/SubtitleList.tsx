@@ -95,7 +95,7 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
       setNewWord('');
       return;
     }
-    onHighlightWordsChange(idx, [...(sub.highlight_words || []), { word: w, source: 'manual' }]);
+    onHighlightWordsChange(idx, [...(sub.highlight_words || []), { word: w, source: 'manual', color: '#FACC15' }]);
     setNewWord('');
     setAddingFor(null);
   };
@@ -184,18 +184,23 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                   )}
                   {words.map(w => {
                     const meta = SOURCE_META[w.source] || SOURCE_META.glossary;
+                    const wordColor = w.color || '#FACC15';
                     return (
                       <span
                         key={w.word}
                         className={`inline-flex items-center space-x-1 pl-1.5 pr-1 py-0.5 rounded-md text-[10px] font-medium border ${meta.cls}`}
-                        title={`来源：${meta.label}`}
+                        title={`来源：${meta.label}${w.category ? ` · 类型：${w.category}` : ''} · 颜色：${wordColor}`}
                       >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full inline-block flex-shrink-0 shadow-xs"
+                          style={{ backgroundColor: wordColor }}
+                        />
                         {w.source === 'ai' ? (
-                          <Sparkles className="w-2.5 h-2.5" />
+                          <Sparkles className="w-2.5 h-2.5 opacity-70" />
                         ) : w.source === 'manual' ? (
-                          <BookOpen className="w-2.5 h-2.5" />
+                          <BookOpen className="w-2.5 h-2.5 opacity-70" />
                         ) : (
-                          <Tag className="w-2.5 h-2.5" />
+                          <Tag className="w-2.5 h-2.5 opacity-70" />
                         )}
                         <span>{w.word}</span>
                         <button

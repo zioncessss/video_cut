@@ -27,6 +27,8 @@ class HighlightWordSource(str, Enum):
 class HighlightWord(BaseModel):
     word: str
     source: str = "glossary"  # glossary | ai | manual
+    color: Optional[str] = "#FACC15"  # 高亮颜色（如 #38BDF8 蓝色地名、#EF4444 红色费用、#FFFFFF 白色高亮、#FACC15 金黄考点）
+    category: Optional[str] = None  # location | price | exam | white | emphasis
 
 class SceneDecision(BaseModel):
     """AI 分镜决策结果：part 用于叙事分段与不切区校验，broll_category=None 表示不切"""

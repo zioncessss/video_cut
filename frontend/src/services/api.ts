@@ -233,6 +233,8 @@ export interface EditingStrategy {
 export interface HighlightWord {
   word: string;
   source: 'glossary' | 'ai' | 'manual';
+  color?: string;
+  category?: string;
 }
 
 export interface SceneDecision {

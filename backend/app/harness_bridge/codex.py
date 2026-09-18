@@ -362,7 +362,11 @@ class CodexHarnessBridge(BaseHarnessBridge):
                         )
 
                     corr_text_map = {str(item.get("id")): item.get("corrected_text") for item in updated_subtitles if item.get("id")}
-                    hl_map = {str(item.get("id")): item.get("highlight_keywords", []) for item in updated_subtitles if item.get("id")}
+                    hl_map = {
+                        str(item.get("id")): (item.get("highlight_words") or item.get("highlight_keywords") or [])
+                        for item in updated_subtitles
+                        if item.get("id")
+                    }
 
                     # 安全回填进完整字幕数据结构，完全保留原始精确物理时间戳；
                     # 大模型返回后再过一遍词库确定性纠偏兜底（幂等），防止模型漏纠或改错
@@ -380,8 +384,12 @@ class CodexHarnessBridge(BaseHarnessBridge):
                         ai_words = hl_map.get(sid) if isinstance(hl_map.get(sid), list) else []
                         if sid in hl_map and isinstance(hl_map[sid], list):
                             existing_kw = seg.get("matched_keywords", []) or []
-                            combined_kw = existing_kw + hl_map[sid]
-                            seg["matched_keywords"] = list(dict.fromkeys(combined_kw))
+                            clean_kws = [
+                                (w.get("word") if isinstance(w, dict) else str(w))
+                                for w in hl_map[sid]
+                                if (isinstance(w, dict) and w.get("word")) or (isinstance(w, str) and w)
+                            ]
+                            seg["matched_keywords"] = list(dict.fromkeys(existing_kw + clean_kws))
                         # 三源高亮：词库命中（glossary 优先）∪ AI 判定（ai），幂等去重
                         seg["highlight_words"] = build_highlight_words(str(seg["corrected_text"]), ai_words)
                         final_subtitles.append(seg)
