@@ -21,7 +21,7 @@ from app.models.entities import (
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
 from app.native_engine.asr_runner import asr_runner
-from app.native_engine.keyword_matcher import match_keywords_in_segment
+from app.native_engine.keyword_matcher import match_keywords_in_segment, build_highlight_words
 from app.native_engine.scene_decision import validate_and_clip, fallback_keyword_rules
 from app.native_engine.ffmpeg_filter import composer
 from app.native_engine.subtitle_styler import generate_srt_file, generate_ass_file
@@ -289,7 +289,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 matched_category=matched_cat,
                 matched_keywords=kw_info.get("matched_keywords", []),
                 highlight_words=[
-                    HighlightWord(**w) for w in (item.get("highlight_words") or [])
+                    HighlightWord(**w) for w in build_highlight_words(c_text, item.get("highlight_words"))
                     if isinstance(w, dict) and w.get("word")
                 ],
                 scene_decision=sd,

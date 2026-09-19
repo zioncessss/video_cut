@@ -414,8 +414,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     ? '0 0 12px rgba(255,255,255,0.95), 0 2px 6px rgba(0,0,0,0.95)'
                     : `0 0 10px ${wordColor}80, 0 2px 4px rgba(0,0,0,0.9)`
                 }}
-                className={`font-black mx-0.5 inline-block transition-all ${
-                  strat.highlight_scale ? 'scale-110 tracking-wide font-extrabold' : ''
+                className={`font-black inline-block transition-all ${
+                  strat.highlight_scale ? 'scale-105 origin-center font-extrabold' : ''
                 }`}
               >
                 {part}
@@ -663,7 +663,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const subtitleFontSizeBase = strategy?.subtitle_font_size || (
     strategy?.font_size === 'small' ? 56 : strategy?.font_size === 'large' ? 86 : strategy?.font_size === 'xlarge' ? 98 : 72
   );
-  const subtitlePx = Math.max(11, Math.round(subtitleFontSizeBase * scaleFactor));
+  // ASS 物理渲染等比缩放因子 (0.78 修正系数使 CSS 汉字宽度与 libass 1080P 渲染保持 1:1 像素级视觉一致)
+  const subtitlePx = Math.max(10, Math.round(subtitleFontSizeBase * scaleFactor * 0.78));
 
   return (
     <div className="flex flex-col items-center justify-center w-full h-full min-h-0 select-none overflow-hidden p-1">
@@ -863,7 +864,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   top: `${currentPosY}%`,
                   transform: 'translate(-50%, -50%)',
                   width: strategy?.subtitle_width_percent ? `${strategy.subtitle_width_percent}%` : undefined,
-                  maxWidth: '96%',
+                  maxWidth: `${strategy?.subtitle_width_percent || 94}%`,
                   fontSize: `${subtitlePx}px`,
                 }}
                 onMouseEnter={() => setHoveredOverlay('subtitle')}
@@ -882,7 +883,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   }}
                   className={`inline-block ${
                     strategy?.subtitle_width_percent ? 'w-full' : ''
-                  } px-3 py-1.5 rounded-xl transition-all ${getThemeClass()} leading-snug tracking-tight`}
+                  } px-1.5 py-0.5 rounded-lg transition-all ${getThemeClass()} leading-normal tracking-normal ${
+                    (activeSubtitle.corrected_text?.length || 0) <= 18 ? 'whitespace-nowrap' : 'break-words'
+                  }`}
                 >
                   {renderSubtitleText()}
                 </div>

@@ -49,13 +49,14 @@ def infer_highlight_style(word: str, category: Optional[str] = None) -> Dict[str
     """根据词汇语义或既定分类推导最佳高亮色彩与类别"""
     import re
     w = word.strip()
-    if category == "white" or w in ("千万不要", "一定要", "绝对", "必须", "真正", "全包"):
-        return {"color": "#FFFFFF", "category": category or "white"}
-    if category == "price" or re.search(r'\d+|元|费|价|全包|收费|包过|优惠|降价|免', w):
-        return {"color": "#EF4444", "category": "price"}
-    if category == "location" or re.search(r'校区|场地|考场|训练场|路|市|省|区|州', w):
+    cat_lower = (category or "").lower()
+    if cat_lower == "white" or w in ("千万不要", "一定要", "绝对", "必须", "真正", "避坑", "上千个学员"):
+        return {"color": "#FFFFFF", "category": "white"}
+    if cat_lower == "location" or re.search(r'校区|场地|考场|训练场|路|市|省|区|州|杭州|湖州|余杭|萧山|临平|西湖', w):
         return {"color": "#38BDF8", "category": "location"}
-    if category == "exam" or re.search(r'科[一二三四]|倒库|侧方|一把过|离合|打方向|教练', w):
+    if cat_lower == "price" or re.search(r'\d+|两千|三千|四千|元|费|价|一口价|全包|收费|包过|优惠|降价|免|隐形消费|乱收费|吃拿卡要', w):
+        return {"color": "#EF4444", "category": "price"}
+    if cat_lower == "exam" or re.search(r'科[一二三四]|倒库|侧方|一把过|离合|打方向|教练|手把手|极速拿证|免排队', w):
         return {"color": "#FACC15", "category": "exam"}
     return {"color": "#FACC15", "category": category or "emphasis"}
 

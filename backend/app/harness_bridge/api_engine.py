@@ -48,6 +48,11 @@ class ApiHarnessBridge(BaseHarnessBridge):
             fallback_res.harness_engine_used = "api (fallback embedded: provider not configured)"
             return fallback_res
 
+        # 确保每个字幕都有唯一 ID，并且构建 clean_input
+        for i, s in enumerate(request.raw_subtitles):
+            if not s.get("id"):
+                s["id"] = f"s_{i + 1}"
+
         # 上下文纪律：仅角色+词库背景+精简 {id, text}，不携带工程状态/素材库/历史
         clean_input = [
             {"id": s.get("id"), "text": s.get("raw_text") or s.get("corrected_text", "")}
@@ -57,6 +62,9 @@ class ApiHarnessBridge(BaseHarnessBridge):
             clean_input[i:i + CORRECTION_CHUNK_SIZE]
             for i in range(0, len(clean_input), CORRECTION_CHUNK_SIZE)
         ] or [clean_input]
+
+        def _norm_id(val):
+            return str(val).strip().lower().replace("s_", "").replace("seg_", "").replace("s", "")
 
         merged_subtitles: List[Dict[str, Any]] = []
         merged_corrections: List[Dict[str, Any]] = []
@@ -71,9 +79,15 @@ class ApiHarnessBridge(BaseHarnessBridge):
             if success and isinstance(data, dict) and isinstance(data.get("subtitles"), list):
                 # 句集一致性校验：模型返回的 id 集合必须与输入完全一致，
                 # 防止模型自行合并/拆分/调序导致纠偏文本错位到别的句子上
-                sent_ids = {str(s.get("id")) for s in chunk}
-                returned_ids = {str(it.get("id")) for it in data["subtitles"] if isinstance(it, dict) and it.get("id")}
-                if sent_ids and returned_ids == sent_ids:
+                sent_ids = {_norm_id(s.get("id")) for s in chunk if s.get("id") is not None}
+                returned_ids = {_norm_id(it.get("id")) for it in data["subtitles"] if isinstance(it, dict) and it.get("id") is not None}
+                if (sent_ids and returned_ids == sent_ids) or (len(chunk) == len(data["subtitles"]) and all(isinstance(it, dict) and it.get("corrected_text") for it in data["subtitles"])):
+                    # 补齐/对其原始 ID，确保与 request.raw_subtitles 严格对齐
+                    for i_sub, it in enumerate(data["subtitles"]):
+                        if i_sub < len(chunk):
+                            orig_id = chunk[i_sub].get("id")
+                            if orig_id:
+                                it["id"] = orig_id
                     merged_subtitles.extend(data.get("subtitles") or [])
                     merged_corrections.extend(data.get("corrections") or [])
                     continue
@@ -137,16 +151,25 @@ class ApiHarnessBridge(BaseHarnessBridge):
         data: Dict[str, Any],
         latency_ms: float,
     ) -> HarnessCorrectionResponse:
-        corr_text_map = {
-            str(item.get("id")): item.get("corrected_text")
-            for item in data.get("subtitles", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        hl_map = {
-            str(item.get("id")): (item.get("highlight_words") or item.get("highlight_keywords") or [])
-            for item in data.get("subtitles", [])
-            if isinstance(item, dict) and item.get("id")
-        }
+        def _norm_id(val):
+            return str(val).strip().lower().replace("s_", "").replace("seg_", "").replace("s", "")
+
+        corr_text_map: Dict[str, Any] = {}
+        hl_map: Dict[str, Any] = {}
+        for idx_it, item in enumerate(data.get("subtitles", [])):
+            if isinstance(item, dict):
+                iid = item.get("id")
+                raw_hl = item.get("highlight_words") or item.get("highlight_keywords") or []
+                c_txt = item.get("corrected_text")
+                if iid is not None:
+                    corr_text_map[str(iid)] = c_txt
+                    corr_text_map[_norm_id(iid)] = c_txt
+                    hl_map[str(iid)] = raw_hl
+                    hl_map[_norm_id(iid)] = raw_hl
+                # 保留下标备用
+                corr_text_map[f"idx_{idx_it}"] = c_txt
+                hl_map[f"idx_{idx_it}"] = raw_hl
+
         corrections_summary = [
             SubtitleCorrectionItem(
                 subtitle_id=str(c.get("subtitle_id", "")),
@@ -161,20 +184,24 @@ class ApiHarnessBridge(BaseHarnessBridge):
         from app.core.config import apply_glossary_corrections
         from app.native_engine.keyword_matcher import build_highlight_words
         final_subtitles = []
-        for orig in request.raw_subtitles:
+        for idx_orig, orig in enumerate(request.raw_subtitles):
             seg = dict(orig)
             sid = str(seg.get("id"))
-            if sid in corr_text_map and corr_text_map[sid]:
-                seg["corrected_text"] = corr_text_map[sid]
+            nid = _norm_id(sid)
+            matched_corr = corr_text_map.get(sid) or corr_text_map.get(nid) or corr_text_map.get(f"idx_{idx_orig}")
+            if matched_corr:
+                seg["corrected_text"] = matched_corr
             else:
                 seg["corrected_text"] = seg.get("corrected_text") or seg.get("raw_text", "")
             seg["corrected_text"], _ = apply_glossary_corrections(str(seg["corrected_text"]))
-            ai_words = hl_map.get(sid) if isinstance(hl_map.get(sid), list) else []
-            if sid in hl_map and isinstance(hl_map[sid], list):
+
+            raw_ai = hl_map.get(sid) or hl_map.get(nid) or hl_map.get(f"idx_{idx_orig}") or []
+            ai_words = raw_ai if isinstance(raw_ai, list) else []
+            if ai_words:
                 existing_kw = seg.get("matched_keywords", []) or []
                 clean_kws = [
                     (w.get("word") if isinstance(w, dict) else str(w))
-                    for w in hl_map[sid]
+                    for w in ai_words
                     if (isinstance(w, dict) and w.get("word")) or (isinstance(w, str) and w)
                 ]
                 seg["matched_keywords"] = list(dict.fromkeys(existing_kw + clean_kws))

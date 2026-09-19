@@ -270,6 +270,17 @@ class ASRRunner:
                         curr["corrected_text"] = curr_corr + nxt_corr
                         if "words" in curr or "words" in nxt:
                             curr["words"] = (curr.get("words") or []) + (nxt.get("words") or [])
+                        if "highlight_words" in curr or "highlight_words" in nxt:
+                            c_hw = curr.get("highlight_words") or []
+                            n_hw = nxt.get("highlight_words") or []
+                            seen_words = set()
+                            merged_hw = []
+                            for w in (c_hw + n_hw):
+                                w_val = w.get("word") if isinstance(w, dict) else str(w)
+                                if w_val and w_val not in seen_words:
+                                    seen_words.add(w_val)
+                                    merged_hw.append(w)
+                            curr["highlight_words"] = merged_hw
                         curr_text = curr["raw_text"]
                         i += 1
                         continue
@@ -303,6 +314,17 @@ class ASRRunner:
                 prev["corrected_text"] = prev.get("corrected_text", prev_text) + s.get("corrected_text", curr_text)
                 if "words" in prev or "words" in s:
                     prev["words"] = (prev.get("words") or []) + (s.get("words") or [])
+                if "highlight_words" in prev or "highlight_words" in s:
+                    p_hw = prev.get("highlight_words") or []
+                    s_hw = s.get("highlight_words") or []
+                    seen_words = set()
+                    merged_hw = []
+                    for w in (p_hw + s_hw):
+                        w_val = w.get("word") if isinstance(w, dict) else str(w)
+                        if w_val and w_val not in seen_words:
+                            seen_words.add(w_val)
+                            merged_hw.append(w)
+                    prev["highlight_words"] = merged_hw
             else:
                 pass2.append(dict(s))
 
@@ -387,6 +409,7 @@ class ASRRunner:
                 clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
                 if clause_text:
                     raw_segments.append({
+                        "id": f"s_{len(raw_segments) + 1}",
                         "start_time": current_words[0]["start"],
                         "end_time": current_words[-1]["end"],
                         "raw_text": clause_text,
@@ -400,6 +423,7 @@ class ASRRunner:
             clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()
             if clause_text:
                 raw_segments.append({
+                    "id": f"s_{len(raw_segments) + 1}",
                     "start_time": current_words[0]["start"],
                     "end_time": current_words[-1]["end"],
                     "raw_text": clause_text,
@@ -482,6 +506,9 @@ class ASRRunner:
             )
             if not segments:
                 raise RuntimeError(f"MiniMax 云端 ASR 语音识别返回空结果: {video_path.name}")
+            for idx, s in enumerate(segments):
+                if not s.get("id"):
+                    s["id"] = f"s_{idx + 1}"
             return segments
         finally:
             if audio_tmp.exists():
