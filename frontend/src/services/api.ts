@@ -350,6 +350,18 @@ export const fetchProjectById = async (projectId: string) => {
   return res.data;
 };
 
+export const updateProjectSubtitles = async (
+  projectId: string,
+  subtitles: any[],
+  brollReplacements?: any[]
+) => {
+  const res = await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
+    subtitles,
+    broll_replacements: brollReplacements,
+  });
+  return res.data;
+};
+
 export const analyzeAndCutVideo = async (
   talkingHeadId: string,
   options?: {

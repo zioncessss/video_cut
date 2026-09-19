@@ -23,7 +23,8 @@ import {
   redecideScenes,
   BrollReplacement,
   API_BASE,
-  getMediaUrl
+  getMediaUrl,
+  updateProjectSubtitles
 } from '../services/api';
 import {
   Sparkles,
@@ -66,6 +67,7 @@ interface VideoEditorProps {
   } | null;
   initialProjectId?: string | null;
   initialSelectedTalkingHeadId?: string | null;
+  onOpenChatDrawer?: () => void;
 }
 
 const DEFAULT_STRATEGY: EditingStrategy = {
@@ -101,6 +103,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   externalStrategyPlan,
   initialProjectId,
   initialSelectedTalkingHeadId,
+  onOpenChatDrawer,
 }) => {
   const [talkingHeads, setTalkingHeads] = useState<Material[]>([]);
   const [selectedThId, setSelectedThId] = useState<string>(initialSelectedTalkingHeadId || '');
@@ -419,7 +422,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
     setSaveStatus('saving');
     try {
-      await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: data });
+      await updateProjectSubtitles(projectId, data);
       setSaveStatus('saved');
       setLastSavedAt(Date.now());
       if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
@@ -584,30 +587,29 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       const subsToSave = latestSubtitlesRef.current.length > 0 ? latestSubtitlesRef.current : subtitles;
       const stratToSave = latestStrategyRef.current || strategy;
 
-      await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
-        subtitles: subsToSave
-      });
+      await updateProjectSubtitles(projectId, subsToSave);
       await updateProjectStrategy(projectId, stratToSave);
       setSaveStatus('saved');
       setLastSavedAt(Date.now());
 
       // 2. 发起高质量复合渲染 (Lanczos 算法 + CRF 18 高清画质 + 原生 Emoji 横幅 + ASS 高亮字幕)
       const res = await renderProject(projectId);
-      if (res.output_video_path) {
-        const mediaUrl = getMediaUrl(res.output_video_path);
-        const newTs = Date.now();
-        setOutputTimestamp(newTs);
-        setOutputVideoUrl(mediaUrl);
-        setExportInfo({
-          url: mediaUrl,
-          filename: res.output_filename || res.output_video_path.split('/').pop() || 'output.mp4',
-          absolutePath: res.output_absolute_path || '',
-          sizeMb: res.output_file_size_mb || 0,
-        });
-        setPreviewMode('rendered');
-        setHasUnrenderedChanges(false);
-        setAiFeedback('🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。');
+      if (res.status === 'failed' || !res.output_video_path) {
+        throw new Error('渲染引擎未生成有效成片，请检查后台日志或素材');
       }
+      const mediaUrl = getMediaUrl(res.output_video_path);
+      const newTs = Date.now();
+      setOutputTimestamp(newTs);
+      setOutputVideoUrl(mediaUrl);
+      setExportInfo({
+        url: mediaUrl,
+        filename: res.output_filename || res.output_video_path.split('/').pop() || 'output.mp4',
+        absolutePath: res.output_absolute_path || '',
+        sizeMb: res.output_file_size_mb || 0,
+      });
+      setPreviewMode('rendered');
+      setHasUnrenderedChanges(false);
+      setAiFeedback('🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。');
     } catch (err: any) {
       alert(`渲染合成失败: ${err?.response?.data?.detail || err.message || '请检查后端服务'}`);
     } finally {
@@ -1055,40 +1057,56 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
       {/* 底部浮动交互条：AI Prompt 指令输入框 + 生成按钮 + 硬件监控 */}
       <div className="mt-1.5 bg-white border border-gray-200/80 rounded-xl p-2 shadow-xs flex items-center space-x-2 flex-shrink-0">
-        <div className="flex-1 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
+        <div className="flex-1 min-w-0 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
           {applyingInstruction ? (
-            <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />
+            <RefreshCw className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" />
           ) : (
-            <Wand2 className="w-4 h-4 text-blue-600" />
+            <Wand2 className="w-4 h-4 text-blue-600 flex-shrink-0" />
           )}
           <input
             type="text"
             value={aiInstruction}
             onChange={e => setAiInstruction(e.target.value)}
             placeholder="AI 智能微调指令 (例如: 把第1句开场白润色得热情昂扬，第2句空镜换成体检素材)"
-            className="flex-1 bg-transparent text-xs text-gray-800 outline-none"
+            className="flex-1 bg-transparent text-xs text-gray-800 outline-none min-w-0"
             onKeyDown={e => e.key === 'Enter' && handleApplyInstruction()}
           />
           <button
             onClick={handleApplyInstruction}
             disabled={applyingInstruction || !aiInstruction.trim()}
-            className="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1 rounded-lg transition-colors disabled:opacity-40"
+            className="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1 rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap flex-shrink-0 cursor-pointer"
           >
             {applyingInstruction ? '应用中...' : '发送指令'}
           </button>
+          {onOpenChatDrawer && (
+            <button
+              type="button"
+              onClick={onOpenChatDrawer}
+              className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 font-medium px-2.5 py-1 rounded-lg transition-colors flex items-center space-x-1 whitespace-nowrap flex-shrink-0 cursor-pointer"
+              title="展开 Harness 智能对话副驾驶"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+              <span>对话微调</span>
+            </button>
+          )}
         </div>
 
         <button
           onClick={handleRender}
           disabled={rendering || !projectId}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
+          className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-sm disabled:opacity-50 flex items-center space-x-1.5 whitespace-nowrap flex-shrink-0 cursor-pointer active:scale-98"
+          title={!projectId ? '请先选择素材或创建工程' : '高清复合压制成片 (Lanczos + CRF 18 + ASS高亮字幕)'}
         >
-          {rendering && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-          <span>{rendering ? '高清复合压制中 (CRF 18)...' : '生成成片预览 (Generate Preview)'}</span>
+          {rendering ? (
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Film className="w-3.5 h-3.5" />
+          )}
+          <span>{rendering ? '高清复合压制中 (CRF 18)...' : '生成成片预览'}</span>
         </button>
 
         {hardwareInfo && (
-          <div className="hidden lg:flex items-center space-x-2 border-l pl-3 text-xs text-gray-500 font-mono">
+          <div className="hidden lg:flex items-center space-x-2 border-l pl-3 text-xs text-gray-500 font-mono whitespace-nowrap flex-shrink-0">
             <Cpu className="w-3.5 h-3.5 text-emerald-600" />
             <span>负载: {hardwareInfo.cpu_usage_percent || hardwareInfo.cpu_percent || 15}%</span>
           </div>

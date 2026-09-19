@@ -10,6 +10,7 @@ export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
   const [selectedTalkingHeadId, setSelectedTalkingHeadId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [isChatDrawerOpen, setIsChatDrawerOpen] = useState<boolean>(false);
   const [strategyPlan, setStrategyPlan] = useState<{
     explanation: string;
     updated_subtitles?: any[];
@@ -89,27 +90,42 @@ export const App: React.FC = () => {
             </span>
           </div>
 
+          {/* Harness 对话副驾驶主唤起按钮（顶部常驻，绝不遮挡底部工作台任何操作） */}
+          <button
+            onClick={() => setIsChatDrawerOpen((prev) => !prev)}
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer active:scale-95 ${
+              isChatDrawerOpen
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
+                : 'bg-white hover:bg-blue-50 text-blue-700 border border-blue-200/80 shadow-xs'
+            }`}
+            title="打开/收起 Harness 创意与剪辑副驾驶"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
+            <span>对话副驾驶</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-100/80 text-blue-800 font-mono">GLM</span>
+          </button>
+
           {/* Electron 原生窗口控制按钮组 */}
           {window.electronAPI && (
             <div className="flex items-center space-x-1 border-l border-gray-200 pl-3">
               <button
                 onClick={() => window.electronAPI?.minimizeWindow()}
                 title="最小化"
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
               >
                 <Minus className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => window.electronAPI?.maximizeWindow()}
                 title="最大化 / 还原"
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
               >
                 <Square className="w-3 h-3" />
               </button>
               <button
                 onClick={() => window.electronAPI?.closeWindow()}
                 title="关闭"
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -134,6 +150,7 @@ export const App: React.FC = () => {
             initialSelectedTalkingHeadId={selectedTalkingHeadId}
             onProjectLoaded={(pid) => setActiveProjectId(pid)}
             externalStrategyPlan={strategyPlan}
+            onOpenChatDrawer={() => setIsChatDrawerOpen(true)}
           />
         )}
         {currentTab === 'batch' && (
@@ -152,6 +169,9 @@ export const App: React.FC = () => {
       <HarnessChatDrawer
         currentProjectId={activeProjectId}
         onApplyStrategyToProject={handleApplyStrategy}
+        isOpen={isChatDrawerOpen}
+        onOpenChange={setIsChatDrawerOpen}
+        showFloatingTrigger={false}
       />
     </div>
   );

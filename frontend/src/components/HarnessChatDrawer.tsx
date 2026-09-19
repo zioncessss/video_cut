@@ -25,13 +25,29 @@ interface HarnessChatDrawerProps {
     updated_subtitles?: any[];
     updated_brolls?: any[];
   }) => void;
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showFloatingTrigger?: boolean;
 }
 
 export const HarnessChatDrawer: React.FC<HarnessChatDrawerProps> = ({
   currentProjectId,
   onApplyStrategyToProject,
+  isOpen: controlledIsOpen,
+  onOpenChange,
+  showFloatingTrigger = false,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalIsOpen, setInternalIsOpen] = useState(false);
+  const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : internalIsOpen;
+
+  const handleSetOpen = (open: boolean) => {
+    if (onOpenChange) {
+      onOpenChange(open);
+    }
+    if (controlledIsOpen === undefined) {
+      setInternalIsOpen(open);
+    }
+  };
   const [messages, setMessages] = useState<ChatMessageItem[]>([
     {
       role: 'assistant',
@@ -158,11 +174,11 @@ export const HarnessChatDrawer: React.FC<HarnessChatDrawerProps> = ({
 
   return (
     <>
-      {/* 悬浮唤起胶囊按钮（右下角） */}
-      {!isOpen && (
+      {/* 悬浮唤起胶囊按钮：默认由顶部导航栏或工作台唤起，若启用悬浮按钮则定位在 bottom-20，绝不遮挡底部生成预览按钮 */}
+      {!isOpen && showFloatingTrigger && (
         <button
-          onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 z-50 flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-4 py-2.5 rounded-full shadow-lg shadow-blue-500/30 transition-all hover:scale-105 active:scale-95 group"
+          onClick={() => handleSetOpen(true)}
+          className="fixed bottom-20 right-6 z-40 flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-4 py-2.5 rounded-full shadow-lg shadow-blue-500/30 transition-all hover:scale-105 active:scale-95 group cursor-pointer"
         >
           <div className="relative">
             <Sparkles className="w-4 h-4 animate-pulse" />
@@ -195,8 +211,8 @@ export const HarnessChatDrawer: React.FC<HarnessChatDrawerProps> = ({
               </div>
             </div>
             <button
-              onClick={() => setIsOpen(false)}
-              className="w-7 h-7 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 flex items-center justify-center transition-colors"
+              onClick={() => handleSetOpen(false)}
+              className="w-7 h-7 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 flex items-center justify-center transition-colors cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
