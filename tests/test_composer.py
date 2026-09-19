@@ -45,3 +45,44 @@ def test_compose_without_ffmpeg_must_raise(tmp_path, monkeypatch):
         )
     # 失败路径不得产出任何输出文件
     assert not out.exists()
+
+def test_multi_broll_input_indices(tmp_path, monkeypatch):
+    """验证包含多个 B-roll（超过 5 段）时，FFmpeg 的 filtergraph 输入索引连续单调递增，杜绝 input_idx 越界"""
+    th = tmp_path / "th.mp4"
+    th.write_bytes(b"th")
+    brolls = []
+    for i in range(8):
+        b = tmp_path / f"broll_{i}.mp4"
+        b.write_bytes(b"broll")
+        brolls.append({
+            "start_time": float(i * 2 + 1),
+            "end_time": float(i * 2 + 2),
+            "material_path": b,
+            "transition": 0.0
+        })
+    out = tmp_path / "out.mp4"
+
+    captured_cmd = []
+    def fake_run(cmd, *args, **kwargs):
+        captured_cmd.extend(cmd)
+        class Res:
+            returncode = 0
+            stderr = b""
+        out.write_bytes(b"ok")
+        return Res()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    success = composer.compose_jl_cut(
+        talking_head_path=th,
+        broll_cuts=brolls,
+        output_path=out,
+        aspect_ratio="9:16",
+        total_duration=20.0
+    )
+    assert success is True
+    filter_idx = captured_cmd.index("-filter_complex")
+    fc = captured_cmd[filter_idx + 1]
+    # 8 个 broll 的 input_idx 必须依次为 1 到 8 严格连续
+    for i in range(1, 9):
+        assert f"[{i}:v]trim=" in fc
+    assert "[13:v]" not in fc

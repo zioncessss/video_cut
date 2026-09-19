@@ -333,9 +333,11 @@ class FFmpegFilterComposer:
         filter_parts = []
         concat_inputs = []
         seg_labels = []
+        next_input_idx = 1
         for i, seg in enumerate(segs):
             if seg["kind"] == "broll":
-                seg["input_idx"] = len(inputs) // 2
+                seg["input_idx"] = next_input_idx
+                next_input_idx += 1
                 # -stream_loop -1：空镜素材短于窗口时长时循环补齐（trim duration 封顶），
                 # 杜绝素材过短导致该段提前 EOF、视频轨缩短与音画错位
                 inputs.extend(["-stream_loop", "-1", "-i", seg["path"]])
@@ -379,7 +381,8 @@ class FFmpegFilterComposer:
             current_v = "[v_sub]"
 
         if has_overlay:
-            overlay_idx = len(inputs) // 2
+            overlay_idx = next_input_idx
+            next_input_idx += 1
             inputs.extend(["-i", str(overlay_png_path)])
             full_filter += f";{current_v}[{overlay_idx}:v]overlay=0:0[v_out]"
             current_v = "[v_out]"
@@ -403,24 +406,25 @@ class FFmpegFilterComposer:
         ]
 
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
             if res.returncode == 0:
                 return True
 
             err_str = res.stderr.decode("utf-8", errors="replace")
             print(f"[FFmpegFilterComposer] Complex render failed (exit {res.returncode}): {err_str[-300:]}")
             if talking_head_path.stat().st_size > 10240:
-                return False
+                raise RuntimeError(f"FFmpeg 导出失败 (exit {res.returncode}): {err_str[-200:]}")
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
         except Exception as e:
             if talking_head_path.stat().st_size > 10240:
                 print(f"[FFmpegFilterComposer] Complex render exception: {e}")
-                return False
+                raise
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
         finally:
             overlay_png_path.unlink(missing_ok=True)
 
 composer = FFmpegFilterComposer()
+
 
