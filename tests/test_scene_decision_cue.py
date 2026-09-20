@@ -318,3 +318,40 @@ def test_subtitle_styler_ass_per_word_colors(tmp_path):
     assert "FFFFFF" in ass_content
 
 
+def test_opening_hook_strict_protection_on_compact_timeline():
+    """测试重构后的紧凑时间轴：0.0s~1.8s 严格开场真人保护，绝对不出现任何空镜；覆盖率以成片紧凑时长收敛"""
+    # 模拟经过粗剪重投影后的紧凑成片字幕（首句从 0.1s 起跑，总片长 21.0s）
+    compact_subs = [
+        {"id": "s1", "start_time": 0.10, "end_time": 2.20, "corrected_text": "湖州驾校现在大改革"},
+        {"id": "s2", "start_time": 2.40, "end_time": 6.50, "corrected_text": "带大家看下我们自建的五万平训练场"},
+        {"id": "s3", "start_time": 6.80, "end_time": 12.0, "corrected_text": "倒车入库一把过，重点看准这根线"},
+        {"id": "s4", "start_time": 12.2, "end_time": 17.5, "corrected_text": "全包一口价只要两千多，绝无隐形消费"},
+        {"id": "s5", "start_time": 17.8, "end_time": 21.0, "corrected_text": "想学车的朋友评论区找我聊"}
+    ]
+
+    # 模拟大模型试图在 0.5s 或 1.2s 插入空镜
+    cues = [
+        BrollCueItem(start_time=0.5, end_time=3.5, category=MaterialCategory.VENUE, visual_intent="门面"),
+        BrollCueItem(start_time=1.2, end_time=5.0, category=MaterialCategory.LESSON, visual_intent="教学"),
+        BrollCueItem(start_time=7.0, end_time=11.0, category=MaterialCategory.EXPERIENCE, visual_intent="练车"),
+    ]
+
+    eff_duration = 21.0
+    windows = plan_dual_layer_broll(
+        subtitles=compact_subs,
+        cues=cues,
+        total_duration=eff_duration,
+        target_coverage=0.65
+    )
+
+    # 1. 核心铁律：所有窗口的 start_time 必须 >= 1.8s
+    for w in windows:
+        assert w["start_time"] >= 1.8, f"分镜违背 1.8s 开场禁切红线: {w}"
+
+    # 2. 覆盖率收敛：以 21s 真实成片时长规划，总空镜时长不得超标 (不超过 70%)
+    total_broll_sec = sum(w["end_time"] - w["start_time"] for w in windows)
+    coverage = total_broll_sec / eff_duration
+    assert round(coverage, 2) <= 0.70, f"空镜覆盖率超标: {coverage:.1%} > 70%"
+    assert coverage >= 0.40, f"空镜覆盖率过低: {coverage:.1%} < 40%"
+
+

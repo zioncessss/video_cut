@@ -428,6 +428,12 @@ def snap_cues_to_words(subtitles: List[Dict[str, Any]], cues: List[BrollCueItem]
     for c in cues:
         best_start = _snap_timestamp(c.start_time, is_start=True)
         best_end = _snap_timestamp(c.end_time, is_start=False)
+        # 严格防御 1.8s 开场禁切红线：严禁向前逆向吸附至 < 1.8s
+        if best_start < 1.8:
+            if best_end - 1.8 >= MIN_WINDOW_SECONDS:
+                best_start = 1.8
+            else:
+                continue
         if best_end > best_start + 1.0:
             snapped.append(BrollCueItem(
                 start_time=round(best_start, 2),
@@ -466,11 +472,12 @@ def plan_dual_layer_broll(
 
     current_spans: List[Dict[str, Any]] = [
         {
-            "start_time": c.start_time,
+            "start_time": max(1.8, c.start_time),
             "end_time": c.end_time,
             "material_category": c.category
         }
         for c in snapped_cues
+        if c.end_time - max(1.8, c.start_time) >= MIN_WINDOW_SECONDS
     ]
 
     # 2. 收集所有不可切区间

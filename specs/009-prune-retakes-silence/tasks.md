@@ -78,3 +78,25 @@ description: "Task list for smart pruning of silence, retakes, and natural breat
 
 - [x] T019 针对项目库 5 部真实手机口播视频执行粗剪全流程验证测试，确保识别率与气口舒适度达标
 - [x] T020 检查前后端代码风格与无用依赖，确保遵循极简原则（Ponytail & Global Rules）
+
+---
+
+## Phase 7: Pipeline Reordering — Prune-First Scene Scheduling (先粗剪后分镜排期重构)
+
+**Goal**: 将流水线彻底重构为“ASR -> 智能粗剪 -> 紧凑重投影 -> 紧凑时间轴驱动分镜”，彻底解决开场 1.8s Hook 禁切保护失效与成片空镜覆盖率超标问题。
+
+- [x] T021 [US5] 改造 `backend/app/api/editor.py` 的 `analyze_and_cut`：将粗剪分析和 `reproject_subtitles_to_compact` 提前至分镜决策之前，使用 `compact_subtitles` 和 `effective_duration` 作为分镜排期与大模型输入
+- [x] T022 [US5] 改造 `backend/app/api/editor.py` 的 `redecide_scenes`：使用 `compact_subtitles` 与 `effective_duration` 重算分镜排期，并在 `render_project` 中直接消费紧凑分镜，移除脆弱的运行时二次映射
+- [x] T023 [US5] 调整 `backend/app/native_engine/scene_decision.py`：明确从 `0.0s` 起跑线的开场禁切保护（1.8s Hook 红线），确保首句口播真人绝对亮相
+
+---
+
+## Phase 8: Batch Cut De-Speeding & Video-Composition Auto-Concurrency (批量去倍速与合成自主并发)
+
+**Goal**: 批量混剪彻底移除全局倍速控制，解绑本地 ASR 限制，基于 FFmpeg 视频合成真实物理开销设计自主并发调度算法，移除用户手动输入负担。
+
+- [x] T024 [US6] 改造 `backend/app/core/resource.py`：设计基于纯视频合成处理物理开销的自主并发算法（解绑本地 ASR 内存限制，区分 GPU 会话上限与 CPU 线程内存，自适应返回 `recommended_concurrency`）
+- [x] T025 [US6] 改造 `backend/app/api/batch.py`：默认采用 `recommended_concurrency` 驱动后台并发，`video_speed` 缺省固定为 1.0x 标准语速
+- [x] T026 [US6] 改造 `frontend/src/pages/BatchCut.tsx`：彻底移除顶部 Command Bar 的倍速控件与并发输入框；移除上传模态框的倍速/并发项；升级硬件 Badge 为 `⚡ 智能并发: X 路并行`
+- [x] T027 [US6] 编写并发算法与流水线重构回归测试：在 `tests/test_resource.py`、`tests/test_batch_api.py` 中验证自主并发调度与紧凑分镜排期
+

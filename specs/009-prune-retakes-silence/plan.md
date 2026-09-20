@@ -127,3 +127,34 @@ frontend/src/
 ### Phase 6: Automated Verification & Project Regression
 - 编写单测 `tests/test_auto_prune_engine.py`；
 - 使用数据库内现有的 5 部真实口播视频作为基准测试，断言头部、尾部与重说句（如《湖州驾校》第 0 句、《经常有评论》第 17 句）准确剔除且气口保留在 0.25s~0.35s。
+
+### Phase 7: Pipeline Reordering — Prune-First Scene Scheduling (先粗剪后分镜排期重构)
+- **核心目标**：彻底解决片头裁剪后开场 Hook 禁切规则失效、成片空镜覆盖率超标以及跨切点断裂问题。
+- **流水线改造 (`editor.py`)**：
+  1. 在 `analyze_and_cut` 中，ASR 与纠错后立即执行粗剪并计算 `kept_spans` 与 `effective_duration`；
+  2. 调用 `reproject_subtitles_to_compact` 生成以 `0.0s` 为起点的紧凑成片字幕列表；
+  3. 将紧凑成片字幕与 `effective_duration` 作为分镜决策的输入：
+     - 开场禁切区（前 1.8s ~ 2.0s）在真实成片起点严格生效，杜绝成片开场被大空镜覆盖；
+     - 空镜 65% 目标覆盖率以 `effective_duration` 真实成片时长精准计算；
+     - 空镜窗口直接锚定紧凑时间轴，生成无切点断裂的 `BrollReplacement`；
+  4. 同步改造 `redecide_scenes` 接口，保证二次编排分镜同样基于紧凑时间轴；
+  5. 视频渲染器 `render_project` 直接消费紧凑分镜，无需运行时二次逆向映射。
+- **回归与实测**：
+  - 更新《湖州驾校大改革》分镜与渲染，验证开场 1.8s 主播真人露脸亮相与 65% 黄金覆盖率；
+  - 运行全量 151+ 项单测与前端编译。
+
+### Phase 8: Batch Cut De-Speeding & Video-Composition Auto-Concurrency (批量去倍速与合成自主并发)
+- **核心目标**：消除批量混剪全局倍速干扰（回归单视频策略面板精调），解绑本地 ASR 限制，建立基于视频合成真实物理开销的自主并发调度算法，免除用户心智负担。
+- **设计与实现**：
+  1. **前端界面改造 (`BatchCut.tsx`)**：
+     - 从顶部 Command Bar 移除 `倍速:` 控件与 `并发:` 手动输入框；
+     - 上传模态框移除剪辑倍速与并发选项，批量创建默认采用 1.0x 标准语速；
+     - 硬件 Badge 升级为自适应调度展示：`⚡ 智能并发: {hardware.recommended_concurrency}路 · {hardware.cpu_cores}核 · {hardware.gpu_accelerator_detected ? 'GPU加速' : 'CPU'}`；
+  2. **后端资源算法 (`resource.py` & `batch.py`)**：
+     - 彻底解绑 Whisper 本地内存预算；
+     - 纯按视频合成（FFmpeg filter_complex、解码、NVENC/x264 编码、Lanczos 缩放、内存）开销进行规划：
+       - GPU 加速：`max(1, min(cores // 2, int(mem_avail_gb // 0.8), 4))`；
+       - CPU 软解：`max(1, min(cores // 3, int(mem_avail_gb // 1.2), 3))`；
+     - 批处理任务执行队列自动应用计算出的 `recommended_concurrency` 作为全局并发信号量。
+
+

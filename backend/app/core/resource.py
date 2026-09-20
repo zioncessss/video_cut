@@ -41,10 +41,17 @@ def get_hardware_metrics() -> HardwareMetrics:
     mem_avail_gb = round(vm.available / (1024 ** 3), 1)
     gpu_acc = detect_gpu_accelerator()
 
-    # 并发公式：基于可用物理内存与CPU核心数自适应计算
-    # 单槽位内存预算 1.5GB（whisper base float32 ≈1GB + NVENC 渲染 ≈0.5GB），
-    # 旧值 2.0GB 在 16GB 机器上过于保守（可用 5GB 时只给 2 并发）
-    calc_concurrency = max(1, min(cores // 2, int(mem_avail_gb // 1.5)))
+    # 视频合成处理资源调度算法 (Video Composition Concurrency Scheduler):
+    # 彻底解绑本地 ASR 限制（ASR 已全面上云/直连 API，无需为 Whisper 预留显存/内存）。
+    # 纯按视频合成压制（FFmpeg filter_complex + 解码 + 编码 + Lanczos 缩放 + ASS渲染）的资源开销进行自主调度：
+    if gpu_acc:
+        # GPU 硬件加速模式 (NVENC / QSV / VideoToolbox):
+        # 单任务内存开销极低 (~300MB-500MB)，瓶颈主要受显卡硬件编码 Session 上限（消费级显卡多为 3~5 路）与可用内存约束
+        calc_concurrency = max(1, min(cores // 2, int(mem_avail_gb // 0.8), 4))
+    else:
+        # CPU 软解软压模式 (libx264):
+        # 单任务需分配 3~4 个线程与 ~1.0GB 内存保证压制吞吐率，避免 CPU 100% 抢占导致操作系统卡死
+        calc_concurrency = max(1, min(cores // 3, int(mem_avail_gb // 1.2), 3))
 
     return HardwareMetrics(
         cpu_cores=cores,

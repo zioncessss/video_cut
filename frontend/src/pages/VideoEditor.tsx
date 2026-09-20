@@ -1175,7 +1175,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             videoUrl={currentPreviewUrl}
             brolls={brolls}
             materialsMap={materialsMap}
-            subtitles={subtitles}
+            subtitles={previewMode === 'rendered' ? (compactSubtitles && compactSubtitles.length > 0 ? compactSubtitles : subtitles) : subtitles}
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
             aspectRatio={aspectRatio}

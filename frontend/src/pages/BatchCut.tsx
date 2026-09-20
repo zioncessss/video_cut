@@ -56,8 +56,6 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   // 批量参数与上传
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [batchAspectRatio, setBatchAspectRatio] = useState<'9:16' | '16:9'>('9:16');
-  const [batchVideoSpeed, setBatchVideoSpeed] = useState<number>(1.15);
-  const [customConcurrency, setCustomConcurrency] = useState<number | ''>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
@@ -148,8 +146,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
     if (selectedFiles.length === 0) return;
     setSubmitting(true);
     try {
-      const conc = typeof customConcurrency === 'number' ? customConcurrency : undefined;
-      await uploadAndBatchCut(selectedFiles, batchAspectRatio, conc, batchVideoSpeed);
+      await uploadAndBatchCut(selectedFiles, batchAspectRatio, undefined, 1.0);
       setSelectedFiles([]);
       setShowUploadModal(false);
       setActiveTab('queue');
@@ -323,7 +320,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
           </div>
         </div>
 
-        {/* 中间：快速策略控制 (画幅、倍速、并发) */}
+        {/* 中间：快速策略控制 (画幅比例) */}
         <div className="flex items-center space-x-2.5 text-xs">
           {/* 画幅比例 */}
           <div className="inline-flex p-0.5 bg-gray-100 rounded-lg border border-gray-200/80">
@@ -346,68 +343,19 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               16:9 横屏
             </button>
           </div>
-
-          {/* 剪辑倍速自选 */}
-          <div className="inline-flex items-center p-0.5 bg-gray-100 rounded-lg border border-gray-200/80">
-            <span className="text-[11px] text-gray-500 pl-1.5 pr-0.5">倍速:</span>
-            <div className="flex items-center bg-white border border-gray-200 rounded px-1 py-0.5 focus-within:border-indigo-500">
-              <input
-                type="number"
-                step="0.01"
-                min="0.5"
-                max="2.5"
-                value={batchVideoSpeed}
-                onChange={e => {
-                  const val = parseFloat(e.target.value);
-                  if (!isNaN(val)) setBatchVideoSpeed(Math.max(0.5, Math.min(2.5, Math.round(val * 100) / 100)));
-                }}
-                className="w-11 text-center text-[11px] font-mono font-bold text-indigo-700 bg-transparent outline-none"
-                title="键入任意倍率（如 1.08、1.12、1.15）"
-              />
-              <span className="text-[10px] font-mono text-gray-400">x</span>
-            </div>
-            <div className="hidden sm:flex items-center space-x-0.5 border-l border-gray-200/80 pl-1 ml-1">
-              {[1.0, 1.1, 1.15, 1.25].map(val => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => setBatchVideoSpeed(val)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-                    Math.abs(batchVideoSpeed - val) < 0.005
-                      ? 'bg-indigo-50 text-indigo-700 font-bold'
-                      : 'text-gray-400 hover:text-gray-700'
-                  }`}
-                >
-                  {val}x
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 并发数 */}
-          <div className="hidden lg:flex items-center space-x-1 text-gray-500 font-mono text-[11px]">
-            <span>并发:</span>
-            <input
-              type="number"
-              min="1"
-              max="8"
-              placeholder={hardware?.recommended_concurrency ? String(hardware.recommended_concurrency) : '自动'}
-              value={customConcurrency}
-              onChange={e => setCustomConcurrency(e.target.value ? parseInt(e.target.value) : '')}
-              className="w-12 px-1.5 py-0.5 text-[11px] bg-gray-50 border border-gray-200 rounded text-center focus:outline-none focus:border-indigo-500"
-            />
-          </div>
         </div>
 
-        {/* 右侧：硬件芯片 + 一键上传动作 */}
+        {/* 右侧：智能硬件感知调度状态 + 一键上传动作 */}
         <div className="flex items-center space-x-2">
           {hardware && (
             <div
-              className="hidden md:flex items-center space-x-1 px-2.5 py-1 bg-gray-50 border border-gray-200/80 rounded-lg text-[11px] font-mono text-gray-600"
-              title="系统硬件资源与并发调度指标"
+              className="hidden md:flex items-center space-x-1.5 px-3 py-1 bg-indigo-50/50 border border-indigo-100 rounded-lg text-[11px] font-mono text-gray-700"
+              title="系统按视频合成与编码真实物理消耗自适应规划的最优并发数"
             >
-              <Cpu className="w-3 h-3 text-emerald-600" />
-              <span>{hardware.cpu_cores}核 · {hardware.memory_available_gb}G可用 · {hardware.gpu_accelerator_detected ? 'GPU加速' : 'CPU'}</span>
+              <Cpu className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="font-semibold text-indigo-700">⚡ 智能并发: {hardware.recommended_concurrency} 路并行</span>
+              <span className="text-gray-300">|</span>
+              <span className="text-gray-500">{hardware.cpu_cores}核 · {hardware.memory_available_gb}G可用 · {hardware.gpu_accelerator_detected ? 'GPU加速' : 'CPU'}</span>
             </div>
           )}
 
@@ -876,27 +824,8 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                 <span className="font-semibold text-gray-800">{batchAspectRatio === '9:16' ? '9:16 竖屏' : '16:9 横屏'}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-gray-500">剪辑倍速</span>
-                <div className="flex items-center space-x-1 bg-white border border-gray-200 rounded px-1.5 py-0.5">
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.5"
-                    max="2.5"
-                    value={batchVideoSpeed}
-                    onChange={e => {
-                      const val = parseFloat(e.target.value);
-                      if (!isNaN(val)) setBatchVideoSpeed(Math.max(0.5, Math.min(2.5, Math.round(val * 100) / 100)));
-                    }}
-                    className="w-12 text-center font-mono font-bold text-indigo-600 bg-transparent outline-none"
-                    title="支持任意自定义倍速（如 1.08, 1.12, 1.15）"
-                  />
-                  <span className="text-gray-400 font-mono">x</span>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
                 <span className="text-gray-500">并发调度</span>
-                <span className="font-mono text-gray-700">{customConcurrency || hardware?.recommended_concurrency || 2} 进程并发</span>
+                <span className="font-mono text-indigo-700 font-semibold">⚡ {hardware?.recommended_concurrency || 2} 任务自适应并行 (智能调度)</span>
               </div>
             </div>
 

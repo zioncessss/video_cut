@@ -345,7 +345,18 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 config=prune_cfg
             )
 
-        # 3.5 AI 分镜决策（稀疏 Cue Sheet 契约 + 双层 60%~70% 黄金编排）
+        from app.native_engine.prune_engine import auto_prune_engine
+        active_prune_spans = [s for s in prune_spans if s.is_active]
+        kept_spans = auto_prune_engine.compute_kept_spans(th_duration, active_prune_spans) if active_prune_spans else None
+        effective_duration = round(sum(k.duration for k in kept_spans), 3) if kept_spans else th_duration
+
+        # 3.2 紧凑重投影：提前生成以 0.0s 为起点的紧凑成片字幕列表（消除切点断裂与口误污染）
+        if kept_spans:
+            compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(corrected_segments, kept_spans)
+        else:
+            compact_subtitles = [dict(s) for s in corrected_segments if str(s.get("id")) not in pruned_sub_ids]
+
+        # 3.5 AI 分镜决策（稀疏 Cue Sheet 契约 + 双层 60%~70% 黄金编排，基于紧凑时间轴）
         scene_decisions: Dict[str, SceneDecision] = {}
         scene_engine_note = "disabled"
         planned_windows: List[Dict[str, Any]] = []
@@ -360,10 +371,6 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             generate_fallback_video_title
         )
 
-        # 剔除已标记为口误/废弃的句子，避免分镜决策向废弃片段误投空镜
-        non_pruned_segments = [it for it in corrected_segments if str(it.get("id")) not in pruned_sub_ids]
-        active_decision_segments = non_pruned_segments if non_pruned_segments else corrected_segments
-
         decision_input = [
             {
                 "id": str(it.get("id")),
@@ -373,7 +380,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 "end_time": float(it.get("end_time", 0.0)),
                 "words": it.get("words", [])
             }
-            for it in active_decision_segments
+            for it in compact_subtitles
         ]
 
         cues_or_decisions = None
@@ -389,7 +396,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                     planned_windows = plan_dual_layer_broll(
                         subtitles=decision_input,
                         cues=cues_or_decisions,
-                        total_duration=th_duration,
+                        total_duration=effective_duration,
                         target_coverage=target_cov
                     )
                 elif cues_or_decisions and isinstance(cues_or_decisions[0], dict):
@@ -401,20 +408,20 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                     planned_windows = plan_dual_layer_broll(
                         subtitles=decision_input,
                         cues=raw_cues,
-                        total_duration=th_duration,
+                        total_duration=effective_duration,
                         target_coverage=target_cov
                     )
                 else:
                     planned_windows = plan_dual_layer_broll(
                         subtitles=decision_input,
                         cues=[],
-                        total_duration=th_duration,
+                        total_duration=effective_duration,
                         target_coverage=target_cov
                     )
             except Exception as sd_err:
                 # 真实执行铁律：AI 决策失败如实降级到关键词规则并在 pipeline_notes 标注，不假装成功
                 scene_engine_note = f"keyword-rules (degraded: {str(sd_err)[:120]})"
-                scene_decisions = fallback_keyword_rules(decision_input, total_duration=th_duration, target_coverage=target_cov)
+                scene_decisions = fallback_keyword_rules(decision_input, total_duration=effective_duration, target_coverage=target_cov)
                 raw_cues = [
                     BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
                     for s in decision_input if (sd := scene_decisions.get(s["id"])) and sd.broll_category
@@ -422,12 +429,12 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 planned_windows = plan_dual_layer_broll(
                     subtitles=decision_input,
                     cues=raw_cues,
-                    total_duration=th_duration,
+                    total_duration=effective_duration,
                     target_coverage=target_cov
                 )
         elif req.auto_broll:
             # 未开启大模型决策但开启自动空镜：直接走关键词规则 + 双层铺底
-            scene_decisions = fallback_keyword_rules(decision_input, total_duration=th_duration, target_coverage=target_cov)
+            scene_decisions = fallback_keyword_rules(decision_input, total_duration=effective_duration, target_coverage=target_cov)
             raw_cues = [
                 BrollCueItem(start_time=float(s["start_time"]), end_time=float(s["start_time"]) + sd.broll_duration, category=sd.broll_category)
                 for s in decision_input if (sd := scene_decisions.get(s["id"])) and sd.broll_category
@@ -435,7 +442,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             planned_windows = plan_dual_layer_broll(
                 subtitles=decision_input,
                 cues=raw_cues,
-                total_duration=th_duration,
+                total_duration=effective_duration,
                 target_coverage=target_cov
             )
 
@@ -480,6 +487,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 material_id=m.id,
                 material_category=w["material_category"]
             ))
+        compact_sub_map = {str(cs.get("id")): cs for cs in compact_subtitles}
 
         for idx, item in enumerate(corrected_segments):
             c_text = item.get("corrected_text", "")
@@ -500,12 +508,13 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             # 优先采用大模型自主上下文提取的高光词（自主地理常识与商业重点感知）
             ai_hws = ai_highlights_map.get(sid) or ai_highlights_map.get(str(idx)) or item.get("highlight_words")
 
-            # 判定该字幕是否落在某个空镜窗口内（已剔除的句子不分配空镜）
+            # 判定该字幕是否落在某个空镜窗口内（基于紧凑时间轴比对，已剔除的句子不分配空镜）
             assigned_broll_id = None
             assigned_cat = None
             assigned_dur = 0.0
-            mid_t = (item["start_time"] + item["end_time"]) / 2.0
-            if not is_p:
+            if not is_p and sid in compact_sub_map:
+                c_sub = compact_sub_map[sid]
+                mid_t = (float(c_sub["start_time"]) + float(c_sub["end_time"])) / 2.0
                 for b in brolls:
                     if b.start_time <= mid_t <= b.end_time:
                         assigned_broll_id = b.material_id
@@ -547,6 +556,26 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 prune_span_id=p_span_id
             ))
 
+        # 预构建 compact_subtitles 对象列表存入 project
+        p_compact_subs = []
+        for cs in compact_subtitles:
+            cs_id = str(cs.get("id"))
+            matched_sub = next((s for s in subtitles if s.id == cs_id), None)
+            p_compact_subs.append(SubtitleSegment(
+                id=cs_id,
+                start_time=float(cs["start_time"]),
+                end_time=float(cs["end_time"]),
+                raw_text=cs.get("raw_text", cs.get("corrected_text", "")),
+                corrected_text=cs.get("corrected_text", ""),
+                matched_category=matched_sub.matched_category if matched_sub else None,
+                matched_keywords=matched_sub.matched_keywords if matched_sub else [],
+                highlight_words=matched_sub.highlight_words if matched_sub else [],
+                words=cs.get("words", []),
+                scene_decision=matched_sub.scene_decision if matched_sub else None,
+                broll_material_id=matched_sub.broll_material_id if matched_sub else None,
+                is_pruned=False
+            ))
+
         # 独立工程文件夹：每个待剪口播视频进入剪辑阶段自动安排专属目录 YYYYMMDD_HHMMSS_{title}
         task_dir_path = create_task_dir(Path(talking_head.filename).stem)
         task_dir_rel = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
@@ -564,6 +593,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             task_dir=task_dir_rel,
             strategy=strat,
             subtitles=subtitles,
+            compact_subtitles=p_compact_subs,
             broll_replacements=brolls,
             prune_spans=prune_spans,
             raw_asr_segments=raw_segments,
@@ -604,15 +634,16 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                         if full_b_path.exists():
                             b_st = b.start_time
                             b_et = b.end_time
-                            if kept_spans:
+                            eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
+                            if kept_spans and b_et > eff_total_dur + 0.1:
                                 mapped = auto_prune_engine.map_interval_to_compact(b_st, b_et, kept_spans)
                                 if not mapped:
                                     continue
                                 b_st, b_et = mapped
 
                             transition_seconds = 0.0
-                            for s in project.subtitles:
-                                if s.start_time == b.start_time and s.scene_decision:
+                            for s in (project.compact_subtitles or project.subtitles):
+                                if abs(s.start_time - b.start_time) <= 0.05 and s.scene_decision:
                                     transition_seconds = s.scene_decision.transition_seconds
                                     break
                             broll_cuts_payload.append({
@@ -708,28 +739,40 @@ class SceneDecisionRequest(BaseModel):
 
 @router.post("/{project_id}/scene-decision")
 async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDecisionRequest()):
-    """对既有工程单独重跑 AI 分镜决策（不重跑 ASR 与文本纠偏）；采用双层 60%~70% 黄金编排引擎"""
+    """对既有工程单独重跑 AI 分镜决策（不重跑 ASR 与文本纠偏）；采用双层 60%~70% 黄金编排引擎（紧凑时间轴）"""
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
+    from app.native_engine.prune_engine import auto_prune_engine
+    active_spans = [s for s in (p.prune_spans or []) if s.is_active]
+    th = storage_service.get_material(p.talking_head_id)
+    th_dur = float(th.duration if th and th.duration else 15.0)
+    kept_spans = auto_prune_engine.compute_kept_spans(th_dur, active_spans) if active_spans else None
+    effective_duration = round(sum(k.duration for k in kept_spans), 3) if kept_spans else th_dur
+
+    if kept_spans:
+        compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept_spans)
+    else:
+        compact_subtitles = [s for s in p.subtitles if not s.is_pruned]
+
     decision_input = [
         {
-            "id": s.id,
-            "text": s.corrected_text or s.raw_text,
-            "corrected_text": s.corrected_text or s.raw_text,
-            "start_time": s.start_time,
-            "end_time": s.end_time,
-            "words": [w.model_dump() for w in s.words] if hasattr(s, "words") and s.words else []
+            "id": s.id if hasattr(s, "id") else s.get("id"),
+            "text": (s.corrected_text or s.raw_text) if hasattr(s, "corrected_text") else (s.get("corrected_text") or s.get("raw_text")),
+            "corrected_text": (s.corrected_text or s.raw_text) if hasattr(s, "corrected_text") else (s.get("corrected_text") or s.get("raw_text")),
+            "start_time": s.start_time if hasattr(s, "start_time") else s.get("start_time"),
+            "end_time": s.end_time if hasattr(s, "end_time") else s.get("end_time"),
+            "words": [w.model_dump() if hasattr(w, "model_dump") else w for w in s.words] if (hasattr(s, "words") and s.words) or (isinstance(s, dict) and s.get("words")) else []
         }
-        for s in p.subtitles
-        if not req.subtitle_ids or s.id in req.subtitle_ids
+        for s in compact_subtitles
+        if not req.subtitle_ids or (s.id if hasattr(s, "id") else s.get("id")) in req.subtitle_ids
     ]
     if not decision_input:
-        raise HTTPException(status_code=400, detail="没有匹配的字幕句")
+        raise HTTPException(status_code=400, detail="没有匹配的有效字幕句")
 
     target_cov = req.target_coverage or (p.strategy.broll_target_coverage if hasattr(p.strategy, "broll_target_coverage") and p.strategy.broll_target_coverage else 0.65)
-    total_duration = max((float(s.end_time) for s in p.subtitles), default=60.0)
+    total_duration = effective_duration
 
     from app.native_engine.scene_decision import (
         plan_dual_layer_broll,
@@ -820,7 +863,11 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
             material_category=w["material_category"]
         ))
 
-    # 字幕关联与更新
+    # 字幕关联与更新（基于紧凑时间轴判定）
+    compact_sub_map = {
+        (cs.id if hasattr(cs, "id") else str(cs.get("id"))): cs
+        for cs in compact_subtitles
+    }
     from app.native_engine.keyword_matcher import match_keywords_in_segment
     for s in p.subtitles:
         c_text = s.corrected_text or s.raw_text
@@ -832,13 +879,17 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
         assigned_broll_id = None
         assigned_cat = None
         assigned_dur = 0.0
-        mid = (float(s.start_time) + float(s.end_time)) / 2.0
-        for b in new_brolls:
-            if b.start_time <= mid <= b.end_time:
-                assigned_broll_id = b.material_id
-                assigned_cat = b.material_category
-                assigned_dur = round(b.end_time - b.start_time, 2)
-                break
+        if not s.is_pruned and s.id in compact_sub_map:
+            cs = compact_sub_map[s.id]
+            cs_st = float(cs.start_time if hasattr(cs, "start_time") else cs.get("start_time", 0.0))
+            cs_et = float(cs.end_time if hasattr(cs, "end_time") else cs.get("end_time", 0.0))
+            mid = (cs_st + cs_et) / 2.0
+            for b in new_brolls:
+                if b.start_time <= mid <= b.end_time:
+                    assigned_broll_id = b.material_id
+                    assigned_cat = b.material_category
+                    assigned_dur = round(b.end_time - b.start_time, 2)
+                    break
 
         s.scene_decision = SceneDecision(
             part="body",
@@ -850,6 +901,7 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
         s.broll_material_id = assigned_broll_id
 
     p.broll_replacements = new_brolls
+    p.compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept_spans) if kept_spans else [s for s in p.subtitles if not s.is_pruned]
     p.pipeline_notes = {**(p.pipeline_notes or {}), "scene_decision_engine": engine_used, "scene_decision_degraded": degraded}
     project_storage_service.save_project(p)
 
@@ -1110,7 +1162,8 @@ async def render_project(
                 if full_b_path.exists():
                     b_st = b.start_time
                     b_et = b.end_time
-                    if kept_spans:
+                    eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
+                    if kept_spans and b_et > eff_total_dur + 0.1:
                         mapped = auto_prune_engine.map_interval_to_compact(b_st, b_et, kept_spans)
                         if not mapped:
                             continue
@@ -1118,8 +1171,8 @@ async def render_project(
 
                     # 附带该窗口对应字幕的分镜转场时长（fade 档由合成器消费）
                     transition_seconds = 0.0
-                    for s in p.subtitles:
-                        if s.start_time == b.start_time and s.scene_decision:
+                    for s in (p.compact_subtitles or p.subtitles):
+                        if abs(s.start_time - b.start_time) <= 0.05 and s.scene_decision:
                             transition_seconds = s.scene_decision.transition_seconds
                             break
                     broll_cuts_payload.append({

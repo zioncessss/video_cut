@@ -50,7 +50,7 @@ auto_commit:
     message: "[Spec Kit] Add tasks"
   after_implement:
     enabled: true
-    message: "feat(007): 字幕实时保存状态反馈与成片预览所见即所得同步"
+    message: "feat(009): 粗剪提前流水线重构、消除留红与自主视频合成并发调度"
   after_checklist:
     enabled: false
     message: "[Spec Kit] Add checklist"

@@ -182,11 +182,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return null;
   }, [subtitles]);
 
+  // 将播放器原生时间转换为紧凑时间轴时间（用于未渲染跳播模式下对齐紧凑分镜）
+  const getCompactTime = useCallback((rawTime: number) => {
+    if (!pruneSpans || pruneSpans.length === 0) return rawTime;
+    let prunedBefore = 0;
+    for (const span of pruneSpans) {
+      if (!span.is_active) continue;
+      if (rawTime >= span.end_time) {
+        prunedBefore += (span.end_time - span.start_time);
+      } else if (rawTime > span.start_time) {
+        prunedBefore += (rawTime - span.start_time);
+      }
+    }
+    return Math.max(0, rawTime - prunedBefore);
+  }, [pruneSpans]);
+
   // 实时分镜探测：判断当前播放时间点是否落在某段 B-roll 空镜窗口内
   const findActiveBroll = useCallback((time: number) => {
     if (isRendered || !brolls || brolls.length === 0) return null;
-    return brolls.find(b => time >= b.start_time && time < b.end_time) || null;
-  }, [isRendered, brolls]);
+    const checkTime = getCompactTime(time);
+    return brolls.find(b => checkTime >= b.start_time && checkTime < b.end_time) || null;
+  }, [isRendered, brolls, getCompactTime]);
 
   // 高精 60fps 逐帧监听机制 (基于 requestAnimationFrame)
   // 彻底打破 Chromium 原生 timeupdate 250ms 一次的迟钝更新，将显示延迟降低至 0~16ms
@@ -244,7 +260,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   useEffect(() => {
     if (!brollVideoRef.current || !activeBroll) return;
     const brollEl = brollVideoRef.current;
-    const offset = Math.max(0, currentTime - activeBroll.start_time);
+    const checkTime = isRendered ? currentTime : getCompactTime(currentTime);
+    const offset = Math.max(0, checkTime - activeBroll.start_time);
     const bDur = brollEl.duration || activeBrollMaterial?.duration || 10;
     const target = bDur > 0 ? (offset % bDur) : offset;
 
