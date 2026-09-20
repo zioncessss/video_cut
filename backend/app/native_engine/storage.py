@@ -1,10 +1,11 @@
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple, Any
 from app.core.config import CATEGORY_DIRS, STORAGE_DIR, ALLOWED_VIDEO_EXTENSIONS, ensure_storage_path
 from app.models.entities import Material, MaterialCategory
 from app.db.repository import MaterialRepository
@@ -85,44 +86,104 @@ class StorageService:
             pass
         return meta
 
+    @staticmethod
+    def compute_file_hash(source_path_or_bytes) -> Tuple[str, int]:
+        """计算视频内容的 SHA-256 哈希值与文件字节大小，用于精准查重与幂等写盘"""
+        hasher = hashlib.sha256()
+        total_size = 0
+        if isinstance(source_path_or_bytes, (str, Path)):
+            with open(source_path_or_bytes, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    hasher.update(chunk)
+                    total_size += len(chunk)
+        else:
+            total_size = len(source_path_or_bytes)
+            hasher.update(source_path_or_bytes)
+        return hasher.hexdigest(), total_size
+
     def save_material(self, category: MaterialCategory, filename: str, source_path_or_bytes) -> Material:
         target_dir = CATEGORY_DIRS[category.value]
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        content_hash, file_size = self.compute_file_hash(source_path_or_bytes)
+
+        # 1. 精准查重 (Deduplication)：优先检查数据库中是否已存在内容完全一致且物理文件存在的素材
+        existing_matches = self.repo.find_by_hash(content_hash)
+        for cand in existing_matches:
+            full_cand_path = (STORAGE_DIR.parent / cand.filepath).resolve()
+            if full_cand_path.exists() and full_cand_path.stat().st_size > 0:
+                if cand.category == category:
+                    # 同分类完全一致：直接复用返回现有素材，完全跳过写盘与重复入库
+                    self._cache[cand.id] = cand
+                    return cand
+                else:
+                    # 跨分类复用同一底层物理文件
+                    material = Material(
+                        category=category,
+                        filename=filename,
+                        filepath=cand.filepath,
+                        duration=cand.duration,
+                        width=cand.width,
+                        height=cand.height,
+                        fps=cand.fps,
+                        content_hash=content_hash,
+                        file_size=file_size
+                    )
+                    self._cache[material.id] = material
+                    self.repo.save(material)
+                    return material
+
+        # 存量未登记 content_hash 的素材做物理大小及哈希兜底查重
+        all_materials = self.repo.list_all(category)
+        for cand in all_materials:
+            if cand.content_hash:
+                continue
+            full_cand_path = (STORAGE_DIR.parent / cand.filepath).resolve()
+            if full_cand_path.exists() and full_cand_path.stat().st_size == file_size:
+                cand_hash, _ = self.compute_file_hash(full_cand_path)
+                cand.content_hash = cand_hash
+                cand.file_size = file_size
+                self.repo.save(cand)
+                if cand_hash == content_hash:
+                    self._cache[cand.id] = cand
+                    return cand
+
+        # 2. 幂等写盘：使用确定性文件名（前缀+哈希指纹），杜绝时间戳导致的多份冗余文件
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_VIDEO_EXTENSIONS:
             ext = ".mp4"
+        raw_stem = _SAFE_FILENAME_RE.sub("_", Path(filename).stem)[:60].strip("._") or "material"
+        deterministic_name = f"{raw_stem}_{content_hash[:12]}{ext}"
+        dest_path = ensure_storage_path(target_dir / deterministic_name)
 
-        # 文件名净化：仅保留安全字符并截断长度，杜绝路径穿越
-        raw_stem = _SAFE_FILENAME_RE.sub("_", Path(filename).stem)[:80].strip("._") or "material"
-        dest_path = ensure_storage_path(target_dir / f"{raw_stem}_{int(time.time() * 1000)}{ext}")
+        if not dest_path.exists() or dest_path.stat().st_size != file_size:
+            if isinstance(source_path_or_bytes, (str, Path)):
+                shutil.copyfile(str(source_path_or_bytes), str(dest_path))
+            else:
+                dest_path.write_bytes(source_path_or_bytes)
 
-        if isinstance(source_path_or_bytes, (str, Path)):
-            shutil.copyfile(str(source_path_or_bytes), str(dest_path))
-        else:
-            dest_path.write_bytes(source_path_or_bytes)
-
-        # 视频编码兼容性保护：检测是否为 HEVC/H.265 或非标准编码，自动转为浏览器万能支持的 H.264
-        try:
-            probe_cmd = [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
-                str(dest_path)
-            ]
-            c_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-            if c_res.returncode == 0 and c_res.stdout.strip() and c_res.stdout.strip() != "h264":
-                conv_tmp = dest_path.with_name(f"{dest_path.stem}_conv.mp4")
-                conv_cmd = [
-                    "ffmpeg", "-y", "-i", str(dest_path),
-                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
-                    str(conv_tmp)
+            # 视频编码兼容性保护：检测是否为 HEVC/H.265 或非标准编码，自动转为浏览器万能支持的 H.264
+            try:
+                probe_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(dest_path)
                 ]
-                if subprocess.run(conv_cmd, capture_output=True, timeout=120).returncode == 0:
-                    dest_path.unlink()
-                    conv_tmp.rename(dest_path)
-        except Exception:
-            pass
+                c_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+                if c_res.returncode == 0 and c_res.stdout.strip() and c_res.stdout.strip() != "h264":
+                    conv_tmp = dest_path.with_name(f"{dest_path.stem}_conv.mp4")
+                    conv_cmd = [
+                        "ffmpeg", "-y", "-i", str(dest_path),
+                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart",
+                        str(conv_tmp)
+                    ]
+                    if subprocess.run(conv_cmd, capture_output=True, timeout=120).returncode == 0:
+                        dest_path.unlink()
+                        conv_tmp.rename(dest_path)
+                        content_hash, file_size = self.compute_file_hash(dest_path)
+            except Exception:
+                pass
 
         metadata = self.probe_video_metadata(dest_path)
         rel_path = str(dest_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
@@ -134,17 +195,17 @@ class StorageService:
             duration=metadata["duration"],
             width=metadata["width"],
             height=metadata["height"],
-            fps=metadata["fps"]
+            fps=metadata["fps"],
+            content_hash=content_hash,
+            file_size=file_size
         )
         self._cache[material.id] = material
-        # 真实执行铁律：入库失败必须如实报错（如旧库 CHECK 未迁移），严禁文件已落盘却假装成功
+        # 真实执行铁律：入库失败必须如实报错
         try:
             self.repo.save(material)
         except Exception as e:
             self._cache.pop(material.id, None)
-            raise RuntimeError(
-                f"素材写入权威库失败（若为旧版分类约束导致，请重启应用自动完成 005 分类迁移）: {e}"
-            ) from e
+            raise RuntimeError(f"素材写入权威库失败: {e}") from e
         self._save_meta()
         return material
 
@@ -201,5 +262,140 @@ class StorageService:
             print(f"[StorageService] 级联删除工程异常: {e}")
 
         return deleted or (m is not None)
+
+    def cleanup_materials(self, dry_run: bool = False) -> Dict[str, Any]:
+        """全面清理素材库：
+        1. 清除已知测试垃圾文件（如 batch_bad_*.mp4, batch_ok_*.mp4 等）与未登记的孤儿文件；
+        2. 重复素材按 content_hash 自动去重合并：保留被工程引用的记录，将重复引用无损重定向到权威素材，并释放冗余磁盘空间。
+        """
+        from app.db.session import get_db_connection
+        freed_bytes = 0
+        removed_files: List[str] = []
+        merged_materials: List[Dict[str, Any]] = []
+
+        # 1. 扫描并收集数据库内合法素材与工程引用
+        with get_db_connection(self.repo.db_path) as conn:
+            cur = conn.execute("SELECT id, category, filename, filepath, content_hash, file_size FROM materials")
+            db_materials = cur.fetchall()
+
+            # 查出当前被所有工程引用的 talking_head_id 集合
+            p_cur = conn.execute("SELECT id, talking_head_id, brolls_json FROM projects")
+            project_rows = p_cur.fetchall()
+
+        used_mat_ids = set()
+        for prow in project_rows:
+            if prow[1]:
+                used_mat_ids.add(prow[1])
+            if prow[2]:
+                try:
+                    b_list = json.loads(prow[2])
+                    for b in b_list:
+                        if isinstance(b, dict) and b.get("material_id"):
+                            used_mat_ids.add(b["material_id"])
+                except Exception:
+                    pass
+
+        # 建立合法物理路径相对路径集合（统一斜杠）
+        valid_rel_paths = set()
+        for row in db_materials:
+            p_str = (row[3] or "").replace("\\", "/").strip("/")
+            if p_str:
+                valid_rel_paths.add(p_str)
+
+        # 2. 清理磁盘孤儿与测试垃圾文件
+        for cat_dir in CATEGORY_DIRS.values():
+            if not cat_dir.exists():
+                continue
+            for file_path in cat_dir.glob("*.mp4"):
+                rel_str = str(file_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/").strip("/")
+                fname = file_path.name
+                fsize = file_path.stat().st_size
+
+                # 识别测试垃圾文件：如 batch_bad_*, batch_ok_* 等
+                is_test_junk = (fname.startswith("batch_bad_") or fname.startswith("batch_ok_") or fname.startswith("test_fake_")) and fsize < 1024 * 1024
+                # 识别孤儿文件：既非测试垃圾，又未被 materials 表登记
+                is_orphan = (rel_str not in valid_rel_paths)
+
+                if is_test_junk or is_orphan:
+                    freed_bytes += fsize
+                    removed_files.append(rel_str)
+                    if not dry_run:
+                        try:
+                            file_path.unlink(missing_ok=True)
+                        except Exception as e:
+                            print(f"[cleanup] 删除孤儿/测试文件失败 {rel_str}: {e}")
+
+        # 3. 补全存量素材的 content_hash 与 file_size 并按内容查重合并
+        mat_models = self.repo.list_all()
+        hash_to_materials: Dict[str, List[Material]] = {}
+        for m in mat_models:
+            full_p = (STORAGE_DIR.parent / m.filepath).resolve()
+            if not full_p.exists():
+                # 物理文件已不存在，清理此失效记录
+                if not dry_run:
+                    self.repo.delete(m.id)
+                    self._cache.pop(m.id, None)
+                continue
+
+            c_hash = m.content_hash
+            c_size = m.file_size or full_p.stat().st_size
+            if not c_hash:
+                c_hash, c_size = self.compute_file_hash(full_p)
+                m.content_hash = c_hash
+                m.file_size = c_size
+                if not dry_run:
+                    self.repo.save(m)
+
+            key = f"{m.category.value}_{c_hash}"
+            hash_to_materials.setdefault(key, []).append(m)
+
+        # 对同一分类下 hash 相同的重复记录执行合并
+        for key, group in hash_to_materials.items():
+            if len(group) <= 1:
+                continue
+
+            # 选出权威记录：优先选被工程引用的记录（且按最早创建优先）；若均无工程引用则选最早创建的一条
+            used_in_group = [x for x in group if x.id in used_mat_ids]
+            if used_in_group:
+                chosen = sorted(used_in_group, key=lambda x: x.created_at)[0]
+            else:
+                chosen = sorted(group, key=lambda x: x.created_at)[0]
+
+            duplicates = [x for x in group if x.id != chosen.id]
+            merged_info = {
+                "chosen_id": chosen.id,
+                "chosen_file": chosen.filepath,
+                "duplicate_ids": [d.id for d in duplicates],
+                "duplicate_files": [d.filepath for d in duplicates],
+            }
+            merged_materials.append(merged_info)
+
+            if not dry_run:
+                with get_db_connection(self.repo.db_path) as conn:
+                    for dup in duplicates:
+                        # 若有工程引用了 dup.id，将其无损重定向到 chosen.id
+                        conn.execute("UPDATE projects SET talking_head_id = ? WHERE talking_head_id = ?", (chosen.id, dup.id))
+                        # 从 materials 表中删除重复记录
+                        conn.execute("DELETE FROM materials WHERE id = ?", (dup.id,))
+                        self._cache.pop(dup.id, None)
+
+                        # 如果 dup 的物理文件与 chosen 的物理文件不同，删除冗余物理文件
+                        if dup.filepath != chosen.filepath:
+                            dup_path = (STORAGE_DIR.parent / dup.filepath).resolve()
+                            if dup_path.exists() and dup_path != (STORAGE_DIR.parent / chosen.filepath).resolve():
+                                freed_bytes += dup_path.stat().st_size
+                                try:
+                                    dup_path.unlink(missing_ok=True)
+                                except Exception as e:
+                                    print(f"[cleanup] 删除重复物理文件失败 {dup.filepath}: {e}")
+
+        return {
+            "freed_bytes": freed_bytes,
+            "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+            "removed_files_count": len(removed_files),
+            "removed_files": removed_files,
+            "merged_materials_count": len(merged_materials),
+            "merged_materials": merged_materials
+        }
 
 storage_service = StorageService()

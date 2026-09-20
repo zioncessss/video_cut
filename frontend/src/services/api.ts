@@ -25,6 +25,8 @@ export interface Material {
   height: number;
   fps: number;
   created_at: number;
+  content_hash?: string;
+  file_size?: number;
 }
 
 export const fetchMaterials = async (category?: string): Promise<Material[]> => {
@@ -53,6 +55,22 @@ export const importLocalMaterial = async (category: string, filePath: string): P
 
 export const deleteMaterial = async (id: string): Promise<void> => {
   await axios.delete(`${API_BASE}/materials/${id}`);
+};
+
+export interface CleanupResult {
+  freed_bytes: number;
+  freed_mb: number;
+  removed_files_count: number;
+  removed_files: string[];
+  merged_materials_count: number;
+  merged_materials: any[];
+}
+
+export const cleanupMaterials = async (dryRun: boolean = false): Promise<{ code: number; message: string; data: CleanupResult }> => {
+  const res = await axios.post(`${API_BASE}/materials/cleanup`, null, {
+    params: { dry_run: dryRun }
+  });
+  return res.data;
 };
 
 export const fetchHardwareMetrics = async () => {

@@ -10,7 +10,17 @@ import pytest
 _TEST_DB = os.path.join(tempfile.gettempdir(), "videocut_pytest_common.db")
 os.environ["VIDEOCUT_DB_PATH"] = _TEST_DB
 
-# 每个测试会话从干净库开始，杜绝跨会话脏数据
+_TEST_STORAGE = os.path.join(tempfile.gettempdir(), "videocut_pytest_storage")
+os.environ["VIDEOCUT_STORAGE_DIR"] = _TEST_STORAGE
+
+# 确保隔离存储目录存在，并复制词库配置文件供测试只读使用（防止缺失告警与断言失败）
+os.makedirs(_TEST_STORAGE, exist_ok=True)
+_real_glossary = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "storage", "glossary.json")
+if os.path.exists(_real_glossary):
+    import shutil
+    shutil.copyfile(_real_glossary, os.path.join(_TEST_STORAGE, "glossary.json"))
+
+# 每个测试会话从干净库和存储目录开始，杜绝跨会话脏数据与真实目录污染
 for suffix in ("", "-wal", "-shm"):
     try:
         os.remove(_TEST_DB + suffix)

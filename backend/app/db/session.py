@@ -129,6 +129,18 @@ def _ensure_columns(conn) -> None:
         conn.execute("ALTER TABLE subtitles ADD COLUMN words_json TEXT DEFAULT '[]';")
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE materials ADD COLUMN content_hash TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE materials ADD COLUMN file_size INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_materials_hash ON materials(content_hash);")
+    except Exception:
+        pass
     # 历史硬编码水印文案与无字开启状态自愈清洗（未填文字绝不默认开启或保存文案）
     try:
         conn.execute("""

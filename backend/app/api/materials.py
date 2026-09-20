@@ -61,3 +61,9 @@ async def delete_material(material_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Material not found")
     return {"code": 0, "message": "Material deleted successfully"}
+
+@router.post("/cleanup")
+async def cleanup_materials(dry_run: bool = False):
+    """清理素材库：移除测试垃圾/孤儿文件，并按内容哈希自动去重合并重复素材"""
+    res = storage_service.cleanup_materials(dry_run=dry_run)
+    return {"code": 0, "message": "Cleanup completed successfully", "data": res}

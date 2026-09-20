@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, Material, API_BASE } from '../services/api';
+import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, cleanupMaterials, Material, API_BASE } from '../services/api';
 import { useDialog } from '../components/common/CustomDialog';
-import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink } from 'lucide-react';
+import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink, Sparkles } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'venue', label: '场地空镜', desc: '训练场、校区、考场等实景画面', icon: MapPin, color: 'text-emerald-600 bg-emerald-50' },
@@ -27,6 +27,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
   const [activeTab, setActiveTab] = useState<string>('venue');
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+  const [cleaning, setCleaning] = useState<boolean>(false);
   const [uploading, setUploading] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [uploadProgressText, setUploadProgressText] = useState<string>('');
@@ -289,6 +290,39 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
     }
   };
 
+  const handleCleanup = async () => {
+    const confirmed = await showConfirm({
+      title: '深度整理素材库',
+      message: '系统将基于文件内容指纹（SHA-256）精准扫描并合并重复素材，清理历史残留测试与孤儿文件。已关联工程的素材会自动受到保护并无损映射，是否继续？',
+      confirmText: '立即整理',
+    });
+    if (!confirmed) return;
+
+    setCleaning(true);
+    try {
+      const res = await cleanupMaterials(false);
+      const data = res.data;
+      await loadData(activeTab);
+      if (data.freed_mb > 0 || data.removed_files_count > 0 || data.merged_materials_count > 0) {
+        showAlert({
+          title: '素材整理完成',
+          message: `共合并去重 ${data.merged_materials_count} 组素材，清理 ${data.removed_files_count} 个冗余文件，释放磁盘空间 ${data.freed_mb} MB！`,
+          type: 'success',
+        });
+      } else {
+        showToast('素材库状态优良，未发现重复素材或冗余文件');
+      }
+    } catch (err: any) {
+      showAlert({
+        title: '整理失败',
+        message: `素材库整理失败: ${err?.response?.data?.detail || err.message}`,
+        type: 'error',
+      });
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   const currentCategoryInfo = CATEGORIES.find(c => c.key === activeTab);
 
   return (
@@ -407,6 +441,16 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
           <h2 className="text-base font-semibold text-gray-800">
             【{currentCategoryInfo?.label}】已就绪素材清单 ({materials.length})
           </h2>
+          <button
+            type="button"
+            onClick={handleCleanup}
+            disabled={cleaning || loading}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl border border-gray-200 hover:border-blue-300 hover:bg-blue-50 text-gray-600 hover:text-blue-600 text-xs font-medium transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-50"
+            title="基于 SHA-256 内容哈希查重去重并清理冗余文件"
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${cleaning ? 'animate-spin text-blue-600' : 'text-blue-500'}`} />
+            <span>{cleaning ? '正在深度整理...' : '查重与整理素材'}</span>
+          </button>
         </div>
 
         {loading ? (

@@ -42,6 +42,14 @@ def on_startup():
     except Exception as e:
         print(f"[Main] SQLite migration on startup warning: {e}")
 
+    try:
+        from app.native_engine.storage import storage_service
+        clean_res = storage_service.cleanup_materials(dry_run=False)
+        if clean_res["removed_files_count"] > 0 or clean_res["merged_materials_count"] > 0:
+            print(f"[Main] 素材库自愈清理完成: 清理垃圾/孤儿文件 {clean_res['removed_files_count']} 个，合并重复素材 {clean_res['merged_materials_count']} 组，释放空间 {clean_res['freed_mb']} MB")
+    except Exception as e:
+        print(f"[Main] 素材库自愈清理警告: {e}")
+
 @app.get("/api/health")
 @app.get("/api/v1/health")
 async def health_check():

@@ -48,6 +48,8 @@ class Material(BaseModel):
     width: int = 1080
     height: int = 1920
     fps: float = 30.0
+    content_hash: Optional[str] = None
+    file_size: Optional[int] = None
     created_at: float = Field(default_factory=time.time)
 
 class PruneReason(str, Enum):

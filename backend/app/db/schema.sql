@@ -12,9 +12,12 @@ CREATE TABLE IF NOT EXISTS materials (
     width INTEGER NOT NULL DEFAULT 1080,
     height INTEGER NOT NULL DEFAULT 1920,
     fps REAL NOT NULL DEFAULT 30.0,
+    content_hash TEXT DEFAULT NULL,
+    file_size INTEGER DEFAULT 0,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category);
+CREATE INDEX IF NOT EXISTS idx_materials_hash ON materials(content_hash);
 
 -- 剪辑工程元数据表
 CREATE TABLE IF NOT EXISTS projects (

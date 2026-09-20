@@ -23,7 +23,7 @@ client = TestClient(app)
 
 def _make_material(tmp_path, name):
     f = tmp_path / name
-    f.write_bytes(b"fake_video_stream")
+    f.write_bytes(f"fake_video_stream_{name}".encode())
     return storage_service.save_material(MaterialCategory.TALKING_HEAD, name, f)
 
 

@@ -27,8 +27,8 @@ class MaterialRepository:
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO materials 
-                (id, category, filename, filepath, duration, width, height, fps, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, category, filename, filepath, duration, width, height, fps, content_hash, file_size, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 material.id,
                 material.category.value if hasattr(material.category, 'value') else str(material.category),
@@ -38,6 +38,8 @@ class MaterialRepository:
                 material.width,
                 material.height,
                 material.fps,
+                material.content_hash,
+                material.file_size or 0,
                 material.created_at
             ))
         return material
@@ -49,6 +51,13 @@ class MaterialRepository:
             if row:
                 return Material(**dict(row))
         return None
+
+    def find_by_hash(self, content_hash: str) -> List[Material]:
+        if not content_hash:
+            return []
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute("SELECT * FROM materials WHERE content_hash = ? ORDER BY created_at ASC", (content_hash,))
+            return [Material(**dict(r)) for r in cur.fetchall()]
 
     def list_all(self, category: Optional[MaterialCategory] = None) -> List[Material]:
         with get_db_connection(self.db_path) as conn:
