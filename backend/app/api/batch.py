@@ -28,13 +28,14 @@ class BatchSubmitRequest(BaseModel):
     material_ids: List[str]
     aspect_ratio: str = "9:16"
     concurrency: Optional[int] = None  # 用户可指定并发；缺省用硬件推荐值，硬顶 8
+    video_speed: float = 1.0
 
 
 def _persist(job: BatchJob) -> None:
     BatchJobRepository().save(job)
 
 
-async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str) -> None:
+async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str, video_speed: float = 1.0) -> None:
     """执行单个口播视频的完整剪辑流水线，任何失败如实落库"""
     from app.api.editor import AnalyzeAndCutRequest, analyze_and_cut, render_project, redecide_scenes, SceneDecisionRequest
 
@@ -47,20 +48,15 @@ async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str) -> None
             aspect_ratio=aspect_ratio,
             auto_broll=True,
             force_retranscribe=False,
-            enable_scene_decision=True
+            enable_scene_decision=True,
+            video_speed=video_speed,
+            auto_render=False
         ))
         item.project_id = project.id
-        item.progress = 70
+        item.progress = 60
         _persist(job)
 
-        # AI 分镜决策：跨场地/体检/教学场景重排空镜窗口（内部失败自动降级关键词规则并记录引擎）
-        try:
-            await redecide_scenes(project.id, SceneDecisionRequest())
-        except Exception as se:
-            print(f"[Batch] 分镜决策异常(渲染继续, 关键词规则兜底): {str(se)[:160]}")
-        item.progress = 85
-        _persist(job)
-
+        # 批量流水线直接进行全量成片压制，保证生成可直接播放、导出的最终 MP4 与封面
         await render_project(project.id)
         item.status = "completed"
         item.progress = 100
@@ -74,7 +70,7 @@ async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str) -> None
         _persist(job)
 
 
-async def _execute_job(job_id: str, aspect_ratio: str) -> None:
+async def _execute_job(job_id: str, aspect_ratio: str, video_speed: float = 1.0) -> None:
     job = _jobs.get(job_id)
     if not job:
         return
@@ -84,7 +80,7 @@ async def _execute_job(job_id: str, aspect_ratio: str) -> None:
 
     async def worker(item: BatchJobItem):
         async with sem:
-            await _run_one(job, item, aspect_ratio)
+            await _run_one(job, item, aspect_ratio, video_speed)
 
     try:
         await asyncio.gather(*(worker(i) for i in job.items))
@@ -121,7 +117,7 @@ async def submit_batch(req: BatchSubmitRequest, bg_tasks: BackgroundTasks):
     _persist(job)
 
     # 响应先返回 job_id，批处理在后台任务中真实执行
-    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio)
+    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed)
 
     return {
         "code": 0,
@@ -138,7 +134,8 @@ async def upload_and_cut(
     bg_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     aspect_ratio: str = Form("9:16"),
-    concurrency: Optional[int] = Form(None)
+    concurrency: Optional[int] = Form(None),
+    video_speed: float = Form(1.0)
 ):
     """批量直接上传口播视频并立即加入智能混剪队列"""
     if not files:
@@ -171,7 +168,7 @@ async def upload_and_cut(
     _jobs[job.id] = job
     _persist(job)
 
-    bg_tasks.add_task(_execute_job, job.id, aspect_ratio)
+    bg_tasks.add_task(_execute_job, job.id, aspect_ratio, video_speed)
 
     return {
         "code": 0,
@@ -187,6 +184,7 @@ class BatchImportRequest(BaseModel):
     file_paths: List[str]
     aspect_ratio: str = "9:16"
     concurrency: Optional[int] = None
+    video_speed: float = 1.0
 
 
 @router.post("/import-and-cut")
@@ -223,7 +221,7 @@ async def import_and_cut(req: BatchImportRequest, bg_tasks: BackgroundTasks):
     _jobs[job.id] = job
     _persist(job)
 
-    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio)
+    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed)
 
     return {
         "code": 0,

@@ -50,6 +50,29 @@ class Material(BaseModel):
     fps: float = 30.0
     created_at: float = Field(default_factory=time.time)
 
+class PruneReason(str, Enum):
+    HEAD_IDLE = "head_idle"
+    TAIL_IDLE = "tail_idle"
+    RETAKE_DISCARD = "retake_discard"
+    MID_SILENCE = "mid_silence"
+    MANUAL = "manual"
+
+class PruneSpan(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    start_time: float
+    end_time: float
+    reason: str = "head_idle"
+    source_subtitle_id: Optional[str] = None
+    target_subtitle_id: Optional[str] = None
+    duration: float = 0.0
+    is_active: bool = True
+
+class KeptSpan(BaseModel):
+    start_time: float
+    end_time: float
+    duration: float = 0.0
+    audio_fade: bool = True
+
 class SubtitleSegment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     start_time: float
@@ -63,6 +86,9 @@ class SubtitleSegment(BaseModel):
     scene_decision: Optional[SceneDecision] = None
     broll_material_id: Optional[str] = None
     is_manual_edited: bool = False
+    is_pruned: bool = False
+    prune_reason: Optional[str] = None
+    prune_span_id: Optional[str] = None
 
 class BrollReplacement(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -75,11 +101,12 @@ class BrollReplacement(BaseModel):
 class EditingStrategy(BaseModel):
     subtitle_theme: str = "glow_gold"   # glow_gold, glass_clean, cinema_shadow, tech_emerald, viral_gold, marker_pen
     font_size: str = "medium"           # small, medium, large, xlarge
+    subtitle_font_family: str = "notoserif" # notoserif (思源/华文中宋), kaiti (书法楷体), fangsong (清雅仿宋), songti (经典宋体), yahei (现代黑体)
     subtitle_font_size: Optional[int] = None # 自定义连续字号 (24~96px)
     show_subtitles: bool = True
-    subtitle_position_y: int = 82       # 竖屏垂直百分比 10~95% (默认82%黄金底部)
+    subtitle_position_y: int = 74       # 竖屏垂直百分比 10~95% (推荐 74% 黄金舒适区，避开人脸与底部控制条)
     subtitle_position_x: int = 50       # 竖屏水平百分比 5~95% (默认50%居中)
-    subtitle_width_percent: Optional[int] = None # 自定义字幕最大宽度百分比 30~95%
+    subtitle_width_percent: Optional[int] = 100 # 自定义字幕最大宽度百分比 (锁定 100%)
     enable_highlight: bool = True
     highlight_color: str = "#FACC15"
     highlight_scale: bool = True
@@ -107,6 +134,20 @@ class EditingStrategy(BaseModel):
     
     broll_pacing: str = "standard"      # fast, standard, talking_only
     broll_target_coverage: float = 0.65 # 目标成片空镜覆盖率 (40%~70% 黄金区间，默认 65%)
+    video_speed: float = 1.0            # 视频剪辑倍速 (0.75~2.0，短视频推荐: 1.1x 微快, 1.2x 紧凑)
+
+    # 009: 智能粗剪与气口保留配置
+    enable_auto_prune: bool = True
+    enable_head_prune: bool = True
+    enable_tail_prune: bool = True
+    enable_retake_prune: bool = True
+    enable_mid_silence_prune: bool = True
+    head_padding_seconds: float = 0.20
+    tail_padding_seconds: float = 0.25
+    mid_silence_threshold: float = 1.20
+    mid_silence_breath_gap: float = 0.30
+    retake_pause_min: float = 0.40
+    retake_similarity_min: float = 0.60
 
 class BrollCueItem(BaseModel):
     """大模型稀疏分镜切入指示项"""
@@ -134,6 +175,7 @@ class CutProject(BaseModel):
     broll_replacements: List[BrollReplacement] = Field(default_factory=list)
     strategy: EditingStrategy = Field(default_factory=EditingStrategy)
     status: CutProjectStatus = CutProjectStatus.DRAFT
+    prune_spans: List[PruneSpan] = Field(default_factory=list)
     output_video_path: Optional[str] = None
     output_absolute_path: Optional[str] = None
     output_filename: Optional[str] = None
@@ -192,6 +234,7 @@ class PipelineStage(str, Enum):
     LLM_CORRECTING = "llm_correcting"       # 75%
     SCENE_DECIDING = "scene_deciding"       # 82% AI 分镜决策
     BROLL_MATCHING = "broll_matching"       # 90%
+    VIDEO_COMPOSING = "video_composing"     # 95% 成片压制合成
     COMPLETED = "completed"                 # 100%
     FAILED = "failed"
 

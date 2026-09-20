@@ -138,3 +138,102 @@ def test_global_merge_across_short_clauses():
     assert len(merged) == 2
     assert "还有一个就是保险费面签费" in merged[0]["raw_text"]
 
+
+def test_anti_dangling_conjunction_split():
+    """验证严禁连词挂尾：'我们都有老师和教练手把手教学'若切分绝不可切在'和'之后挂尾"""
+    text = "我们都有老师和教练手把手教学"
+    words = [{"word": ch, "start": 14.0 + i * 0.1, "end": 14.0 + (i + 1) * 0.1} for i, ch in enumerate(text)]
+    clause = [{
+        "id": "c_teacher",
+        "start_time": 14.0,
+        "end_time": 14.0 + len(text) * 0.1,
+        "raw_text": text,
+        "corrected_text": text,
+        "words": words
+    }]
+    # 当强制用较小 max_chars 切分时
+    split_res = asr_runner.split_into_readable_segments(clause, max_chars=10, soft_max=10, min_chunk=4)
+    assert len(split_res) == 2
+    # 前句绝不能以 '和' 挂尾
+    assert not split_res[0]["raw_text"].endswith("和"), f"前句以连词'和'挂尾: {split_res[0]['raw_text']}"
+    assert split_res[0]["raw_text"] == "我们都有老师和教练"
+    assert split_res[1]["raw_text"] == "手把手教学"
+
+
+def test_clean_filler_particles():
+    """验证语气词精简清洗：句首呃/啊/那个及句末无疑问语气的拖尾口癖'呢'"""
+    segments = [
+        {
+            "raw_text": "从科一到科四呢",
+            "corrected_text": "从科一到科四呢",
+            "start_time": 12.58,
+            "end_time": 13.90,
+            "words": [
+                {"word": "从", "start": 12.58, "end": 12.78},
+                {"word": "科", "start": 12.78, "end": 13.04},
+                {"word": "一", "start": 13.04, "end": 13.20},
+                {"word": "到", "start": 13.20, "end": 13.38},
+                {"word": "科", "start": 13.38, "end": 13.54},
+                {"word": "四", "start": 13.54, "end": 13.70},
+                {"word": "呢", "start": 13.70, "end": 13.90},
+            ]
+        },
+        {
+            "raw_text": "呃从今年九月份开始",
+            "corrected_text": "呃从今年九月份开始",
+            "start_time": 1.5,
+            "end_time": 3.12,
+            "words": [
+                {"word": "呃", "start": 1.5, "end": 1.66},
+                {"word": "从", "start": 1.66, "end": 1.8},
+                {"word": "今", "start": 1.8, "end": 2.0},
+            ]
+        },
+        {
+            "raw_text": "想知道我们这个驾校在什么位置吗",
+            "corrected_text": "想知道我们这个驾校在什么位置吗",
+            "start_time": 16.92,
+            "end_time": 19.30,
+            "words": [{"word": ch, "start": 16.92, "end": 19.30} for ch in "想知道我们这个驾校在什么位置吗"]
+        }
+    ]
+    cleaned = asr_runner.clean_filler_particles(segments)
+    assert len(cleaned) == 3
+
+    # 1. 验证 '从科一到科四呢' 清洗为 '从科一到科四'，且时间戳自动收缩到 13.70
+    assert cleaned[0]["raw_text"] == "从科一到科四"
+    assert cleaned[0]["corrected_text"] == "从科一到科四"
+    assert cleaned[0]["end_time"] == 13.70
+    assert len(cleaned[0]["words"]) == 6
+
+    # 2. 验证 '呃从今年九月份开始' 清洗为 '从今年九月份开始'，首字时间戳对齐到 '从' (1.66)
+    assert cleaned[1]["raw_text"] == "从今年九月份开始"
+    assert cleaned[1]["start_time"] == 1.66
+
+    # 3. 验证带疑问词的句子完整保留
+    assert cleaned[2]["raw_text"] == "想知道我们这个驾校在什么位置吗"
+
+
+def test_single_line_priority_15_chars():
+    """验证单行优先：<= 15 字口播句子完整保留为纯单行，绝不被切成碎片或强制折行"""
+    from app.native_engine.subtitle_styler import wrap_long_subtitle
+
+    # 15 字疑问句完整不切
+    clause_15 = [{
+        "id": "c_where",
+        "start_time": 16.92,
+        "end_time": 19.30,
+        "raw_text": "想知道我们这个驾校在什么位置吗",
+        "corrected_text": "想知道我们这个驾校在什么位置吗",
+        "words": [{"word": ch, "start": 16.92 + i * 0.1, "end": 16.92 + (i + 1) * 0.1} for i, ch in enumerate("想知道我们这个驾校在什么位置吗")]
+    }]
+    split_res = asr_runner.split_into_readable_segments(clause_15, max_chars=15, soft_max=15)
+    assert len(split_res) == 1
+    assert split_res[0]["raw_text"] == "想知道我们这个驾校在什么位置吗"
+
+    # 15 字以内在 wrap_long_subtitle 下绝不产生 \\N 折行
+    assert r"\N" not in wrap_long_subtitle("我们现在学车全部一口价", max_line_len=15)
+    assert r"\N" not in wrap_long_subtitle("我们都有老师和教练手把手教学", max_line_len=15)
+    assert r"\N" not in wrap_long_subtitle("想知道我们这个驾校在什么位置吗", max_line_len=15)
+
+

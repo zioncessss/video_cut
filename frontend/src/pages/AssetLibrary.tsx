@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, Material, API_BASE } from '../services/api';
+import { useDialog } from '../components/common/CustomDialog';
 import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink } from 'lucide-react';
 
 const CATEGORIES = [
@@ -18,9 +19,11 @@ const getMediaUrl = (filepath: string) => {
 
 interface AssetLibraryProps {
   onSelectForEditor?: (materialId: string) => void;
+  isActive?: boolean;
 }
 
-export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor }) => {
+export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, isActive = true }) => {
+  const { showAlert, showConfirm, showToast } = useDialog();
   const [activeTab, setActiveTab] = useState<string>('venue');
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -60,6 +63,14 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
       }
     }
   }, [previewMaterial]);
+
+  // 切出标签页时，自动暂停弹窗内正在播放的预览视频
+  useEffect(() => {
+    if (isActive === false && modalVideoRef.current && modalPlaying) {
+      modalVideoRef.current.pause();
+      setModalPlaying(false);
+    }
+  }, [isActive, modalPlaying]);
 
   // 全局松开拖拽监听，确保松手时准确定位并恢复
   useEffect(() => {
@@ -171,11 +182,12 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
   const handleNativeSelectFiles = async () => {
     if (window.electronAPI?.showOpenDialog) {
       const res = await window.electronAPI.showOpenDialog({
-        title: `选择视频导入到【${currentCategoryInfo?.label}】`,
-        properties: ['openFile', 'multiSelections'],
+        title: `批量导入${currentCategoryInfo?.label || '素材'}`,
         filters: [
-          { name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'avi', 'flv', 'webm'] }
-        ]
+          { name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'avi', 'flv', 'webm'] },
+          { name: 'All Files', extensions: ['*'] }
+        ],
+        properties: ['openFile', 'multiSelections']
       });
       if (!res.canceled && res.filePaths.length > 0) {
         setUploading(true);
@@ -187,8 +199,9 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
             await importLocalMaterial(activeTab, p);
           }
           await loadData(activeTab);
+          showToast(`成功导入 ${res.filePaths.length} 个本地素材`);
         } catch (err) {
-          alert('本地导入失败，请检查文件是否存在');
+          showAlert({ title: '本地导入失败', message: '本地导入失败，请检查文件是否存在且有读取权限。', type: 'error' });
         } finally {
           setUploading(false);
           setUploadProgressText('');
@@ -216,8 +229,9 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
         }
       }
       await loadData(activeTab);
+      showToast(`成功上传 ${files.length} 个素材`);
     } catch (err) {
-      alert('上传失败，请确保后端服务正常运行');
+      showAlert({ title: '上传失败', message: '素材上传失败，请确保后端服务正常运行。', type: 'error' });
     } finally {
       setUploading(false);
       setUploadProgressText('');
@@ -258,13 +272,20 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor })
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('确认删除该素材？')) return;
+    const targetMat = materials.find(m => m.id === id);
+    const confirmed = await showConfirm({
+      title: '确认删除素材',
+      message: `确定要彻底删除素材「${targetMat?.filename || '该视频'}」吗？删除后不可撤销。`,
+      isDestructive: true
+    });
+    if (!confirmed) return;
     try {
       await deleteMaterial(id);
       setMaterials(prev => prev.filter(m => m.id !== id));
       setPreviewMaterial(curr => (curr?.id === id ? null : curr));
+      showToast('素材已成功删除');
     } catch (err) {
-      alert('删除失败');
+      showAlert({ title: '删除失败', message: '删除素材失败，请检查后端服务状态。', type: 'error' });
     }
   };
 

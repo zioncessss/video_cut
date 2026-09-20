@@ -21,6 +21,8 @@ export interface ElectronAPI {
     desktop: string;
   }>;
   openPathInExplorer: (fullPath: string) => Promise<{ success: boolean; message?: string }>;
+  isMaximized: () => Promise<boolean>;
+  onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   apiBase: string;
 }
 
@@ -32,6 +34,14 @@ const api: ElectronAPI = {
   getEngineStatus: () => ipcRenderer.invoke('engine:get-status'),
   getAppPaths: () => ipcRenderer.invoke('app:get-paths'),
   openPathInExplorer: (fullPath: string) => ipcRenderer.invoke('shell:open-path', fullPath),
+  isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onMaximizedChange: (callback: (maximized: boolean) => void) => {
+    const handler = (_event: any, state: boolean) => callback(state);
+    ipcRenderer.on('window:maximized-change', handler);
+    return () => {
+      ipcRenderer.removeListener('window:maximized-change', handler);
+    };
+  },
   // sidecar 动态端口：preload 阶段一次性同步获取，渲染层所有请求以此为准
   apiBase: ipcRenderer.sendSync('app:api-base-sync')
 };

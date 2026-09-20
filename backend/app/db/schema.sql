@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS projects (
     task_dir TEXT DEFAULT NULL,
     cover_image_path TEXT DEFAULT NULL,
     cover_source TEXT DEFAULT NULL,
+    prune_spans_json TEXT DEFAULT '[]',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY(talking_head_id) REFERENCES materials(id) ON DELETE CASCADE
@@ -53,6 +54,9 @@ CREATE TABLE IF NOT EXISTS subtitles (
     highlight_words_json TEXT DEFAULT '[]',
     scene_decision_json TEXT DEFAULT NULL,
     is_manual_edited INTEGER NOT NULL DEFAULT 0,
+    is_pruned INTEGER NOT NULL DEFAULT 0,
+    prune_reason TEXT DEFAULT NULL,
+    prune_span_id TEXT DEFAULT NULL,
     FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_subtitles_project ON subtitles(project_id, sort_index);
@@ -62,10 +66,12 @@ CREATE TABLE IF NOT EXISTS strategies (
     project_id TEXT PRIMARY KEY,
     subtitle_theme TEXT NOT NULL DEFAULT 'glow_gold',
     font_size TEXT NOT NULL DEFAULT 'medium',
+    subtitle_font_family TEXT NOT NULL DEFAULT 'notoserif',
     subtitle_font_size INTEGER,
     show_subtitles INTEGER NOT NULL DEFAULT 1,
-    subtitle_position_y INTEGER NOT NULL DEFAULT 82,
+    subtitle_position_y INTEGER NOT NULL DEFAULT 74,
     subtitle_position_x INTEGER NOT NULL DEFAULT 50,
+    video_speed REAL NOT NULL DEFAULT 1.0,
     enable_highlight INTEGER NOT NULL DEFAULT 1,
     highlight_color TEXT NOT NULL DEFAULT '#FACC15',
     highlight_scale INTEGER NOT NULL DEFAULT 1,

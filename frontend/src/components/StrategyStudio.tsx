@@ -1,6 +1,6 @@
 import React from 'react';
 import { EditingStrategy } from '../services/api';
-import { Palette, Sparkles, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck } from 'lucide-react';
+import { Palette, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck, Gauge } from 'lucide-react';
 
 interface StrategyStudioProps {
   strategy: EditingStrategy;
@@ -15,63 +15,52 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
   onSave,
   saving = false,
 }) => {
-  const themes = [
+  const fontOptions = [
     {
-      id: 'glow_gold',
-      name: '纯净发光金 (融入视频)',
-      desc: '无黑底边框，文字纯白立体投影，关键词发光变金黄，自然融入视频画面',
-      bgClass: 'bg-transparent text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)] border-amber-400/40',
-      badge: '✨ 无黑底·强烈推荐',
-      icon: Sun
+      id: 'notoserif',
+      name: '思源 / 华文中宋',
+      sub: 'STZhongsong / Noto Serif',
+      tag: '电影质感 · 横细竖粗',
+      desc: '当代院线与纪录片首选，现代几何美感，小屏超高辨识度',
+      sample: '沉着入库，一气呵成',
+      fontFamily: '"STZhongsong", "华文中宋", "Source Han Serif SC", "Noto Serif SC", "思源宋体", serif',
     },
     {
-      id: 'glass_clean',
-      name: '超透微磨砂 (融入视频)',
-      desc: '极弱超透背景（不遮挡画面），字体通透清晰，科技感高级感并存',
-      bgClass: 'bg-white/10 text-white backdrop-blur-[2px] border-white/30',
-      badge: '🧊 纯净微透',
-      icon: Layers
+      id: 'fangsong',
+      name: '清雅仿宋',
+      sub: 'FangSong',
+      tag: '文艺挺秀 · 信札风骨',
+      desc: '笔画秀拔匀称，兼具传统书法风骨与文学剧本文艺感',
+      sample: '沉着入库，一气呵成',
+      fontFamily: '"FangSong", "FangSong_GB2312", "STFangsong", serif',
     },
     {
-      id: 'cinema_shadow',
-      name: '电影级立体白 (融入视频)',
-      desc: '无任何底框，多层柔和深色外阴影，无论视频明暗均极度清晰易读',
-      bgClass: 'bg-transparent text-white drop-shadow-[0_4px_6px_rgba(0,0,0,1)] border-gray-400/30',
-      badge: '🎬 电影感',
-      icon: Type
+      id: 'songti',
+      name: '经典宋体',
+      sub: 'SimSun',
+      tag: '典雅书卷 · 传统印刷',
+      desc: '中易宋体正风，端庄规整，古典书籍与传统排版沉淀感',
+      sample: '沉着入库，一气呵成',
+      fontFamily: '"STSong", "SimSun", "Songti SC", serif',
     },
     {
-      id: 'viral_gold',
-      name: '爆款胶囊金 (微黑底)',
-      desc: '经典微黑半透胶囊 + 发光明黄，短视频传统高饱和吸睛样式',
-      bgClass: 'bg-black/80 text-amber-400 border-amber-500/30',
-      badge: '🔥 传统胶囊',
-      icon: Flame
+      id: 'kaiti',
+      name: '书法楷体',
+      sub: 'KaiTi',
+      tag: '原图同款 · 温润叙事',
+      desc: '毛笔手写质感，真诚温和，短视频爆款叙事口播原汁原味',
+      sample: '沉着入库，一气呵成',
+      fontFamily: '"KaiTi", "STKaiti", "华文楷体", serif',
     },
     {
-      id: 'tech_emerald',
-      name: '科技青翠 (微黑底)',
-      desc: '极客深黑 + 科技荧光青翠，适合理论法规与硬核步骤拆解',
-      bgClass: 'bg-slate-900/80 text-emerald-400 border-emerald-500/30',
-      badge: '💡 科技感',
-      icon: Cpu
+      id: 'yahei',
+      name: '现代黑体',
+      sub: 'Microsoft YaHei',
+      tag: '干脆清晰 · 无衬线',
+      desc: '无衬线纯净现代，信息传递干脆利落，适合快节奏干货',
+      sample: '沉着入库，一气呵成',
+      fontFamily: '"Microsoft YaHei", "PingFang SC", sans-serif',
     },
-    {
-      id: 'marker_pen',
-      name: '教学记号笔 (明亮底)',
-      desc: '荧光黄底衬 + 纯黑大粗体，用于强调重点段落',
-      bgClass: 'bg-amber-300 text-gray-950 border-amber-400',
-      badge: '✏️ 记号划线',
-      icon: Sparkles
-    },
-  ];
-
-  const highlightColors = [
-    { name: '金黄色', value: '#FACC15', bg: 'bg-yellow-400' },
-    { name: '翡翠绿', value: '#10B981', bg: 'bg-emerald-500' },
-    { name: '亮橙红', value: '#F97316', bg: 'bg-orange-500' },
-    { name: '电光粉', value: '#EC4899', bg: 'bg-pink-500' },
-    { name: '天空蓝', value: '#38BDF8', bg: 'bg-sky-400' },
   ];
 
   const update = (partial: Partial<EditingStrategy>) => {
@@ -80,66 +69,118 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
 
   return (
     <div className="space-y-4 pb-4">
-      {/* 1. 字幕视觉预设主题 (升级提供3套无黑底、融入视频的效果) */}
-      <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between mb-2.5">
+      {/* 1. 字幕视觉风格：只保留「电影立体白」与字体质感对比 */}
+      <div className="bg-white rounded-xl p-3.5 border border-gray-200/80 shadow-xs">
+        <div className="flex items-center justify-between mb-2">
           <div className="flex items-center space-x-1.5">
-            <Palette className="w-4 h-4 text-blue-600" />
-            <h3 className="font-semibold text-xs text-gray-800">字幕呈现方案 (含融入画面·无黑底效果)</h3>
+            <Film className="w-4 h-4 text-indigo-600" />
+            <h3 className="font-semibold text-xs text-gray-800">字幕视觉风格</h3>
           </div>
-          <span className="text-[10px] text-gray-400">支持像爱拍自由挑选</span>
+          <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full font-medium border border-indigo-100/80">
+            电影立体白 · 独家定制
+          </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          {themes.map(t => {
-            const isSelected = strategy.subtitle_theme === t.id;
-            const IconComponent = t.icon;
-            return (
-              <div
-                key={t.id}
-                onClick={() => update({ subtitle_theme: t.id as any })}
-                className={`cursor-pointer rounded-xl p-2.5 border transition-all relative overflow-hidden ${
-                  isSelected
-                    ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md bg-blue-50/20'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center space-x-1">
-                    <IconComponent className={`w-3.5 h-3.5 ${isSelected ? 'text-blue-600' : 'text-gray-500'}`} />
-                    <span className="font-semibold text-[11px] text-gray-800">{t.name}</span>
-                  </div>
-                </div>
-                <span className="inline-block text-[9px] px-1.5 py-0.2 rounded bg-gray-100 text-gray-600 font-medium mb-1.5">
-                  {t.badge}
-                </span>
-                <p className="text-[10px] text-gray-500 line-clamp-2 leading-tight mb-2">
-                  {t.desc}
-                </p>
+        {/* 电影立体白专属展示卡片 */}
+        <div className="rounded-xl p-3 border border-indigo-500/40 bg-indigo-50/20 relative overflow-hidden">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center space-x-1.5">
+              <Type className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="font-bold text-xs text-gray-900">电影立体白</span>
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-700 font-semibold">
+                电影质感
+              </span>
+            </div>
+            <span className="text-[10px] text-gray-400">紧凑微阴影 · 无黑底遮挡</span>
+          </div>
 
-                {/* 模拟视频背景上的字幕效果 */}
-                <div className="bg-gradient-to-r from-emerald-800 to-slate-800 rounded p-1.5 text-center">
-                  <div className={`text-[10px] font-bold px-1 py-0.5 rounded text-center inline-block ${t.bgClass}`}>
-                    科目二 <span className="text-yellow-400 font-black">一把过</span>
-                  </div>
-                </div>
+          <p className="text-[10px] text-gray-500 leading-relaxed mb-2.5">
+            纯白字身辅以紧凑柔和微阴影（Shadow 1.8），在明暗复杂画面中均通透清晰，完美融入视频。
+          </p>
 
-                {isSelected && (
-                  <div className="absolute top-1 right-1">
-                    <span className="flex h-3 w-3 relative">
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-600 items-center justify-center">
-                        <Check className="w-2 h-2 text-white stroke-[3]" />
+          {/* 实时模拟当前字体与高亮效果的电影字幕预览条 */}
+          <div className="bg-gradient-to-r from-zinc-950 via-slate-900 to-zinc-950 rounded-lg py-3 px-3 text-center border border-zinc-800/80 shadow-inner">
+            <div
+              style={{
+                fontFamily:
+                  (strategy.subtitle_font_family === 'kaiti')
+                    ? '"KaiTi", "STKaiti", serif'
+                    : (strategy.subtitle_font_family === 'fangsong')
+                    ? '"FangSong", "FangSong_GB2312", "STFangsong", serif'
+                    : (strategy.subtitle_font_family === 'songti')
+                    ? '"STSong", "SimSun", serif'
+                    : (strategy.subtitle_font_family === 'yahei')
+                    ? '"Microsoft YaHei", sans-serif'
+                    : '"STZhongsong", "华文中宋", "Source Han Serif SC", "Noto Serif SC", "思源宋体", serif',
+                textShadow: '0 1.5px 3px rgba(0,0,0,0.85), 0 0.5px 1px rgba(0,0,0,0.6)',
+              }}
+              className="text-[13px] font-bold text-white tracking-wider inline-block select-none"
+            >
+              科目二 <span style={{ color: strategy.highlight_color || '#FBBF24' }} className="font-extrabold mx-0.5">一把过</span> 秘籍
+            </div>
+          </div>
+        </div>
+
+        {/* 字幕字体风格对比与选择 (思源宋体 / 清雅仿宋 / 经典宋体 / 书法楷体 / 现代黑体) */}
+        <div className="mt-3 pt-3 border-t border-gray-100">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-gray-800 font-semibold text-xs">字体质感对比与选择</span>
+            <span className="text-[10px] text-indigo-600 font-medium bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+              {(() => {
+                switch (strategy.subtitle_font_family) {
+                  case 'fangsong': return '📜 清雅仿宋 · 文艺清秀';
+                  case 'songti': return '📖 经典宋体 · 书卷沉稳';
+                  case 'yahei': return '🔤 现代黑体 · 清晰利落';
+                  case 'kaiti': return '🖋️ 书法楷体 · 原图同款';
+                  case 'notoserif':
+                  default: return '🎬 华文中宋 / 思源 · 电影质感';
+                }
+              })()}
+            </span>
+          </div>
+
+          <div className="space-y-1.5">
+            {fontOptions.map(f => {
+              const active = (strategy.subtitle_font_family || 'notoserif') === f.id;
+              return (
+                <div
+                  key={f.id}
+                  onClick={() => update({ subtitle_font_family: f.id as any })}
+                  className={`cursor-pointer rounded-lg p-2 border transition-all flex items-center justify-between ${
+                    active
+                      ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-500/30 shadow-xs'
+                      : 'border-gray-200/90 hover:border-gray-300 hover:bg-gray-50/70'
+                  }`}
+                >
+                  <div className="flex-1 min-w-0 mr-2">
+                    <div className="flex items-center space-x-1.5 mb-0.5">
+                      <span className={`text-[11px] font-bold ${active ? 'text-indigo-900' : 'text-gray-800'}`}>
+                        {f.name}
                       </span>
-                    </span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-gray-100 text-gray-600 font-medium">
+                        {f.tag}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-gray-500 truncate">{f.desc}</div>
                   </div>
-                )}
-              </div>
-            );
-          })}
+                  <div
+                    style={{ fontFamily: f.fontFamily }}
+                    className={`text-xs px-2 py-1 rounded tracking-wider border select-none flex-shrink-0 ${
+                      active
+                        ? 'bg-indigo-600 text-white border-indigo-600 font-bold'
+                        : 'bg-white text-gray-700 border-gray-200'
+                    }`}
+                  >
+                    {f.sample}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      {/* 2. 字幕布局、大小与显示控制 (支持隐藏、字号、垂直位置微调与拖动提示) */}
+      {/* 2. 字幕布局、大小与显示控制 (宽度锁定 100%，仅垂直微调与字号) */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">
@@ -164,7 +205,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
 
         {strategy.show_subtitles !== false && (
           <div className="space-y-3 pt-1 border-t border-gray-100 text-xs">
-            {/* 字号选择：预设档位 + 连续灵活滑块 */}
+            {/* 字号选择：预设档位 + 连续滑块 */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-gray-600 font-medium text-[11px]">字幕字号大小</span>
@@ -183,7 +224,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                     key={size.id}
                     type="button"
                     onClick={() => update({ font_size: size.id as any, subtitle_font_size: size.px })}
-                    className={`py-1 rounded-lg border text-center text-[10px] transition-all ${
+                    className={`py-1 rounded-lg border text-center text-[10px] transition-all cursor-pointer ${
                       (strategy.subtitle_font_size === size.px || (!strategy.subtitle_font_size && (strategy.font_size || 'medium') === size.id))
                         ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold'
                         : 'border-gray-200 text-gray-600 hover:bg-gray-50'
@@ -204,226 +245,57 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
               />
             </div>
 
-            {/* 字幕区域宽度 (控制单行容量与折行阈值) */}
+            {/* 垂直位置 (Y轴微调，宽度一律锁定 100%) */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <span className="text-gray-600 font-medium text-[11px]">字幕框宽度 (单行容量与折行)</span>
-                <span className="text-[10px] font-mono text-blue-600 font-semibold">
-                  {strategy.subtitle_width_percent ?? 90}%
+                <span className="text-gray-700 font-medium text-[11px]">垂直高度 (Y轴微调)</span>
+                <span className="text-[10px] font-mono text-indigo-600 font-bold">
+                  {strategy.subtitle_position_y ?? 74}%
                 </span>
               </div>
               <input
                 type="range"
-                min="40"
-                max="96"
-                step="1"
-                value={strategy.subtitle_width_percent ?? 90}
-                onChange={e => update({ subtitle_width_percent: parseInt(e.target.value, 10) })}
-                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-              />
-              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_width_percent: 65 })}
-                  className="hover:text-blue-600"
-                >
-                  聚中短行 (65%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_width_percent: 85 })}
-                  className="hover:text-blue-600"
-                >
-                  标准黄金 (85%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_width_percent: 94 })}
-                  className="hover:text-blue-600"
-                >
-                  宽屏长单行 (94%)
-                </button>
-              </div>
-            </div>
-
-            {/* 水平位置 (X轴左右移动) */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-gray-600 font-medium text-[11px]">水平位置 (X轴左右移动)</span>
-                <span className="text-[10px] font-mono text-blue-600 font-semibold">
-                  {strategy.subtitle_position_x ?? 50}%
-                </span>
-              </div>
-              <input
-                type="range"
-                min="10"
+                min="50"
                 max="90"
                 step="1"
-                value={strategy.subtitle_position_x ?? 50}
-                onChange={e => update({ subtitle_position_x: parseInt(e.target.value, 10) })}
-                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                value={strategy.subtitle_position_y ?? 74}
+                onChange={e => update({ subtitle_position_y: parseInt(e.target.value, 10), subtitle_position_x: 50, subtitle_width_percent: 100 })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
               />
-              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+              <div className="flex items-center justify-between mt-1.5 text-[9px] text-gray-400">
                 <button
                   type="button"
-                  onClick={() => update({ subtitle_position_x: 30 })}
-                  className="hover:text-blue-600"
+                  onClick={() => update({ subtitle_position_y: 65, subtitle_position_x: 50, subtitle_width_percent: 100 })}
+                  className="hover:text-indigo-600 cursor-pointer"
                 >
-                  偏左 (30%)
+                  视线中位 (65%)
                 </button>
                 <button
                   type="button"
-                  onClick={() => update({ subtitle_position_x: 50 })}
-                  className="hover:text-blue-600"
+                  onClick={() => update({ subtitle_position_y: 74, subtitle_position_x: 50, subtitle_width_percent: 100 })}
+                  className="text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200/80 hover:bg-indigo-100 cursor-pointer"
+                  title="原图同款推荐位：既避开人物面部与下巴，又安全悬停在底部进度条与文案安全区上方"
                 >
-                  居中 (50%)
+                  ★ 黄金推荐位 (74%)
                 </button>
                 <button
                   type="button"
-                  onClick={() => update({ subtitle_position_x: 70 })}
-                  className="hover:text-blue-600"
+                  onClick={() => update({ subtitle_position_y: 82, subtitle_position_x: 50, subtitle_width_percent: 100 })}
+                  className="hover:text-indigo-600 cursor-pointer"
                 >
-                  偏右 (70%)
-                </button>
-              </div>
-            </div>
-
-            {/* 垂直位置 (Y轴上下移动) */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-gray-600 font-medium text-[11px]">垂直位置 (Y轴上下高度)</span>
-                <span className="text-[10px] font-mono text-blue-600 font-semibold">
-                  {strategy.subtitle_position_y ?? 82}%
-                </span>
-              </div>
-              <input
-                type="range"
-                min="15"
-                max="95"
-                step="1"
-                value={strategy.subtitle_position_y ?? 82}
-                onChange={e => update({ subtitle_position_y: parseInt(e.target.value, 10) })}
-                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-              />
-              <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_position_y: 20 })}
-                  className="hover:text-blue-600"
-                >
-                  顶部 (20%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_position_y: 50 })}
-                  className="hover:text-blue-600"
-                >
-                  居中 (50%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_position_y: 72 })}
-                  className="hover:text-blue-600"
-                >
-                  中下 (72%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => update({ subtitle_position_y: 82 })}
-                  className="hover:text-blue-600"
-                >
-                  贴底 (82%)
+                  下沉贴底 (82%)
                 </button>
               </div>
-              <div className="mt-1.5 bg-blue-50/60 rounded p-1.5 text-[10px] text-blue-700 flex items-center space-x-1">
-                <span>💡</span>
-                <span>也可直接在左侧视频画面中鼠标按住字幕上下左右自由拖动！</span>
+              <div className="mt-1.5 text-[10px] text-gray-500 bg-gray-50 rounded p-1.5 flex items-center justify-between">
+                <span>🔒 字幕宽度已锁定 100% 全宽居中</span>
+                <span className="text-gray-400">避开人脸与底部控制栏</span>
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* 3. 关键词精准高亮控制 */}
-      <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center space-x-1.5">
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <h3 className="font-semibold text-xs text-gray-800">单句内关键词精准高亮 (单词强调)</h3>
-          </div>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={strategy.enable_highlight}
-              onChange={e => update({ enable_highlight: e.target.checked })}
-              className="sr-only peer"
-            />
-            <div className="w-8 h-4.5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-amber-500"></div>
-          </label>
-        </div>
-
-        {strategy.enable_highlight && (
-          <div className="space-y-2.5 pt-1 border-t border-gray-100 text-xs">
-            <div>
-              <span className="text-gray-600 block mb-1 font-medium text-[11px]">高亮强调色彩</span>
-              <div className="flex items-center space-x-2">
-                {highlightColors.map(c => (
-                  <button
-                    key={c.value}
-                    type="button"
-                    onClick={() => update({ highlight_color: c.value })}
-                    className={`w-5 h-5 rounded-full flex items-center justify-center transition-transform ${c.bg} ${
-                      strategy.highlight_color === c.value
-                        ? 'ring-2 ring-offset-1 ring-gray-600 scale-110'
-                        : 'opacity-80 hover:opacity-100'
-                    }`}
-                    title={c.name}
-                  >
-                    {strategy.highlight_color === c.value && (
-                      <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
-                    )}
-                  </button>
-                ))}
-                <input
-                  type="color"
-                  value={strategy.highlight_color}
-                  onChange={e => update({ highlight_color: e.target.value })}
-                  className="w-5 h-5 rounded border border-gray-300 cursor-pointer p-0 bg-transparent ml-2"
-                  title="自定义色值"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-0.5">
-              <span className="text-gray-600 font-medium text-[11px]">高亮词微放大 (1.1x 动态强调)</span>
-              <input
-                type="checkbox"
-                checked={strategy.highlight_scale}
-                onChange={e => update({ highlight_scale: e.target.checked })}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5"
-              />
-            </div>
-
-            <div>
-              <span className="text-gray-600 block mb-1 font-medium text-[11px]">
-                专有高亮词库 (AI 会智能检测这些词并精准高亮句子里的这几个字)
-              </span>
-              <input
-                type="text"
-                value={strategy.custom_highlight_words?.join('，') || ''}
-                onChange={e => {
-                  const words = e.target.value.split(/[,，\s]+/).filter(Boolean);
-                  update({ custom_highlight_words: words });
-                }}
-                placeholder="例如: 科目二，一把过，金牌教练，十分钟，快速搞定"
-                className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
-              />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 3. 顶部 Title 挂顶横幅 */}
+      {/* 2. 顶部 Title 挂顶横幅 */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-2">
@@ -878,74 +750,95 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         )}
       </div>
 
-      {/* 5. 空镜穿插节奏 (Pacing) */}
-      <div className="bg-white rounded-xl p-3.5 border border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between mb-2">
+      {/* 5. 语速与节奏 */}
+      <div className="bg-white rounded-xl p-3.5 border border-gray-200/80 shadow-xs">
+        <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">
-            <Film className="w-4 h-4 text-indigo-600" />
-            <h3 className="font-semibold text-xs text-gray-800">空镜穿插节奏 (B-roll Pacing)</h3>
+            <Gauge className="w-4 h-4 text-indigo-600" />
+            <h3 className="font-semibold text-xs text-gray-800">导出倍速与语速</h3>
+          </div>
+          <div className="flex items-center space-x-1 bg-indigo-50/80 border border-indigo-200/80 rounded-lg px-2 py-0.5 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500/20">
+            <input
+              type="number"
+              step="0.01"
+              min="0.5"
+              max="2.5"
+              value={strategy.video_speed ?? 1.0}
+              onChange={e => {
+                const val = parseFloat(e.target.value);
+                update({ video_speed: isNaN(val) ? 1.0 : Math.max(0.5, Math.min(2.5, Math.round(val * 100) / 100)) });
+              }}
+              className="w-12 text-center text-xs font-mono font-bold text-indigo-700 bg-transparent outline-none"
+              title="自由输入任意导出倍速（如 1.08, 1.12, 1.15, 1.33 等）"
+            />
+            <span className="text-[11px] font-mono text-indigo-500 font-bold">x</span>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-5 gap-1.5 mb-2.5">
           {[
-            { id: 'fast', label: '快节奏混剪', sub: '2.0s 卡点' },
-            { id: 'standard', label: '标准教学', sub: '3.5s 讲解' },
-            { id: 'talking_only', label: '纯口播', sub: '不切空镜' },
-          ].map(p => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => update({ broll_pacing: p.id as any })}
-              className={`p-2 rounded-lg border text-center transition-all ${
-                strategy.broll_pacing === p.id
-                  ? 'border-indigo-600 bg-indigo-50/40 text-indigo-700 font-semibold ring-1 ring-indigo-500'
-                  : 'border-gray-200 hover:border-gray-300 text-gray-600'
-              }`}
-            >
-              <div className="text-xs">{p.label}</div>
-              <div className="text-[9px] text-gray-400 mt-0.5">{p.sub}</div>
-            </button>
-          ))}
-        </div>
-
-        {/* 转场风格：硬切 / 叠化（时长取各句 AI 分镜决策的 transition，0.3~0.5s） */}
-        <div className="mt-2.5">
-          <span className="text-gray-600 block mb-1 font-medium text-[11px]">转场风格（音轨始终为口播原声）</span>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { id: 'cut', label: '硬切', sub: '画面直接切换' },
-              { id: 'fade', label: '叠化', sub: '0.3~0.5s 柔和过渡' },
-            ].map(t => (
+            { speed: 1.0, label: '1.0x', tag: '原速' },
+            { speed: 1.1, label: '1.1x', tag: '紧凑' },
+            { speed: 1.15, label: '1.15x', tag: '轻快' },
+            { speed: 1.2, label: '1.2x', tag: '干脆' },
+            { speed: 1.25, label: '1.25x', tag: '快嘴' },
+          ].map(item => {
+            const currentSpeed = Number(strategy.video_speed || 1.0);
+            const active = Math.abs(currentSpeed - item.speed) < 0.005;
+            return (
               <button
-                key={t.id}
+                key={item.speed}
                 type="button"
-                onClick={() => update({ transition_style: t.id as any })}
-                className={`p-2 rounded-lg border text-center transition-all ${
-                  (strategy.transition_style || 'cut') === t.id
-                    ? 'border-indigo-600 bg-indigo-50/40 text-indigo-700 font-semibold ring-1 ring-indigo-500'
-                    : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                onClick={() => update({ video_speed: item.speed })}
+                className={`py-1.5 px-1 rounded-lg border text-center transition-all cursor-pointer ${
+                  active
+                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs ring-1 ring-indigo-500/30'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
                 }`}
               >
-                <div className="text-xs">{t.label}</div>
-                <div className="text-[9px] text-gray-400 mt-0.5">{t.sub}</div>
+                <div className="text-xs font-mono">{item.label}</div>
+                <div className="text-[9px] text-gray-400 mt-0.5">{item.tag}</div>
               </button>
-            ))}
+            );
+          })}
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-gray-500 text-[11px]">连续精准微调 (步长 0.01)</span>
+            <span className="text-[10px] font-mono text-gray-400">0.50x ~ 2.00x</span>
+          </div>
+          <input
+            type="range"
+            min="0.50"
+            max="2.00"
+            step="0.01"
+            value={strategy.video_speed || 1.0}
+            onChange={e => update({ video_speed: Math.round(parseFloat(e.target.value) * 100) / 100 })}
+            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+          />
+          <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400 font-mono">
+            <span>0.50x 慢速</span>
+            <span>1.00x 原速</span>
+            <span>1.50x 快速</span>
+            <span>2.00x 极速</span>
           </div>
         </div>
       </div>
 
-      {/* 保存并同步策略按钮 */}
+
+
+      {/* 保存方案按钮 */}
       {onSave && (
         <div className="pt-1">
           <button
             type="button"
             onClick={onSave}
             disabled={saving}
-            className="w-full flex items-center justify-center space-x-1.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-sm transition-colors disabled:opacity-50"
+            className="w-full flex items-center justify-center space-x-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold rounded-xl shadow-xs transition-colors disabled:opacity-50"
           >
             <Check className="w-3.5 h-3.5" />
-            <span>{saving ? '正在保存策略...' : '保存并同步当前剪辑方案'}</span>
+            <span>{saving ? '正在保存...' : '保存剪辑方案'}</span>
           </button>
         </div>
       )}

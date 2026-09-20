@@ -200,9 +200,10 @@ export const streamChatSSE = async (
 export interface EditingStrategy {
   subtitle_theme: 'glow_gold' | 'glass_clean' | 'cinema_shadow' | 'viral_gold' | 'tech_emerald' | 'marker_pen' | 'minimal_white';
   font_size: 'small' | 'medium' | 'large' | 'xlarge';
+  subtitle_font_family?: 'kaiti' | 'notoserif' | 'fangsong' | 'songti' | 'yahei' | 'hei'; // 字体风格: kaiti(书法楷体), notoserif(思源宋体), fangsong(清雅仿宋), songti(经典宋体), yahei(现代黑体)
   subtitle_font_size?: number; // 连续字号大小 (24~96px)
   show_subtitles?: boolean;
-  subtitle_position_y?: number;  // 竖屏垂直百分比 10~95 (默认82)
+  subtitle_position_y?: number;  // 竖屏垂直百分比 10~95 (推荐 74% 口播黄金位)
   subtitle_position_x?: number;  // 竖屏水平百分比 5~95 (默认50)
   subtitle_width_percent?: number; // 文本框宽度百分比 30~95 (可拖拽拉宽/窄)
   enable_highlight: boolean;
@@ -228,6 +229,29 @@ export interface EditingStrategy {
   watermark_position_y?: number; // 垂直百分比 2~98
   broll_pacing: 'fast' | 'standard' | 'talking_only';
   transition_style?: 'cut' | 'fade'; // 转场风格：硬切 / 叠化(时长取各句 scene_decision)
+  video_speed?: number; // 视频剪辑倍速 (0.75~2.0)
+  enable_auto_prune?: boolean;
+  enable_head_prune?: boolean;
+  enable_tail_prune?: boolean;
+  enable_retake_prune?: boolean;
+  enable_mid_silence_prune?: boolean;
+  head_padding_seconds?: number;
+  tail_padding_seconds?: number;
+  mid_silence_threshold?: number;
+  mid_silence_breath_gap?: number;
+  retake_pause_min?: number;
+  retake_similarity_min?: number;
+}
+
+export interface PruneSpan {
+  id: string;
+  start_time: number;
+  end_time: number;
+  reason: 'head_idle' | 'tail_idle' | 'retake_discard' | 'mid_silence' | 'manual' | string;
+  source_subtitle_id?: string | null;
+  target_subtitle_id?: string | null;
+  duration: number;
+  is_active: boolean;
 }
 
 export interface HighlightWord {
@@ -258,6 +282,9 @@ export interface SubtitleSegment {
   scene_decision?: SceneDecision | null;
   broll_material_id?: string | null;
   is_manual_edited?: boolean;
+  is_pruned?: boolean;
+  prune_reason?: string | null;
+  prune_span_id?: string | null;
 }
 
 export interface BrollReplacement {
@@ -340,6 +367,15 @@ export const setProjectCover = async (
   return res.data.data as { cover_image_path: string; cover_source: string; cover_url: string };
 };
 
+export const uploadProjectCoverFile = async (projectId: string, file: File) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/cover/upload`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  return res.data.data as { cover_image_path: string; cover_source: string; cover_url: string };
+};
+
 export const fetchProjectByMaterial = async (materialId: string) => {
   const res = await axios.get(`${API_BASE}/projects/by-material/${materialId}`);
   return res.data;
@@ -368,6 +404,7 @@ export const analyzeAndCutVideo = async (
     aspectRatio?: string;
     autoBroll?: boolean;
     forceRetranscribe?: boolean;
+    autoRender?: boolean;
   }
 ) => {
   const res = await axios.post(`${API_BASE}/projects/analyze-and-cut`, {
@@ -375,6 +412,7 @@ export const analyzeAndCutVideo = async (
     aspect_ratio: options?.aspectRatio || '9:16',
     auto_broll: options?.autoBroll !== false,
     force_retranscribe: !!options?.forceRetranscribe,
+    auto_render: !!options?.autoRender,
   });
   return res.data;
 };
@@ -394,10 +432,13 @@ export interface RenderProjectResult {
   output_file_size_mb?: number;
   subtitles?: any[];
   strategy?: EditingStrategy;
+  cover_image_path?: string;
+  cover_source?: string;
 }
 
-export const renderProject = async (projectId: string): Promise<RenderProjectResult> => {
-  const res = await axios.post(`${API_BASE}/projects/${projectId}/render`);
+export const renderProject = async (projectId: string, videoSpeed?: number): Promise<RenderProjectResult> => {
+  const params = videoSpeed !== undefined ? { video_speed: videoSpeed } : {};
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/render`, null, { params });
   return res.data;
 };
 
@@ -424,21 +465,79 @@ export interface ProjectSummary {
   subtitles?: SubtitleSegment[];
   broll_replacements?: any[];
   strategy?: EditingStrategy;
+  prune_spans?: PruneSpan[];
 }
+
+export const toggleSubtitlePrune = async (
+  projectId: string,
+  subtitleId: string,
+  isPruned?: boolean
+): Promise<{
+  success: boolean;
+  subtitle_id: string;
+  is_pruned: boolean;
+  prune_spans: PruneSpan[];
+  total_effective_duration: number;
+}> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/subtitles/${subtitleId}/toggle-prune`, {
+    is_pruned: isPruned
+  });
+  return res.data;
+};
+
+export const updatePruneConfig = async (
+  projectId: string,
+  config: {
+    enable_head_prune?: boolean;
+    enable_tail_prune?: boolean;
+    enable_retake_prune?: boolean;
+    enable_mid_silence_prune?: boolean;
+    head_padding_seconds?: number;
+    tail_padding_seconds?: number;
+    mid_silence_threshold?: number;
+    mid_silence_breath_gap?: number;
+    retake_pause_min?: number;
+    retake_similarity_min?: number;
+  }
+): Promise<{
+  success: boolean;
+  total_pruned_seconds: number;
+  prune_spans: PruneSpan[];
+}> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/prune-config`, config);
+  return res.data;
+};
 
 export const fetchAllProjects = async (): Promise<ProjectSummary[]> => {
   const res = await axios.get(`${API_BASE}/projects`);
   return res.data;
 };
 
+export const deleteProject = async (projectId: string, deleteFiles: boolean = true) => {
+  const res = await axios.delete(`${API_BASE}/projects/${projectId}`, {
+    params: { delete_files: deleteFiles }
+  });
+  return res.data;
+};
+
+export const batchDeleteProjects = async (projectIds: string[], deleteFiles: boolean = true) => {
+  const res = await axios.post(`${API_BASE}/projects/batch-delete`, {
+    project_ids: projectIds,
+    delete_files: deleteFiles
+  });
+  return res.data;
+};
+
 export const uploadAndBatchCut = async (
   files: File[],
   aspectRatio: string = '9:16',
-  concurrency?: number
+  concurrency?: number,
+  videoSpeed: number = 1.0
 ) => {
   const formData = new FormData();
   files.forEach(f => formData.append('files', f));
   formData.append('aspect_ratio', aspectRatio);
+  formData.append('video_speed', String(videoSpeed));
   if (concurrency) {
     formData.append('concurrency', String(concurrency));
   }
@@ -451,12 +550,14 @@ export const uploadAndBatchCut = async (
 export const importAndBatchCut = async (
   filePaths: string[],
   aspectRatio: string = '9:16',
-  concurrency?: number
+  concurrency?: number,
+  videoSpeed: number = 1.0
 ) => {
   const res = await axios.post(`${API_BASE}/batch/import-and-cut`, {
     file_paths: filePaths,
     aspect_ratio: aspectRatio,
-    concurrency
+    concurrency,
+    video_speed: videoSpeed
   });
   return res.data.data as { job_id: string; queued: number; concurrency: number };
 };

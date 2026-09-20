@@ -54,7 +54,19 @@ def _ensure_columns(conn) -> None:
     except Exception:
         pass
     try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN font_size TEXT NOT NULL DEFAULT 'medium';")
+    except Exception:
+        pass
+    try:
         conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_width_percent INTEGER DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN subtitle_font_family TEXT NOT NULL DEFAULT 'notoserif';")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE strategies ADD COLUMN video_speed REAL NOT NULL DEFAULT 1.0;")
     except Exception:
         pass
     try:
@@ -95,6 +107,22 @@ def _ensure_columns(conn) -> None:
         pass
     try:
         conn.execute("ALTER TABLE projects ADD COLUMN cover_source TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN prune_spans_json TEXT DEFAULT '[]';")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN is_pruned INTEGER NOT NULL DEFAULT 0;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN prune_reason TEXT DEFAULT NULL;")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN prune_span_id TEXT DEFAULT NULL;")
     except Exception:
         pass
     conn.commit()

@@ -21,6 +21,9 @@ export interface SubtitleItem {
   } | null;
   broll_material_id?: string | null;
   is_manual_edited?: boolean;
+  is_pruned?: boolean;
+  prune_reason?: string | null;
+  prune_span_id?: string | null;
 }
 
 export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -35,6 +38,7 @@ interface SubtitleListProps {
   onTextBlur?: (index: number) => void;
   onHighlightWordsChange: (index: number, words: HighlightWord[]) => void;
   onRetrySave?: () => void;
+  onTogglePrune?: (index: number, sub: SubtitleItem) => void;
 }
 
 const SOURCE_META: Record<string, { label: string; cls: string }> = {
@@ -53,6 +57,7 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
   onTextBlur,
   onHighlightWordsChange,
   onRetrySave,
+  onTogglePrune,
 }) => {
   const [addingFor, setAddingFor] = useState<string | null>(null);
   const [newWord, setNewWord] = useState('');
@@ -163,7 +168,15 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
           </div>
         ) : (
           subtitles.map((sub, idx) => {
-            const isActive = currentTime >= sub.start_time && currentTime <= sub.end_time;
+            const prevSub = idx > 0 ? subtitles[idx - 1] : null;
+            const nextSub = idx + 1 < subtitles.length ? subtitles[idx + 1] : null;
+            const prevEnd = prevSub ? prevSub.end_time : 0;
+            const effStart = Math.max(prevEnd, sub.start_time - 0.07);
+            const gap = nextSub ? nextSub.start_time - sub.end_time : 999;
+            const effEnd = nextSub && gap > 0 && gap <= 0.60
+              ? Math.max(sub.end_time, nextSub.start_time - 0.07)
+              : sub.end_time + 0.25;
+            const isActive = currentTime >= effStart && currentTime < effEnd;
             const words: HighlightWord[] = sub.highlight_words
               ? sub.highlight_words
               : (sub.matched_keywords || []).map(w => ({ word: w, source: 'glossary' as const }));
@@ -171,7 +184,9 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
               <div
                 key={sub.id || idx}
                 className={`p-3 rounded-xl border transition-all duration-150 ${
-                  isActive
+                  sub.is_pruned
+                    ? 'border-dashed border-gray-300 bg-gray-100/60 opacity-75'
+                    : isActive
                     ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-500/20'
                     : 'border-gray-200 bg-gray-50/50 hover:border-gray-300'
                 }`}
@@ -185,19 +200,38 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                       <PlayCircle className="w-3.5 h-3.5 text-blue-600" />
                       <span>{formatTime(sub.start_time)} - {formatTime(sub.end_time)}</span>
                     </button>
-                    {sub.is_manual_edited && (
+                    {sub.is_manual_edited && !sub.is_pruned && (
                       <span className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-blue-50 text-blue-600 border border-blue-200" title="已进行人工手动修改">
                         人工修改
                       </span>
                     )}
+                    {sub.is_pruned ? (
+                      <button
+                        type="button"
+                        onClick={() => onTogglePrune && onTogglePrune(idx, sub)}
+                        className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300 transition-colors cursor-pointer"
+                        title="点击恢复此片段至成片时间轴"
+                      >
+                        已剔除 ({sub.prune_reason === 'retake_discard' ? '口误重说' : sub.prune_reason === 'head_idle' ? '开机准备' : sub.prune_reason === 'tail_idle' ? '关机废镜头' : '手动'}) · 恢复
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onTogglePrune && onTogglePrune(idx, sub)}
+                        className="px-1.5 py-0.5 rounded text-[10px] text-gray-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors cursor-pointer"
+                        title="点击剔除此片段（不参与成片与播放）"
+                      >
+                        剔除
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center space-x-1">
-                    {getPartBadge(sub.scene_decision?.part)}
-                    {getCategoryBadge(sub.matched_category)}
+                    {!sub.is_pruned && getPartBadge(sub.scene_decision?.part)}
+                    {!sub.is_pruned && getCategoryBadge(sub.matched_category)}
                   </div>
                 </div>
 
-                {sub.scene_decision && (
+                {!sub.is_pruned && sub.scene_decision && (
                   <div
                     className={`mb-1.5 text-[10px] rounded-lg px-2 py-1 border ${
                       sub.scene_decision.broll_category
@@ -217,6 +251,7 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
 
                 <textarea
                   value={sub.corrected_text}
+                  disabled={sub.is_pruned}
                   onChange={e => onTextChange(idx, e.target.value)}
                   onBlur={() => onTextBlur && onTextBlur(idx)}
                   onKeyDown={e => {
@@ -226,7 +261,11 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                     }
                   }}
                   placeholder="输入字幕文本..."
-                  className="w-full text-xs text-gray-800 bg-white border border-gray-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none"
+                  className={`w-full text-xs rounded-lg p-2 outline-none resize-none ${
+                    sub.is_pruned
+                      ? 'line-through text-gray-400 bg-gray-100/80 border border-dashed border-gray-300'
+                      : 'text-gray-800 bg-white border border-gray-200 focus:ring-1 focus:ring-blue-500 focus:border-blue-500'
+                  }`}
                   rows={2}
                 />
 
@@ -246,7 +285,7 @@ export const SubtitleList: React.FC<SubtitleListProps> = ({
                         title={`来源：${meta.label}${w.category ? ` · 类型：${w.category}` : ''} · 颜色：${wordColor}`}
                       >
                         <span
-                          className="w-1.5 h-1.5 rounded-full inline-block flex-shrink-0 shadow-xs"
+                          className="w-2 h-2 rounded-full inline-block flex-shrink-0 shadow-xs border border-black/20"
                           style={{ backgroundColor: wordColor }}
                         />
                         {w.source === 'ai' ? (

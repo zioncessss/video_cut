@@ -17,6 +17,7 @@ import {
   Scissors
 } from 'lucide-react';
 import { streamChatSSE, ChatMessageItem } from '../services/api';
+import { useDialog } from './common/CustomDialog';
 
 interface HarnessChatDrawerProps {
   currentProjectId?: string | null;
@@ -37,6 +38,7 @@ export const HarnessChatDrawer: React.FC<HarnessChatDrawerProps> = ({
   onOpenChange,
   showFloatingTrigger = false,
 }) => {
+  const { showAlert, showToast } = useDialog();
   const [internalIsOpen, setInternalIsOpen] = useState(false);
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : internalIsOpen;
 
@@ -311,9 +313,9 @@ export const HarnessChatDrawer: React.FC<HarnessChatDrawerProps> = ({
                           onClick={() => {
                             if (onApplyStrategyToProject && msg.action) {
                               onApplyStrategyToProject(msg.action);
-                              alert('策略已成功应用到当前剪辑工程！');
+                              showToast('策略已成功应用到当前剪辑工程！');
                             } else {
-                              alert('请先在剪辑工作台选择一个视频工程');
+                              showAlert({ title: '提示', message: '请先在剪辑工作台选择一个视频工程，再应用此策略。', type: 'info' });
                             }
                           }}
                           className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 rounded-xl transition-all shadow-sm active:scale-98 text-xs"

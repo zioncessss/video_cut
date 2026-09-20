@@ -1,10 +1,16 @@
+import copy
+import json
+import re
 import secrets
+import shutil
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections
 import time
 from app.models.entities import (
     CutProject,
@@ -16,7 +22,9 @@ from app.models.entities import (
     MaterialCategory,
     EditingStrategy,
     PipelineStage,
-    PipelineProgress
+    PipelineProgress,
+    PruneSpan,
+    PruneReason,
 )
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
@@ -29,6 +37,107 @@ from app.harness_bridge.factory import get_active_harness
 from app.harness_bridge.base import HarnessCorrectionRequest
 
 router = APIRouter()
+
+def extract_cover_frame(source_video_path: Path, output_cover_path: Path, timestamp: float = 0.5) -> bool:
+    """从指定视频文件中快速截取高质量静止帧作为封面（耗时通常 <50ms）"""
+    if not source_video_path.exists():
+        return False
+    try:
+        import subprocess
+        c_proc = subprocess.run([
+            "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(source_video_path),
+            "-frames:v", "1", "-q:v", "3", str(output_cover_path)
+        ], capture_output=True, timeout=10)
+        return c_proc.returncode == 0 and output_cover_path.exists()
+    except Exception as ce:
+        print(f"[extract_cover_frame] 截取封面异常: {ce}")
+        return False
+
+def _prepare_render_subtitles(subtitles: list, speed: float = 1.0, kept_spans: Optional[list] = None) -> list:
+    """
+    1. 过滤已标记剔除的字幕（is_pruned == True）
+    2. 若有 kept_spans（粗剪紧凑时间轴），将有效起止时间精确重投影至紧凑时间轴
+    3. 如果倍速不为 1.0，等比缩放字幕起止时间与词级时间戳，避免浮点漂移
+    """
+    from app.native_engine.prune_engine import auto_prune_engine
+
+    speed = float(speed or 1.0)
+    result = []
+
+    for s in subtitles:
+        data = s.model_dump() if hasattr(s, "model_dump") else dict(s)
+        # 1. 过滤被剔除的句子
+        if data.get("is_pruned"):
+            continue
+
+        item = copy.deepcopy(data)
+        st = float(item["start_time"])
+        et = float(item["end_time"])
+
+        # 2. 紧凑时间轴重投影
+        if kept_spans:
+            mapped = auto_prune_engine.map_interval_to_compact(st, et, kept_spans)
+            if not mapped:
+                continue
+            item["start_time"], item["end_time"] = mapped
+            if "words" in item and isinstance(item["words"], list):
+                mapped_words = []
+                for w in item["words"]:
+                    w_dict = w.model_dump() if hasattr(w, "model_dump") else dict(w)
+                    if w_dict.get("start") is not None and w_dict.get("end") is not None:
+                        w_mapped = auto_prune_engine.map_interval_to_compact(float(w_dict["start"]), float(w_dict["end"]), kept_spans)
+                        if w_mapped:
+                            w_dict["start"], w_dict["end"] = w_mapped
+                            mapped_words.append(w_dict)
+                item["words"] = mapped_words
+
+        # 3. 倍速处理
+        if abs(speed - 1.0) >= 0.01:
+            item["start_time"] = round(float(item["start_time"]) / speed, 3)
+            item["end_time"] = round(float(item["end_time"]) / speed, 3)
+            if "words" in item and isinstance(item["words"], list):
+                for w in item["words"]:
+                    if isinstance(w, dict):
+                        if w.get("start") is not None:
+                            w["start"] = round(float(w["start"]) / speed, 3)
+                        if w.get("end") is not None:
+                            w["end"] = round(float(w["end"]) / speed, 3)
+
+        result.append(item)
+    return result
+
+def _save_task_manifest(task_dir_path: Path, project: CutProject):
+    """在任务专属目录中生成自包含的索引清单 project_manifest.json"""
+    try:
+        out_fn = project.output_filename or (Path(project.output_video_path).name if project.output_video_path else None)
+        manifest_data = {
+            "project_id": project.id,
+            "title": project.title,
+            "aspect_ratio": project.aspect_ratio,
+            "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+            "talking_head_id": project.talking_head_id,
+            "task_dir": project.task_dir,
+            "output_video_path": project.output_video_path,
+            "output_filename": out_fn,
+            "output_file_size_mb": project.output_file_size_mb,
+            "cover_image_path": project.cover_image_path,
+            "cover_source": project.cover_source,
+            "subtitles_count": len(project.subtitles),
+            "broll_count": len(project.broll_replacements),
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+            "last_rendered_at": datetime.now().isoformat(),
+            "files": {
+                "output_video": out_fn,
+                "cover_image": Path(project.cover_image_path).name if project.cover_image_path else None,
+                "subtitles_ass": "subtitles.ass" if (task_dir_path / "subtitles.ass").exists() else None,
+                "subtitles_srt": "subtitles.srt" if (task_dir_path / "subtitles.srt").exists() else None,
+            }
+        }
+        manifest_file = task_dir_path / "project_manifest.json"
+        manifest_file.write_text(json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[_save_task_manifest] 保存 manifest 异常: {e}")
 
 # 实时进度跟踪字典（供单视频或后续批量任务查询）；按更新时间淘汰最旧条目防止无界增长
 _pipeline_progress: Dict[str, PipelineProgress] = {}
@@ -55,19 +164,61 @@ class AnalyzeAndCutRequest(BaseModel):
     auto_broll: bool = True
     force_retranscribe: bool = False
     enable_scene_decision: bool = True
+    enable_llm_correction: bool = False  # 默认为 False：高精 ASR 直通模式，仅走词库确定性兜底，避免 LLM 过度干预与篡改
+    video_speed: float = 1.0
+    auto_render: bool = False  # 默认为 False：单视频交互初剪极速秒级进入实时编辑；为 True 时（如批量全自动流水线）同步压制最终成片
 
 class UpdateSubtitlesRequest(BaseModel):
     subtitles: List[Dict[str, Any]]
     broll_replacements: Optional[List[Dict[str, Any]]] = None
 
 def _enrich_project_export_meta(p: CutProject) -> CutProject:
-    """如果工程已生成成片，自动补全成片的绝对路径、文件名和文件大小"""
-    if p and p.output_video_path:
-        full_path = STORAGE_DIR.parent / p.output_video_path
-        if full_path.exists():
+    """真实性守卫与元数据补全：校验成片与封面磁盘存在性，若被外部清理则自愈防御，杜绝死引用与黑屏"""
+    if not p:
+        return p
+
+    # 1. 成片物理文件检测：若成片已被物理清理或移动，如实同步状态，绝不伪造
+    if p.output_video_path:
+        full_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
+        if full_path.exists() and full_path.is_file():
             p.output_absolute_path = str(full_path.resolve())
             p.output_filename = full_path.name
             p.output_file_size_mb = round(full_path.stat().st_size / (1024 * 1024), 2)
+        else:
+            p.output_video_path = None
+            p.output_absolute_path = None
+            p.output_filename = None
+            p.output_file_size_mb = None
+            if p.status == CutProjectStatus.COMPLETED:
+                p.status = CutProjectStatus.DRAFT
+
+    # 2. 封面健壮性检测与自动自愈：若封面不存在，自动从口播原素材抽取 0.5s 封面帧
+    has_valid_cover = False
+    if p.cover_image_path:
+        full_cover = (STORAGE_DIR.parent / p.cover_image_path).resolve()
+        if full_cover.exists() and full_cover.is_file() and full_cover.stat().st_size > 0:
+            has_valid_cover = True
+
+    if not has_valid_cover and p.talking_head_id:
+        try:
+            th = storage_service.get_material(p.talking_head_id)
+            if th and th.filepath:
+                full_th = (STORAGE_DIR.parent / th.filepath).resolve()
+                if full_th.exists() and full_th.is_file():
+                    if p.task_dir:
+                        cov_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+                    else:
+                        cov_dir = (STORAGE_DIR / "covers").resolve()
+                    cov_dir.mkdir(parents=True, exist_ok=True)
+                    target_cover_path = cov_dir / "cover.jpg"
+                    if extract_cover_frame(full_th, target_cover_path, timestamp=0.5):
+                        rel_path = str(target_cover_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
+                        p.cover_image_path = rel_path
+                        p.cover_source = "frame"
+                        project_storage_service.save_project(p)
+        except Exception as e:
+            print(f"[_enrich_project_export_meta] 自动恢复封面失败: {e}")
+
     return p
 
 @router.get("/by-material/{material_id}", response_model=CutProject)
@@ -106,38 +257,87 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         # 1. 固化 ASR 转写（自然句层，不切割）与智能合并
         _set_progress(req.talking_head_id, PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
         raw_segments = asr_runner.transcribe(full_th_path)
-        raw_segments = asr_runner.filter_filler_segments(raw_segments)
 
-        # 2. Harness 上下文专有词纠偏（在自然句层面做：完整句模型不会重新断句，
-        #    句集一致性守卫不再因句中碎片而触发回退——T038 管线顺序调整）
-        _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "大模型行业专名词义智能纠偏中...")
-        correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
-        correction_res = await get_active_harness().correct_subtitles(correction_req)
+        # 2. 字幕处理（支持高精 ASR 直通模式，杜绝大模型过度纠偏）：
+        #    若开启 enable_llm_correction 则走大模型纠偏；
+        #    默认高精 ASR 直通：直接以 ASR 原文为主 + 本地词库确定性兜底（0 延迟、0 幻觉、无过度改写）
+        if req.enable_llm_correction:
+            _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "大模型行业专名词义智能纠偏中...")
+            correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
+            correction_res = await get_active_harness().correct_subtitles(correction_req)
+            candidate_subs = correction_res.updated_subtitles
+            summary_list = [
+                c.model_dump() for c in (getattr(correction_res, 'corrections_summary', []) or [])
+                if hasattr(c, 'original_text') and hasattr(c, 'corrected_text') and c.original_text.strip() != c.corrected_text.strip()
+            ]
+            engine_name = getattr(correction_res, 'harness_engine_used', 'api')
+            latency_val = getattr(correction_res, 'latency_ms', 0.0)
+        else:
+            _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "高精 ASR 直通与词库确定性匹配中...")
+            candidate_subs = []
+            for s in raw_segments:
+                raw_t = str(s.get("raw_text") or s.get("text") or "")
+                corr_t, _ = apply_glossary_corrections(raw_t)
+                item = dict(s)
+                item["raw_text"] = raw_t
+                item["corrected_text"] = corr_t
+                candidate_subs.append(item)
+            summary_list = []
+            engine_name = "direct_asr (glossary_deterministic)"
+            latency_val = 0.0
 
-        # 2.4 过滤纯语气填充词与无意义口癖占位符（如 '呃'、'额' 等独立碎词）
-        valid_clauses = asr_runner.filter_filler_segments(correction_res.updated_subtitles)
+        # 2.4 过滤纯语气填充词与无意义口癖占位符（如 '呃'、'额' 等独立碎词）及句首/句末停顿助词
+        valid_clauses = asr_runner.filter_filler_segments(candidate_subs)
+        valid_clauses = asr_runner.clean_filler_particles(valid_clauses)
 
-        # 2.5 黄金自然句切分（带防孤字/防碎尾保护，单行上限弹性 18~22 字）
-        split_segments = asr_runner.split_into_readable_segments(valid_clauses, max_chars=18, soft_max=22)
+        # 2.5 黄金自然句切分（单行优先，上限 15 字，彻底杜绝折行堆叠与连词挂尾腰斩）
+        split_segments = asr_runner.split_into_readable_segments(valid_clauses, max_chars=15, soft_max=15, min_chunk=4)
 
-        # 2.6 全局跨句碎片平滑合并（彻底消除“面签费”、“费用明细表”等跨句微短碎片与走马灯）
+        # 2.6 全局跨句碎片平滑合并（单行安全上限 15 字）
         corrected_segments = asr_runner.merge_short_segments(
             split_segments,
             min_chars=4,
             min_duration=1.0,
-            max_chars=20,
-            max_gap=0.6,
-            max_duration=4.2
+            max_chars=15,
+            max_gap=0.55,
         )
+
+        for idx, seg in enumerate(corrected_segments):
+            if not seg.get("id") or seg["id"].startswith("seg_") or seg["id"].startswith("sub_"):
+                seg["id"] = str(uuid.uuid4())
+
+        th_duration = float(talking_head.duration or 0.0)
+        if th_duration <= 0:
+            th_duration = max((float(it.get("end_time", 0.0)) for it in corrected_segments), default=60.0)
+
+        # 3.0 智能粗剪 (009): 自动识别口误重说、头尾动作与中段长静音压缩
+        strat = EditingStrategy(video_speed=req.video_speed)
+        prune_spans: List[PruneSpan] = []
+        pruned_sub_ids: List[str] = []
+        if strat.enable_auto_prune:
+            from app.native_engine.prune_engine import auto_prune_engine
+            prune_cfg = {
+                "enable_head_prune": strat.enable_head_prune,
+                "enable_tail_prune": strat.enable_tail_prune,
+                "enable_retake_prune": strat.enable_retake_prune,
+                "enable_mid_silence_prune": strat.enable_mid_silence_prune,
+                "head_padding_seconds": strat.head_padding_seconds,
+                "tail_padding_seconds": strat.tail_padding_seconds,
+                "mid_silence_threshold": strat.mid_silence_threshold,
+                "mid_silence_breath_gap": strat.mid_silence_breath_gap,
+                "retake_pause_min": strat.retake_pause_min,
+                "retake_similarity_min": strat.retake_similarity_min,
+            }
+            prune_spans, pruned_sub_ids = auto_prune_engine.analyze_and_prune(
+                subtitles=corrected_segments,
+                video_duration=th_duration,
+                config=prune_cfg
+            )
 
         # 3.5 AI 分镜决策（稀疏 Cue Sheet 契约 + 双层 60%~70% 黄金编排）
         scene_decisions: Dict[str, SceneDecision] = {}
         scene_engine_note = "disabled"
         planned_windows: List[Dict[str, Any]] = []
-
-        th_duration = float(talking_head.duration or 0.0)
-        if th_duration <= 0:
-            th_duration = max((float(it.get("end_time", 0.0)) for it in corrected_segments), default=60.0)
 
         target_cov = req.strategy.broll_target_coverage if hasattr(req, "strategy") and req.strategy else 0.65
 
@@ -145,8 +345,13 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             plan_dual_layer_broll,
             fallback_keyword_rules,
             validate_and_clip,
-            BrollCueItem
+            BrollCueItem,
+            generate_fallback_video_title
         )
+
+        # 剔除已标记为口误/废弃的句子，避免分镜决策向废弃片段误投空镜
+        non_pruned_segments = [it for it in corrected_segments if str(it.get("id")) not in pruned_sub_ids]
+        active_decision_segments = non_pruned_segments if non_pruned_segments else corrected_segments
 
         decision_input = [
             {
@@ -157,9 +362,10 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 "end_time": float(it.get("end_time", 0.0)),
                 "words": it.get("words", [])
             }
-            for it in corrected_segments
+            for it in active_decision_segments
         ]
 
+        cues_or_decisions = None
         if req.enable_scene_decision:
             _set_progress(req.talking_head_id, PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（稀疏指示清单与双层黄金编排）...")
             try:
@@ -222,6 +428,13 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 target_coverage=target_cov
             )
 
+        # 智能命名与自主高光词：优先采用合并在分镜决策请求中的爆款标题与大模型高光词，无额外耗时
+        ai_video_title = getattr(cues_or_decisions, "video_title", None) if cues_or_decisions else None
+        if not ai_video_title:
+            ai_video_title = generate_fallback_video_title(decision_input)
+
+        ai_highlights_map = getattr(cues_or_decisions, "highlights", {}) if cues_or_decisions else {}
+
         # 4. 关键词匹配与空镜智能分配 (J/L-Cut)
         _set_progress(req.talking_head_id, PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
         subtitles: List[SubtitleSegment] = []
@@ -238,12 +451,18 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             MaterialCategory.LESSON: lesson_materials
         }
 
-        # 实例化最终 broll 替换
+        # 实例化最终 broll 替换（支持相邻连切时切换不同素材，丰富画面层次）
+        last_material_id = None
+        last_end_time = -1.0
         for w in planned_windows:
             mats = cat_map.get(w["material_category"]) or []
             if not mats:
                 continue
-            m = secrets.choice(mats)
+            is_continuous = (last_end_time > 0 and abs(w["start_time"] - last_end_time) <= 0.05)
+            candidates = [m for m in mats if m.id != last_material_id] if (is_continuous and len(mats) > 1) else mats
+            m = secrets.choice(candidates) if candidates else mats[0]
+            last_material_id = m.id
+            last_end_time = w["end_time"]
             brolls.append(BrollReplacement(
                 start_time=w["start_time"],
                 end_time=w["end_time"],
@@ -251,26 +470,40 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 material_category=w["material_category"]
             ))
 
-        for item in corrected_segments:
+        for idx, item in enumerate(corrected_segments):
             c_text = item.get("corrected_text", "")
-            kw_info = match_keywords_in_segment(c_text)
-            matched_cat_str = kw_info.get("matched_category")
-            matched_cat = MaterialCategory(matched_cat_str) if matched_cat_str else None
+            sid = str(item.get("id") or f"sub_{idx}")
 
-            # 判定该字幕是否落在某个空镜窗口内
+            is_p = sid in pruned_sub_ids
+            p_reason = None
+            p_span_id = None
+            if is_p:
+                for ps in prune_spans:
+                    if ps.source_subtitle_id == sid:
+                        p_reason = ps.reason
+                        p_span_id = ps.id
+                        break
+                if not p_reason:
+                    p_reason = PruneReason.RETAKE_DISCARD.value
+
+            # 优先采用大模型自主上下文提取的高光词（自主地理常识与商业重点感知）
+            ai_hws = ai_highlights_map.get(sid) or ai_highlights_map.get(str(idx)) or item.get("highlight_words")
+
+            # 判定该字幕是否落在某个空镜窗口内（已剔除的句子不分配空镜）
             assigned_broll_id = None
             assigned_cat = None
             assigned_dur = 0.0
-            mid = (float(item["start_time"]) + float(item["end_time"])) / 2.0
-            for b in brolls:
-                if b.start_time <= mid <= b.end_time:
-                    assigned_broll_id = b.material_id
-                    assigned_cat = b.material_category
-                    assigned_dur = round(b.end_time - b.start_time, 2)
-                    break
+            mid_t = (item["start_time"] + item["end_time"]) / 2.0
+            if not is_p:
+                for b in brolls:
+                    if b.start_time <= mid_t <= b.end_time:
+                        assigned_broll_id = b.material_id
+                        assigned_cat = b.material_category
+                        assigned_dur = round(b.end_time - b.start_time, 2)
+                        break
 
-            sd = scene_decisions.get(str(item.get("id")))
-            if not sd:
+            sd = scene_decisions.get(sid)
+            if not sd and not is_p:
                 sd = SceneDecision(
                     part="body",
                     broll_category=assigned_cat,
@@ -278,39 +511,49 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                     material_id=assigned_broll_id,
                     reason="双层黄金编排分镜" if assigned_cat else "保留口播真人画面"
                 )
-            elif assigned_broll_id:
+            elif assigned_broll_id and not is_p:
                 sd.material_id = assigned_broll_id
 
+            h_words = [
+                HighlightWord(**w) for w in build_highlight_words(c_text, ai_hws)
+                if isinstance(w, dict) and w.get("word")
+            ] if not is_p else []
+
             subtitles.append(SubtitleSegment(
+                id=sid,
                 start_time=item["start_time"],
                 end_time=item["end_time"],
                 raw_text=item.get("raw_text", c_text),
                 corrected_text=c_text,
-                matched_category=matched_cat,
-                matched_keywords=kw_info.get("matched_keywords", []),
-                highlight_words=[
-                    HighlightWord(**w) for w in build_highlight_words(c_text, item.get("highlight_words"))
-                    if isinstance(w, dict) and w.get("word")
-                ],
-                scene_decision=sd,
-                broll_material_id=assigned_broll_id
+                matched_category=assigned_cat if not is_p else None,
+                matched_keywords=[w.word for w in h_words] if not is_p else [],
+                highlight_words=h_words,
+                scene_decision=sd if not is_p else None,
+                broll_material_id=assigned_broll_id if not is_p else None,
+                is_pruned=is_p,
+                prune_reason=p_reason,
+                prune_span_id=p_span_id
             ))
-
-        summary_list = [c.model_dump() for c in correction_res.corrections_summary] if hasattr(correction_res, 'corrections_summary') else []
-        engine_name = correction_res.harness_engine_used if hasattr(correction_res, 'harness_engine_used') else "codex"
-        latency_val = correction_res.latency_ms if hasattr(correction_res, 'latency_ms') else 0.0
 
         # 独立工程文件夹：每个待剪口播视频进入剪辑阶段自动安排专属目录 YYYYMMDD_HHMMSS_{title}
         task_dir_path = create_task_dir(Path(talking_head.filename).stem)
         task_dir_rel = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
 
+        # 策略初始化：将提炼的短视频标题同步为顶部胶囊主标题（截取核心关键词），替代默认占位符"科目二一把过秘籍"
+        strat = EditingStrategy(video_speed=req.video_speed)
+        clean_banner = re.sub(r"[·:：!！?？\s]+.*$", "", ai_video_title)[:10].strip()
+        if clean_banner:
+            strat.banner_main_title = clean_banner
+
         project = CutProject(
-            title=f"剪辑_{Path(talking_head.filename).stem}",
+            title=ai_video_title,
             talking_head_id=talking_head.id,
             aspect_ratio=req.aspect_ratio,
             task_dir=task_dir_rel,
+            strategy=strat,
             subtitles=subtitles,
             broll_replacements=brolls,
+            prune_spans=prune_spans,
             raw_asr_segments=raw_segments,
             status=CutProjectStatus.DRAFT,
             corrections_summary=summary_list,
@@ -318,6 +561,93 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             last_engine_used=engine_name,
             correction_latency_ms=latency_val
         )
+        # 5. 智能剪辑成片压制与默认封面
+        if req.auto_render:
+            _set_progress(req.talking_head_id, PipelineStage.VIDEO_COMPOSING, 95, "正在压制生成成片预览与封面...")
+            _set_progress(project.id, PipelineStage.VIDEO_COMPOSING, 95, "正在压制生成成片预览与封面...")
+
+            dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"output_{project.id}_{project.aspect_ratio.replace(':', '_')}_{dt_str}.mp4"
+            output_path = task_dir_path / output_filename
+
+            from app.native_engine.prune_engine import auto_prune_engine
+            active_prune_spans = [s for s in (project.prune_spans or []) if s.is_active]
+            th_dur = float(talking_head.duration if talking_head.duration and talking_head.duration > 0 else 15.0)
+            kept_spans = auto_prune_engine.compute_kept_spans(th_dur, active_prune_spans) if active_prune_spans else None
+
+            # 1. 准备紧凑对齐的 ASS / SRT 字幕
+            ass_path = task_dir_path / "subtitles.ass"
+            speed = float(project.strategy.video_speed or 1.0)
+            render_subtitles = _prepare_render_subtitles(project.subtitles, speed=speed, kept_spans=kept_spans)
+            generate_ass_file(render_subtitles, ass_path, strategy=project.strategy.model_dump(), smooth_timings=True)
+            srt_path = task_dir_path / "subtitles.srt"
+            generate_srt_file(render_subtitles, srt_path, smooth_timings=True)
+
+            broll_cuts_payload = []
+            if project.strategy.broll_pacing != "talking_only":
+                for b in project.broll_replacements:
+                    m = storage_service.get_material(b.material_id)
+                    if m:
+                        full_b_path = STORAGE_DIR.parent / m.filepath
+                        if full_b_path.exists():
+                            b_st = b.start_time
+                            b_et = b.end_time
+                            if kept_spans:
+                                mapped = auto_prune_engine.map_interval_to_compact(b_st, b_et, kept_spans)
+                                if not mapped:
+                                    continue
+                                b_st, b_et = mapped
+
+                            transition_seconds = 0.0
+                            for s in project.subtitles:
+                                if s.start_time == b.start_time and s.scene_decision:
+                                    transition_seconds = s.scene_decision.transition_seconds
+                                    break
+                            broll_cuts_payload.append({
+                                "start_time": b_st,
+                                "end_time": b_et,
+                                "material_path": full_b_path,
+                                "transition": transition_seconds
+                            })
+
+            full_th_path = STORAGE_DIR.parent / talking_head.filepath
+            eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
+            try:
+                compose_ok = composer.compose_jl_cut(
+                    talking_head_path=full_th_path,
+                    broll_cuts=broll_cuts_payload,
+                    output_path=output_path,
+                    aspect_ratio=project.aspect_ratio,
+                    total_duration=eff_total_dur,
+                    ass_subtitle_path=ass_path,
+                    strategy=project.strategy.model_dump(),
+                    kept_spans=kept_spans
+                )
+                if compose_ok and output_path.exists():
+                    project.output_video_path = f"{project.task_dir}/{output_filename}"
+                    project.output_absolute_path = str(output_path.resolve())
+                    project.output_filename = output_filename
+                    project.output_file_size_mb = round(output_path.stat().st_size / (1024 * 1024), 2)
+                    project.status = CutProjectStatus.COMPLETED
+
+                    # 自动抽取 0.5s 默认封面帧（从已渲染成片提取）
+                    cover_dest = task_dir_path / "cover.jpg"
+                    if extract_cover_frame(output_path, cover_dest, timestamp=0.5):
+                        project.cover_image_path = f"{project.task_dir}/cover.jpg"
+                        project.cover_source = "frame"
+            except Exception as compose_err:
+                print(f"[analyze_and_cut] 自动生成预览成片跳过: {compose_err}")
+                # 真实执行铁律：若真实素材 (>10KB) 合成发生致命异常则显式报错
+                if full_th_path.exists() and full_th_path.stat().st_size > 10240:
+                    raise HTTPException(status_code=500, detail=f"初剪成片合成失败: {str(compose_err)}")
+        else:
+            # 交互初剪极速模式：跳过耗时 5~8s 的全量 FFmpeg 压制，直接从口播原片抽取 0.5s 封面帧（<50ms）
+            cover_dest = task_dir_path / "cover.jpg"
+            if extract_cover_frame(full_th_path, cover_dest, timestamp=0.5):
+                project.cover_image_path = f"{project.task_dir}/cover.jpg"
+                project.cover_source = "frame"
+
+        _save_task_manifest(task_dir_path, project)
         project_storage_service.save_project(project)
         _set_progress(project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
         _set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
@@ -460,11 +790,17 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
     }
 
     new_brolls: List[BrollReplacement] = []
+    last_material_id = None
+    last_end_time = -1.0
     for w in planned_windows:
         mats = cat_map.get(w["material_category"]) or []
         if not mats:
             continue
-        m = secrets.choice(mats)
+        is_continuous = (last_end_time > 0 and abs(w["start_time"] - last_end_time) <= 0.05)
+        candidates = [m for m in mats if m.id != last_material_id] if (is_continuous and len(mats) > 1) else mats
+        m = secrets.choice(candidates) if candidates else mats[0]
+        last_material_id = m.id
+        last_end_time = w["end_time"]
         new_brolls.append(BrollReplacement(
             start_time=w["start_time"],
             end_time=w["end_time"],
@@ -535,6 +871,10 @@ async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
     if req.broll_replacements is not None:
         p.broll_replacements = [BrollReplacement(**b) for b in req.broll_replacements]
     project_storage_service.save_project(p)
+    if p.task_dir:
+        td = (STORAGE_DIR.parent / p.task_dir).resolve()
+        if td.exists():
+            _save_task_manifest(td, p)
     return p
 
 @router.put("/{project_id}/strategy", response_model=CutProject)
@@ -545,10 +885,166 @@ async def update_strategy(project_id: str, strategy: EditingStrategy):
 
     p.strategy = strategy
     project_storage_service.save_project(p)
+    if p.task_dir:
+        td = (STORAGE_DIR.parent / p.task_dir).resolve()
+        if td.exists():
+            _save_task_manifest(td, p)
     return p
 
+class TogglePruneRequest(BaseModel):
+    is_pruned: Optional[bool] = None
+
+@router.post("/{project_id}/subtitles/{subtitle_id}/toggle-prune")
+@router.post("/projects/{project_id}/subtitles/{subtitle_id}/toggle-prune")
+async def toggle_subtitle_prune(project_id: str, subtitle_id: str, req: Optional[TogglePruneRequest] = None):
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    target_sub = next((s for s in p.subtitles if s.id == subtitle_id), None)
+    if not target_sub:
+        raise HTTPException(status_code=404, detail="字幕片段不存在")
+
+    target_is_pruned = req.is_pruned if (req and req.is_pruned is not None) else not target_sub.is_pruned
+    target_sub.is_pruned = target_is_pruned
+
+    from app.native_engine.prune_engine import auto_prune_engine
+    if target_is_pruned:
+        if not target_sub.prune_reason:
+            target_sub.prune_reason = PruneReason.MANUAL.value
+        found = False
+        for s in p.prune_spans:
+            if s.source_subtitle_id == target_sub.id or (target_sub.prune_span_id and s.id == target_sub.prune_span_id):
+                s.is_active = True
+                target_sub.prune_span_id = s.id
+                found = True
+                break
+        if not found:
+            span_id = str(uuid.uuid4())
+            new_span = PruneSpan(
+                id=span_id,
+                start_time=round(float(target_sub.start_time), 3),
+                end_time=round(float(target_sub.end_time), 3),
+                reason=target_sub.prune_reason or PruneReason.MANUAL.value,
+                source_subtitle_id=target_sub.id,
+                duration=round(float(target_sub.end_time) - float(target_sub.start_time), 3),
+                is_active=True
+            )
+            p.prune_spans.append(new_span)
+            target_sub.prune_span_id = span_id
+    else:
+        for s in p.prune_spans:
+            if s.source_subtitle_id == target_sub.id or (target_sub.prune_span_id and s.id == target_sub.prune_span_id):
+                s.is_active = False
+
+    th = storage_service.get_material(p.talking_head_id)
+    th_dur = float(th.duration if th and th.duration else 15.0)
+    active_spans = [s for s in p.prune_spans if s.is_active]
+    kept = auto_prune_engine.compute_kept_spans(th_dur, active_spans)
+    total_effective_duration = round(sum(k.duration for k in kept), 3)
+
+    project_storage_service.save_project(p)
+    return {
+        "success": True,
+        "subtitle_id": subtitle_id,
+        "is_pruned": target_sub.is_pruned,
+        "prune_spans": [s.model_dump() for s in p.prune_spans],
+        "total_effective_duration": total_effective_duration
+    }
+
+class PruneConfigRequest(BaseModel):
+    enable_head_prune: Optional[bool] = None
+    enable_tail_prune: Optional[bool] = None
+    enable_retake_prune: Optional[bool] = None
+    enable_mid_silence_prune: Optional[bool] = None
+    head_padding_seconds: Optional[float] = None
+    tail_padding_seconds: Optional[float] = None
+    mid_silence_threshold: Optional[float] = None
+    mid_silence_breath_gap: Optional[float] = None
+    retake_pause_min: Optional[float] = None
+    retake_similarity_min: Optional[float] = None
+
+@router.post("/{project_id}/prune-config")
+@router.post("/projects/{project_id}/prune-config")
+async def update_prune_config(project_id: str, req: PruneConfigRequest):
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    strat = p.strategy
+    if req.enable_head_prune is not None:
+        strat.enable_head_prune = req.enable_head_prune
+    if req.enable_tail_prune is not None:
+        strat.enable_tail_prune = req.enable_tail_prune
+    if req.enable_retake_prune is not None:
+        strat.enable_retake_prune = req.enable_retake_prune
+    if req.enable_mid_silence_prune is not None:
+        strat.enable_mid_silence_prune = req.enable_mid_silence_prune
+    if req.head_padding_seconds is not None:
+        strat.head_padding_seconds = req.head_padding_seconds
+    if req.tail_padding_seconds is not None:
+        strat.tail_padding_seconds = req.tail_padding_seconds
+    if req.mid_silence_threshold is not None:
+        strat.mid_silence_threshold = req.mid_silence_threshold
+    if req.mid_silence_breath_gap is not None:
+        strat.mid_silence_breath_gap = req.mid_silence_breath_gap
+    if req.retake_pause_min is not None:
+        strat.retake_pause_min = req.retake_pause_min
+    if req.retake_similarity_min is not None:
+        strat.retake_similarity_min = req.retake_similarity_min
+
+    th = storage_service.get_material(p.talking_head_id)
+    th_dur = float(th.duration if th and th.duration else 15.0)
+
+    from app.native_engine.prune_engine import auto_prune_engine
+    prune_cfg = {
+        "enable_head_prune": strat.enable_head_prune,
+        "enable_tail_prune": strat.enable_tail_prune,
+        "enable_retake_prune": strat.enable_retake_prune,
+        "enable_mid_silence_prune": strat.enable_mid_silence_prune,
+        "head_padding_seconds": strat.head_padding_seconds,
+        "tail_padding_seconds": strat.tail_padding_seconds,
+        "mid_silence_threshold": strat.mid_silence_threshold,
+        "mid_silence_breath_gap": strat.mid_silence_breath_gap,
+        "retake_pause_min": strat.retake_pause_min,
+        "retake_similarity_min": strat.retake_similarity_min,
+    }
+    new_spans, pruned_ids = auto_prune_engine.analyze_and_prune(
+        subtitles=p.subtitles,
+        video_duration=th_dur,
+        config=prune_cfg
+    )
+
+    manual_spans = [s for s in p.prune_spans if s.reason == PruneReason.MANUAL.value and s.is_active]
+    manual_sub_ids = {s.source_subtitle_id for s in manual_spans if s.source_subtitle_id}
+
+    p.prune_spans = new_spans + [s for s in manual_spans if not any(ns.id == s.id for ns in new_spans)]
+
+    for sub in p.subtitles:
+        if sub.id in manual_sub_ids:
+            sub.is_pruned = True
+            sub.prune_reason = PruneReason.MANUAL.value
+        elif sub.id in pruned_ids:
+            sub.is_pruned = True
+            sub.prune_reason = PruneReason.RETAKE_DISCARD.value
+        else:
+            sub.is_pruned = False
+            sub.prune_reason = None
+
+    project_storage_service.save_project(p)
+    total_pruned_seconds = round(sum(s.duration for s in p.prune_spans if s.is_active), 3)
+
+    return {
+        "success": True,
+        "total_pruned_seconds": total_pruned_seconds,
+        "prune_spans": [s.model_dump() for s in p.prune_spans]
+    }
+
 @router.post("/{project_id}/render", response_model=CutProject)
-async def render_project(project_id: str):
+async def render_project(
+    project_id: str,
+    video_speed: Optional[float] = Query(None, description="自定义导出倍速 (支持任意浮点数，如 1.08, 1.12, 1.15)")
+):
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
@@ -556,6 +1052,9 @@ async def render_project(project_id: str):
     th = storage_service.get_material(p.talking_head_id)
     if not th:
         raise HTTPException(status_code=404, detail="口播素材不存在")
+
+    if video_speed is not None and not isinstance(video_speed, type(Query(None))):
+        p.strategy.video_speed = max(0.5, min(3.0, round(float(video_speed), 2)))
 
     p.status = CutProjectStatus.PROCESSING
 
@@ -573,11 +1072,17 @@ async def render_project(project_id: str):
     if p.output_video_path:
         old_output_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
 
-    timestamp = int(time.time())
-    output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}_{timestamp}.mp4"
+    dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}_{dt_str}.mp4"
     output_path = target_task_dir / output_filename
 
-    # 1. 如果用户策略设为纯口播 (talking_only)，清空参与渲染的空镜
+    # 1. 计算有效保留时间区间 (KeptSpans)
+    from app.native_engine.prune_engine import auto_prune_engine
+    active_prune_spans = [s for s in (p.prune_spans or []) if s.is_active]
+    th_dur = float(th.duration if th.duration > 0 else 15.0)
+    kept_spans = auto_prune_engine.compute_kept_spans(th_dur, active_prune_spans) if active_prune_spans else None
+
+    # 2. 如果用户策略设为纯口播 (talking_only)，清空参与渲染的空镜
     broll_cuts_payload = []
     if p.strategy.broll_pacing != "talking_only":
         for b in p.broll_replacements:
@@ -585,6 +1090,14 @@ async def render_project(project_id: str):
             if m:
                 full_b_path = STORAGE_DIR.parent / m.filepath
                 if full_b_path.exists():
+                    b_st = b.start_time
+                    b_et = b.end_time
+                    if kept_spans:
+                        mapped = auto_prune_engine.map_interval_to_compact(b_st, b_et, kept_spans)
+                        if not mapped:
+                            continue
+                        b_st, b_et = mapped
+
                     # 附带该窗口对应字幕的分镜转场时长（fade 档由合成器消费）
                     transition_seconds = 0.0
                     for s in p.subtitles:
@@ -592,34 +1105,39 @@ async def render_project(project_id: str):
                             transition_seconds = s.scene_decision.transition_seconds
                             break
                     broll_cuts_payload.append({
-                        "start_time": b.start_time,
-                        "end_time": b.end_time,
+                        "start_time": b_st,
+                        "end_time": b_et,
                         "material_path": full_b_path,
                         "transition": transition_seconds
                     })
 
-    # 2. 生成 ASS 高级高亮字幕文件与 SRT 文件至专属任务目录
+    # 3. 生成 ASS 高级高亮字幕文件与 SRT 文件至专属任务目录（重投影至紧凑时间轴）
     ass_path = target_task_dir / "subtitles.ass"
+    speed = float(p.strategy.video_speed or 1.0)
+    render_subtitles = _prepare_render_subtitles(p.subtitles, speed=speed, kept_spans=kept_spans)
     generate_ass_file(
-        [s.model_dump() for s in p.subtitles],
+        render_subtitles,
         ass_path,
-        strategy=p.strategy.model_dump()
+        strategy=p.strategy.model_dump(),
+        smooth_timings=True,
     )
 
     srt_path = target_task_dir / "subtitles.srt"
-    generate_srt_file([s.model_dump() for s in p.subtitles], srt_path)
+    generate_srt_file(render_subtitles, srt_path, smooth_timings=True)
 
-    # 3. 复合渲染：空镜平替 + ASS字幕 + 顶部横幅 + 水印
+    # 4. 复合渲染：空镜平替 + ASS字幕 + 顶部横幅 + 水印
     full_th_path = STORAGE_DIR.parent / th.filepath
+    eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
     try:
         success = composer.compose_jl_cut(
             talking_head_path=full_th_path,
             broll_cuts=broll_cuts_payload,
             output_path=output_path,
             aspect_ratio=p.aspect_ratio,
-            total_duration=th.duration if th.duration > 0 else 15.0,
+            total_duration=eff_total_dur,
             ass_subtitle_path=ass_path,
-            strategy=p.strategy.model_dump()
+            strategy=p.strategy.model_dump(),
+            kept_spans=kept_spans
         )
     except Exception as e:
         # 真实执行铁律：合成失败必须如实暴露，工程状态落库为 FAILED，并带回真实错误详情
@@ -634,27 +1152,27 @@ async def render_project(project_id: str):
         p.output_filename = output_filename
         p.output_file_size_mb = round(output_path.stat().st_size / (1024 * 1024), 2)
 
-        # 自动抽取 0.5s 默认封面帧（若尚未生成封面），便于在成片网格中直接显示缩略图
-        if not p.cover_image_path:
-            try:
-                import subprocess
-                cover_dest = target_task_dir / "cover.jpg"
-                c_proc = subprocess.run([
-                    "ffmpeg", "-y", "-ss", "0.500", "-i", str(output_path),
-                    "-frames:v", "1", "-q:v", "3", str(cover_dest)
-                ], capture_output=True, timeout=10)
-                if c_proc.returncode == 0 and cover_dest.exists():
-                    p.cover_image_path = f"{p.task_dir}/cover.jpg"
-                    p.cover_source = "frame"
-            except Exception as e:
-                print(f"[render] 自动抽取封面跳过: {e}")
+        # 自动抽取 0.5s 默认封面帧（从成片抽取），便于在成片网格中直接显示缩略图
+        cover_dest = target_task_dir / "cover.jpg"
+        if extract_cover_frame(output_path, cover_dest, timestamp=0.5):
+            p.cover_image_path = f"{p.task_dir}/cover.jpg"
+            p.cover_source = "frame"
 
         # 安全清理上一版渲染产物，防止磁盘膨胀，若被播放器占用则静默忽略
+        for old_f in target_task_dir.glob("output_*.mp4"):
+            if old_f.name != output_filename:
+                try:
+                    old_f.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"[render] 保留旧渲染文件 (可能正在被占用): {e}")
+
         if old_output_path and old_output_path.exists() and old_output_path != output_path.resolve():
             try:
                 old_output_path.unlink(missing_ok=True)
             except Exception as e:
                 print(f"[render] 保留旧渲染文件 (可能正在被播放): {e}")
+
+        _save_task_manifest(target_task_dir, p)
     else:
         p.status = CutProjectStatus.FAILED
 
@@ -735,8 +1253,64 @@ async def set_project_cover(project_id: str, req: CoverRequest):
         raise HTTPException(status_code=400, detail=f"不支持的封面来源: {req.source}")
 
     project_storage_service.save_project(p)
+    if p.task_dir:
+        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        _save_task_manifest(target_dir, p)
+
     return {
         "code": 0,
+        "data": {
+            "cover_image_path": p.cover_image_path,
+            "cover_source": p.cover_source,
+            "cover_url": f"/{p.cover_image_path}"
+        }
+    }
+
+@router.post("/{project_id}/cover/upload")
+async def upload_project_cover(
+    project_id: str,
+    file: UploadFile = File(...)
+):
+    """用户直接上传本地图片作为工程封面"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    valid_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    ext = Path(file.filename or "").suffix.lower()
+    content_type = file.content_type or ""
+    if not (content_type.startswith("image/") or ext in valid_exts):
+        raise HTTPException(status_code=400, detail="请上传图片格式文件 (jpg, png, webp 等)")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
+
+    cover_ext = ext if ext in valid_exts else ".jpg"
+    if p.task_dir:
+        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        cover_name = f"cover{cover_ext}"
+        cover_path = target_dir / cover_name
+        rel_cover = f"{p.task_dir}/{cover_name}"
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cover_name = f"cover_{p.id}_{ts}{cover_ext}"
+        cover_path = COVERS_DIR / cover_name
+        rel_cover = f"storage/covers/{cover_name}"
+
+    cover_path.write_bytes(content)
+    p.cover_image_path = rel_cover
+    p.cover_source = "upload"
+    project_storage_service.save_project(p)
+
+    if p.task_dir:
+        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        _save_task_manifest(target_dir, p)
+
+    return {
+        "code": 0,
+        "message": "封面上传成功",
         "data": {
             "cover_image_path": p.cover_image_path,
             "cover_source": p.cover_source,
@@ -800,5 +1374,80 @@ async def list_projects():
     """获取所有剪辑工程列表（供成片网格、快速切换、状态展示）"""
     projects = project_storage_service.list_all_projects()
     return [_enrich_project_export_meta(p) for p in projects]
+
+def _cleanup_project_files(p: CutProject):
+    """安全清理工程关联的磁盘生成文件及专属任务目录"""
+    # 1. 清理专属任务目录（包含 output_*.mp4, cover.jpg, subtitles.ass, project_manifest.json 等）
+    if p.task_dir:
+        try:
+            td = (STORAGE_DIR.parent / p.task_dir).resolve()
+            if td.exists() and td.is_dir() and TASKS_DIR.resolve() in td.parents:
+                shutil.rmtree(td, ignore_errors=True)
+        except Exception as e:
+            print(f"[_cleanup_project_files] 清理任务目录失败 {p.task_dir}: {e}")
+
+    # 2. 如果 output_video_path 位于历史 outputs 目录下，单独清理
+    if p.output_video_path:
+        try:
+            vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
+            if vp.exists() and vp.is_file() and (OUTPUTS_DIR.resolve() in vp.parents or TASKS_DIR.resolve() in vp.parents):
+                vp.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[_cleanup_project_files] 清理成片视频文件失败 {p.output_video_path}: {e}")
+
+    # 3. 如果 cover 位于历史 covers 目录下，单独清理
+    if p.cover_image_path:
+        try:
+            cp = (STORAGE_DIR.parent / p.cover_image_path).resolve()
+            if cp.exists() and cp.is_file() and COVERS_DIR.resolve() in cp.parents:
+                cp.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[_cleanup_project_files] 清理封面文件失败 {p.cover_image_path}: {e}")
+
+class BatchDeleteProjectsRequest(BaseModel):
+    project_ids: List[str]
+    delete_files: bool = True
+
+@router.post("/batch-delete")
+async def batch_delete_projects(req: BatchDeleteProjectsRequest):
+    """批量删除剪辑工程，并根据需求清理生成的视频与专属任务目录"""
+    deleted_ids: List[str] = []
+    for pid in req.project_ids:
+        p = project_storage_service.get_by_project_id(pid)
+        if not p:
+            continue
+        if req.delete_files:
+            _cleanup_project_files(p)
+        if project_storage_service.delete_project(pid):
+            deleted_ids.append(pid)
+    return {
+        "code": 0,
+        "message": f"成功删除 {len(deleted_ids)} 个工程",
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids
+    }
+
+@router.delete("/{project_id}")
+async def delete_project(
+    project_id: str,
+    delete_files: bool = Query(True, description="是否同步清理本地任务目录与生成视频")
+):
+    """根据工程 ID 删除工程记录及关联生成文件"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    if delete_files:
+        _cleanup_project_files(p)
+
+    success = project_storage_service.delete_project(project_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="删除工程失败")
+
+    return {
+        "code": 0,
+        "message": "工程及关联文件已成功删除",
+        "project_id": project_id
+    }
 
 

@@ -20,6 +20,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     mainWindow.close();
   });
 
+  ipcMain.handle('window:is-maximized', () => {
+    return mainWindow.isMaximized();
+  });
+
+  mainWindow.on('maximize', () => {
+    mainWindow.webContents.send('window:maximized-change', true);
+  });
+
+  mainWindow.on('unmaximize', () => {
+    mainWindow.webContents.send('window:maximized-change', false);
+  });
+
   // 原生系统对话框
   ipcMain.handle('dialog:open-files', async (_event, options) => {
     const res = await dialog.showOpenDialog(mainWindow, {

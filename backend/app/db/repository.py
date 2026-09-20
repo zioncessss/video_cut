@@ -12,6 +12,7 @@ from app.models.entities import (
     EditingStrategy,
     HighlightWord,
     SceneDecision,
+    PruneSpan,
     BatchJob,
     BatchJobItem,
     BatchJobStatus
@@ -80,6 +81,10 @@ class ProjectRepository:
         brolls_json = json.dumps(
             [b.model_dump() for b in project.broll_replacements], ensure_ascii=False
         ) if project.broll_replacements else None
+        prune_spans_json = json.dumps(
+            [p.model_dump() for p in (getattr(project, 'prune_spans', None) or [])],
+            ensure_ascii=False
+        ) if getattr(project, 'prune_spans', None) else '[]'
 
         with get_db_connection(self.db_path) as conn:
             # 0. 确保同一素材只保留最新唯一权威工程，清理同素材的其他历史记录
@@ -90,9 +95,9 @@ class ProjectRepository:
                 INSERT OR REPLACE INTO projects
                 (id, title, talking_head_id, aspect_ratio, status, output_video_path, raw_asr_json,
                  last_engine_used, corrections_summary_json, correction_latency_ms, brolls_json,
-                 task_dir, cover_image_path, cover_source,
+                 task_dir, cover_image_path, cover_source, prune_spans_json,
                  created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 project.id,
                 project.title,
@@ -108,6 +113,7 @@ class ProjectRepository:
                 getattr(project, 'task_dir', None),
                 getattr(project, 'cover_image_path', None),
                 getattr(project, 'cover_source', None),
+                prune_spans_json,
                 project.created_at,
                 project.updated_at
             ))
@@ -125,8 +131,9 @@ class ProjectRepository:
                 conn.execute("""
                     INSERT INTO subtitles
                     (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
-                     matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited,
+                     is_pruned, prune_reason, prune_span_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     s.id,
                     project.id,
@@ -140,7 +147,10 @@ class ProjectRepository:
                     s.broll_material_id,
                     hw_json,
                     sd_json,
-                    1 if s.is_manual_edited else 0
+                    1 if s.is_manual_edited else 0,
+                    1 if getattr(s, 'is_pruned', False) else 0,
+                    getattr(s, 'prune_reason', None),
+                    getattr(s, 'prune_span_id', None)
                 ))
 
             # 3. 保存/更新 Strategy
@@ -148,18 +158,19 @@ class ProjectRepository:
             words_json = json.dumps(strat.custom_highlight_words, ensure_ascii=False) if strat.custom_highlight_words else '[]'
             conn.execute("""
                 INSERT OR REPLACE INTO strategies
-                (project_id, subtitle_theme, font_size, subtitle_font_size, show_subtitles, subtitle_position_y, subtitle_position_x, subtitle_width_percent,
+                (project_id, subtitle_theme, font_size, subtitle_font_family, subtitle_font_size, show_subtitles, subtitle_position_y, subtitle_position_x, subtitle_width_percent,
                  enable_highlight, highlight_color, highlight_scale, custom_highlight_words_json,
                  enable_top_banner, banner_main_title, banner_sub_title, banner_style, banner_size, banner_font_size, banner_width_percent, banner_position_x, banner_position_y,
-                 enable_watermark, watermark_text, watermark_position, watermark_size, watermark_font_size, watermark_position_x, watermark_position_y, watermark_opacity, broll_pacing)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 enable_watermark, watermark_text, watermark_position, watermark_size, watermark_font_size, watermark_position_x, watermark_position_y, watermark_opacity, broll_pacing, video_speed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 project.id,
                 strat.subtitle_theme,
                 strat.font_size,
+                getattr(strat, 'subtitle_font_family', 'notoserif'),
                 getattr(strat, 'subtitle_font_size', None),
                 1 if getattr(strat, 'show_subtitles', True) else 0,
-                getattr(strat, 'subtitle_position_y', 82),
+                getattr(strat, 'subtitle_position_y', 74),
                 getattr(strat, 'subtitle_position_x', 50),
                 getattr(strat, 'subtitle_width_percent', None),
                 1 if strat.enable_highlight else 0,
@@ -183,7 +194,8 @@ class ProjectRepository:
                 getattr(strat, 'watermark_position_x', None),
                 getattr(strat, 'watermark_position_y', None),
                 strat.watermark_opacity,
-                strat.broll_pacing
+                strat.broll_pacing,
+                getattr(strat, 'video_speed', 1.0)
             ))
 
         return project
@@ -219,6 +231,7 @@ class ProjectRepository:
             cat_val = sub_row["matched_category"]
             cat_enum = MaterialCategory(cat_val) if cat_val else None
 
+            sub_keys = sub_row.keys()
             seg = SubtitleSegment(
                 id=sub_row["id"],
                 start_time=sub_row["start_time"],
@@ -230,7 +243,10 @@ class ProjectRepository:
                 highlight_words=highlight_words,
                 scene_decision=scene_decision,
                 broll_material_id=sub_row["broll_material_id"],
-                is_manual_edited=bool(sub_row["is_manual_edited"])
+                is_manual_edited=bool(sub_row["is_manual_edited"]),
+                is_pruned=bool(sub_row["is_pruned"]) if "is_pruned" in sub_keys else False,
+                prune_reason=sub_row["prune_reason"] if "prune_reason" in sub_keys else None,
+                prune_span_id=sub_row["prune_span_id"] if "prune_span_id" in sub_keys else None
             )
             subtitles.append(seg)
 
@@ -272,7 +288,9 @@ class ProjectRepository:
                 watermark_position_x=strat_row["watermark_position_x"] if "watermark_position_x" in keys else None,
                 watermark_position_y=strat_row["watermark_position_y"] if "watermark_position_y" in keys else None,
                 watermark_opacity=strat_row["watermark_opacity"],
-                broll_pacing=strat_row["broll_pacing"]
+                broll_pacing=strat_row["broll_pacing"],
+                subtitle_font_family=strat_row["subtitle_font_family"] if "subtitle_font_family" in keys and strat_row["subtitle_font_family"] else "notoserif",
+                video_speed=float(strat_row["video_speed"]) if "video_speed" in keys and strat_row["video_speed"] is not None else 1.0
             )
         else:
             strat = EditingStrategy()
@@ -316,6 +334,14 @@ class ProjectRepository:
             except Exception:
                 corrections_summary = None
 
+        prune_spans = []
+        if "prune_spans_json" in keys and row["prune_spans_json"]:
+            try:
+                for ps in json.loads(row["prune_spans_json"]):
+                    prune_spans.append(PruneSpan(**ps))
+            except Exception:
+                prune_spans = []
+
         return CutProject(
             id=row["id"],
             title=row["title"],
@@ -330,6 +356,7 @@ class ProjectRepository:
             subtitles=subtitles,
             broll_replacements=broll_cuts,
             strategy=strat,
+            prune_spans=prune_spans,
             corrections_summary=corrections_summary,
             last_engine_used=row["last_engine_used"] if "last_engine_used" in keys else None,
             correction_latency_ms=row["correction_latency_ms"] if "correction_latency_ms" in keys and row["correction_latency_ms"] is not None else None,

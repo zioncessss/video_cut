@@ -11,7 +11,7 @@ from app.main import app
 from app.models.entities import MaterialCategory, SubtitleSegment, EditingStrategy
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
-from app.native_engine.subtitle_styler import generate_ass_file
+from app.native_engine.subtitle_styler import generate_ass_file, generate_srt_file, smooth_subtitle_timings
 
 client = TestClient(app)
 
@@ -90,15 +90,16 @@ def test_ass_font_size_and_geometry_parity(tmp_path):
 
     assert "PlayResX: 1080" in content
     assert "PlayResY: 1920" in content
-    assert "Style: Default,Microsoft YaHei,72," in content
+    assert "Style: Default,STZhongsong,72," in content
     # margin_h = 1080 * (100 - 90) / 200 = 54
     assert ",54,54," in content
     # \pos(1080 * 50 / 100, 1920 * 82 / 100) = \pos(540,1574)
     assert r"\pos(540,1574)" in content
 
-    # 测试大号 86px，宽度 80%
+    # 测试大号 86px，宽度 80%，指定现代黑体 yahei
     strategy_large = {
         "subtitle_theme": "cinema_shadow",
+        "subtitle_font_family": "yahei",
         "subtitle_font_size": 86,
         "subtitle_width_percent": 80,
         "subtitle_position_x": 50,
@@ -111,3 +112,166 @@ def test_ass_font_size_and_geometry_parity(tmp_path):
     assert ",108,108," in content_large
     # \pos(540, 1536)
     assert r"\pos(540,1536)" in content_large
+
+
+def test_ass_highlight_styling_parity(tmp_path):
+    """
+    验证 ASS 字幕高亮词样式：
+    1. 彩色高亮词（如 #38BDF8）：生成 \\c&H...&\\b1\\fscx115\\fscy115 并复位 \\r\\fscx100\\fscy100
+    2. 纯白高亮词（#FFFFFF）：生成 \\b1\\fscx122\\fscy122 形成大字号白光强调
+    """
+    subtitles = [
+        {
+            "id": "s1",
+            "start_time": 1.0,
+            "end_time": 3.0,
+            "raw_text": "在杭州考驾照重点是避坑",
+            "corrected_text": "在杭州考驾照重点是避坑",
+            "highlight_words": [
+                {"word": "杭州", "color": "#38BDF8"},
+                {"word": "避坑", "color": "#FFFFFF"},
+            ],
+        }
+    ]
+    ass_file = tmp_path / "highlight_test.ass"
+    strategy = {
+        "subtitle_theme": "glow_gold",
+        "subtitle_font_size": 72,
+        "enable_highlight": True,
+        "highlight_scale": True,
+    }
+    generate_ass_file(subtitles, ass_file, strategy=strategy)
+    content = ass_file.read_text(encoding="utf-8")
+
+    # 杭州为彩色高亮
+    assert r"{\c&H00F8BD38&\b1\fscx110\fscy110}杭州{\r\fscx100\fscy100}" in content
+    # 避坑为纯白高亮，采用 122% 放大与加粗
+    assert r"{\b1\fscx122\fscy122}避坑{\r\fscx100\fscy100}" in content
+
+
+def test_ass_long_subtitle_wrapping_with_newline(tmp_path):
+    """
+    验证超长单行字幕（>14字）在 ASS 生成时，自动在语法断句点或中心插入 \\N 折行，
+    避免单行字幕超出 1080x1920 竖屏画布左右两端。
+    """
+    subtitles = [
+        {
+            "id": "s_long",
+            "start_time": 27.4,
+            "end_time": 30.9,
+            "raw_text": "他给你报一千多还跟你说全包或者是怎么样",
+            "corrected_text": "他给你报一千多还跟你说全包或者是怎么样",
+            "highlight_words": [
+                {"word": "一千多", "color": "#EF4444"},
+                {"word": "全包", "color": "#FFFFFF"},
+            ],
+        }
+    ]
+    ass_file = tmp_path / "long_test.ass"
+    generate_ass_file(subtitles, ass_file)
+    content = ass_file.read_text(encoding="utf-8")
+
+    # 19 字超长句必须包含 \N 换行标记，杜绝单行横向溢出
+    assert r"\N" in content
+    # 且在 "还" 前优雅折行
+    assert r"他给你报" in content and r"或者是怎么样" in content
+
+
+def test_video_speed_scaling_and_subtitles():
+    """
+    验证倍速剪辑策略 (video_speed != 1.0)：
+    1. 字幕起止时间与词级起止时间等比按 1/speed 缩放；
+    2. 倍速为 1.0 时原始时间戳不变。
+    """
+    from app.api.editor import _prepare_render_subtitles
+    from app.models.entities import EditingStrategy
+
+    strat = EditingStrategy(video_speed=1.2)
+    assert strat.video_speed == 1.2
+
+    raw_subs = [
+        {
+            "id": "s1",
+            "start_time": 1.2,
+            "end_time": 2.4,
+            "raw_text": "在杭州考驾照",
+            "corrected_text": "在杭州考驾照",
+            "words": [
+                {"word": "在杭州", "start": 1.2, "end": 1.8},
+                {"word": "考驾照", "start": 1.8, "end": 2.4},
+            ]
+        }
+    ]
+
+    # 1.2 倍速渲染字幕时间缩放
+    scaled = _prepare_render_subtitles(raw_subs, speed=1.2)
+    assert scaled[0]["start_time"] == 1.0
+    assert scaled[0]["end_time"] == 2.0
+    assert scaled[0]["words"][0]["start"] == 1.0
+    assert scaled[0]["words"][0]["end"] == 1.5
+    assert scaled[0]["words"][1]["start"] == 1.5
+    assert scaled[0]["words"][1]["end"] == 2.0
+
+    # 1.0 原速不缩放
+    unscaled = _prepare_render_subtitles(raw_subs, speed=1.0)
+    assert unscaled[0]["start_time"] == 1.2
+    assert unscaled[0]["end_time"] == 2.4
+
+def test_cinema_shadow_and_songti_fonts(tmp_path):
+    """
+    验证精简后的电影立体白（紧凑立体阴影 Outline 2.0 / Shadow 3.2 适配 1080P）
+    以及华文中宋（解决可变字体 ExtraLight Bug）、清雅仿宋、经典宋体的字体族映射与 100% 贴边内边距。
+    """
+    subs = [
+        {
+            "id": "s1",
+            "start_time": 0.0,
+            "end_time": 2.5,
+            "raw_text": "在杭州考驾照",
+            "corrected_text": "在杭州考驾照",
+        }
+    ]
+
+    # 1. 思源 / 华文中宋 (STZhongsong) + 电影立体白
+    p1 = tmp_path / "noto.ass"
+    generate_ass_file(subs, p1, strategy={"subtitle_theme": "cinema_shadow", "subtitle_font_family": "notoserif"})
+    c1 = p1.read_text(encoding="utf-8")
+    assert "Style: Default,STZhongsong,72," in c1
+    # Outline 0.6, Shadow 1.8 (方案 A 电影立体白)
+    assert ",1,0.6,1.8,2," in c1
+    # 默认 100% 宽度 margin_h = 24
+    assert ",24,24," in c1
+
+    # 2. 清雅仿宋 (FangSong)
+    p2 = tmp_path / "fangsong.ass"
+    generate_ass_file(subs, p2, strategy={"subtitle_theme": "cinema_shadow", "subtitle_font_family": "fangsong"})
+    c2 = p2.read_text(encoding="utf-8")
+    assert "Style: Default,FangSong,72," in c2
+
+    # 3. 经典宋体 (SimSun)
+    p3 = tmp_path / "songti.ass"
+    generate_ass_file(subs, p3, strategy={"subtitle_theme": "cinema_shadow", "subtitle_font_family": "songti"})
+    c3 = p3.read_text(encoding="utf-8")
+    assert "Style: Default,SimSun,72," in c3
+
+def test_subtitle_smoothing_ass_and_srt(tmp_path):
+    """验证 smooth_timings=True 时字幕施加 70ms 听觉前置与微停顿无缝延留接力"""
+    raw_subs = [
+        {"start_time": 1.2, "end_time": 4.5, "corrected_text": "今天看标准化场地"},
+        {"start_time": 4.7, "end_time": 8.0, "corrected_text": "科目二倒车入库一把过"}
+    ]
+    # 未开启平滑时，保持原始时间戳
+    raw_srt = tmp_path / "raw.srt"
+    generate_srt_file(raw_subs, raw_srt, smooth_timings=False)
+    assert "00:00:01,200 --> 00:00:04,500" in raw_srt.read_text(encoding="utf-8")
+
+    # 开启平滑时，第一句施加 70ms 听觉前置 (1.200 -> 1.130)，且 0.2s 间隙平滑延留接力至下一句前置点 (4.630)
+    smooth_srt = tmp_path / "smooth.srt"
+    generate_srt_file(raw_subs, smooth_srt, smooth_timings=True)
+    smooth_content = smooth_srt.read_text(encoding="utf-8")
+    assert "00:00:01,130 --> 00:00:04,630" in smooth_content
+    assert "00:00:04,630 --> 00:00:08,300" in smooth_content
+
+
+
+

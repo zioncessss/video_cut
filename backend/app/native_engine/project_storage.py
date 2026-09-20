@@ -143,30 +143,42 @@ class ProjectStorageService:
 
     def delete_project_by_material(self, talking_head_id: str) -> bool:
         """按口播素材 ID 删除工程文件与缓存"""
+        p = self.get_by_material_id(talking_head_id)
+        proj_id = p.id if p else None
+
+        db_deleted = False
         try:
-            self.repo.delete_by_material(talking_head_id)
+            db_deleted = self.repo.delete_by_material(talking_head_id)
+            if proj_id:
+                self.repo.delete(proj_id)
         except Exception as e:
             print(f"[ProjectStorageService] 从 SQLite 删除工程失败: {e}")
 
-        p = self._cache_by_th_id.pop(talking_head_id, None)
-        if p and p.id in self._cache_by_proj_id:
-            self._cache_by_proj_id.pop(p.id, None)
+        self._cache_by_th_id.pop(talking_head_id, None)
+        if proj_id:
+            self._cache_by_proj_id.pop(proj_id, None)
 
         target_file = _safe_project_file(self.storage_dir, talking_head_id)
+        file_deleted = False
         if target_file.exists():
             try:
                 target_file.unlink()
-                return True
+                file_deleted = True
             except Exception as e:
                 print(f"[ProjectStorageService] 删除磁盘工程文件失败: {e}")
-        return p is not None
+        return db_deleted or file_deleted or (p is not None)
 
     def delete_project(self, project_id: str) -> bool:
         """按工程 ID 删除工程文件与缓存"""
-        p = self._cache_by_proj_id.get(project_id)
-        if p:
+        p = self.get_by_project_id(project_id)
+        if p and p.talking_head_id:
             return self.delete_project_by_material(p.talking_head_id)
-        return False
+        self._cache_by_proj_id.pop(project_id, None)
+        try:
+            return self.repo.delete(project_id)
+        except Exception as e:
+            print(f"[ProjectStorageService] 从 SQLite 删除工程失败: {e}")
+            return False
 
     def list_all_projects(self) -> List[CutProject]:
         """获取所有工程列表（优先权威 SQLite，按更新时间倒序）"""

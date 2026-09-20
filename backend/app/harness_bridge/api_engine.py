@@ -89,7 +89,14 @@ class ApiHarnessBridge(BaseHarnessBridge):
                             if orig_id:
                                 it["id"] = orig_id
                     merged_subtitles.extend(data.get("subtitles") or [])
-                    merged_corrections.extend(data.get("corrections") or [])
+                    raw_corrs = data.get("corrections") or []
+                    actual_corrs = [
+                        c for c in raw_corrs
+                        if isinstance(c, dict)
+                        and str(c.get("original_text", "")).strip() != str(c.get("corrected_text", "")).strip()
+                        and str(c.get("original_text", "")).strip() != ""
+                    ]
+                    merged_corrections.extend(actual_corrs)
                     continue
                 # 模型重新断句（输入为长句/碎片时常见）：模型的重断句恰恰更符合语言习惯——
                 # 取其纠偏全文作为整块内容，按比例重新映射回该块时间线（黄金切割本就是比例插值）

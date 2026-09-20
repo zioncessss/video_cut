@@ -10,6 +10,7 @@ if str(backend_path) not in sys.path:
 from app.main import app
 from app.models.entities import MaterialCategory
 from app.native_engine.storage import storage_service
+from app.native_engine.project_storage import project_storage_service
 
 client = TestClient(app)
 
@@ -250,6 +251,180 @@ def test_redecide_scenes_dual_layer_api(tmp_path):
         storage_service.delete_material(th.id)
         storage_service.delete_material(mat_v.id)
         storage_service.delete_material(mat_l.id)
+
+def test_cover_upload_and_manifest_generation(tmp_path):
+    """测试自定义封面上传与 project_manifest.json 自动维护"""
+    from app.native_engine.project_storage import project_storage_service
+    from app.core.config import STORAGE_DIR
+
+    fake_th = tmp_path / "th_manifest.mp4"
+    fake_th.write_bytes(b"stream_cover_manifest")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_manifest.mp4", fake_th)
+
+    try:
+        # 1. 触发初剪
+        cut_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        assert cut_res.status_code == 200
+        proj = cut_res.json()
+        proj_id = proj["id"]
+        assert proj["task_dir"] is not None
+
+        task_path = STORAGE_DIR.parent / proj["task_dir"]
+        manifest_path = task_path / "project_manifest.json"
+        assert manifest_path.exists()
+        import json
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest_data["project_id"] == proj_id
+
+        # 2. 上传自定义封面图片
+        fake_img_bytes = b"\xff\xd8\xff\xe0" + b"fake_jpg_binary_stream"
+        upload_res = client.post(
+            f"/api/v1/projects/{proj_id}/cover/upload",
+            files={"file": ("custom_cover.jpg", fake_img_bytes, "image/jpeg")}
+        )
+        assert upload_res.status_code == 200
+        up_data = upload_res.json()
+        assert up_data["code"] == 0
+        assert up_data["data"]["cover_source"] == "upload"
+        assert "cover.jpg" in up_data["data"]["cover_image_path"]
+
+        # 3. 验证 manifest 索引中也同步更新了封面
+        manifest_data_v2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest_data_v2["cover_source"] == "upload"
+        assert manifest_data_v2["cover_image_path"] == up_data["data"]["cover_image_path"]
+
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+
+
+def test_render_with_custom_video_speed(tmp_path):
+    """验证用户在导出/渲染时自选任意浮点倍速（如 1.12x），系统能够持久化该倍速并完成压制"""
+    fake_th_file = tmp_path / "speed_test_th.mp4"
+    fake_th_file.write_bytes(b"speed_test_video_stream")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "speed_test_th.mp4", fake_th_file)
+
+    try:
+        # 创建工程
+        create_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={
+                "talking_head_id": th.id,
+                "aspect_ratio": "9:16",
+                "auto_broll": False,
+                "enable_scene_decision": False
+            }
+        )
+        assert create_res.status_code == 200
+        proj_id = create_res.json()["id"]
+
+        # 指定自定义导出倍速 1.12x 调用渲染
+        render_res = client.post(f"/api/v1/projects/{proj_id}/render?video_speed=1.12")
+        assert render_res.status_code == 200
+        render_data = render_res.json()
+        assert render_data["status"] == "completed"
+        assert render_data["strategy"]["video_speed"] == 1.12
+
+        # 权威库回读验证
+        get_res = client.get(f"/api/v1/projects/{proj_id}")
+        assert get_res.status_code == 200
+        assert get_res.json()["strategy"]["video_speed"] == 1.12
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+
+
+def test_delete_project_endpoint(tmp_path):
+    """验证单工程删除接口能够清理 SQLite 数据库记录、内存缓存并清理任务专属目录"""
+    from app.core.config import STORAGE_DIR
+    fake_th = tmp_path / "delete_test_th.mp4"
+    fake_th.write_bytes(b"stream_for_delete_test")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "delete_test_th.mp4", fake_th)
+
+    try:
+        # 1. 创建工程
+        create_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        assert create_res.status_code == 200
+        p_data = create_res.json()
+        proj_id = p_data["id"]
+        task_dir = p_data.get("task_dir")
+
+        # 模拟生成一个任务目录文件
+        task_dir_path = None
+        if task_dir:
+            task_dir_path = (STORAGE_DIR.parent / task_dir).resolve()
+            task_dir_path.mkdir(parents=True, exist_ok=True)
+            dummy_file = task_dir_path / "dummy_output.mp4"
+            dummy_file.write_bytes(b"dummy")
+
+        # 2. 调用 DELETE 接口删除工程
+        del_res = client.delete(f"/api/v1/projects/{proj_id}?delete_files=true")
+        assert del_res.status_code == 200
+        assert del_res.json()["code"] == 0
+        assert del_res.json()["project_id"] == proj_id
+
+        # 3. 验证 SQLite 权威库中已被删除
+        get_res = client.get(f"/api/v1/projects/{proj_id}")
+        assert get_res.status_code == 404
+
+        # 4. 验证任务目录已从磁盘清理
+        if task_dir_path:
+            assert not task_dir_path.exists()
+
+    finally:
+        storage_service.delete_material(th.id)
+
+
+def test_batch_delete_projects_endpoint(tmp_path):
+    """验证批量删除工程接口"""
+    th1_file = tmp_path / "batch_del_1.mp4"
+    th1_file.write_bytes(b"stream1")
+    th1 = storage_service.save_material(MaterialCategory.TALKING_HEAD, "batch_del_1.mp4", th1_file)
+
+    th2_file = tmp_path / "batch_del_2.mp4"
+    th2_file.write_bytes(b"stream2")
+    th2 = storage_service.save_material(MaterialCategory.TALKING_HEAD, "batch_del_2.mp4", th2_file)
+
+    try:
+        res1 = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th1.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        res2 = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th2.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        p1_id = res1.json()["id"]
+        p2_id = res2.json()["id"]
+
+        # 批量删除
+        batch_res = client.post(
+            "/api/v1/projects/batch-delete",
+            json={"project_ids": [p1_id, p2_id], "delete_files": True}
+        )
+        assert batch_res.status_code == 200
+        b_data = batch_res.json()
+        assert b_data["code"] == 0
+        assert b_data["deleted_count"] == 2
+        assert p1_id in b_data["deleted_ids"]
+        assert p2_id in b_data["deleted_ids"]
+
+        # 验证读取均返回 404
+        assert client.get(f"/api/v1/projects/{p1_id}").status_code == 404
+        assert client.get(f"/api/v1/projects/{p2_id}").status_code == 404
+
+    finally:
+        storage_service.delete_material(th1.id)
+        storage_service.delete_material(th2.id)
+
+
+
 
 
 

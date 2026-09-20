@@ -83,7 +83,20 @@ async def test_codex_correct_subtitles(codex_bridge, monkeypatch):
     assert "codex" in res.harness_engine_used
 
 @pytest.mark.asyncio
-async def test_codex_natural_instruction(codex_bridge):
+async def test_codex_natural_instruction(codex_bridge, monkeypatch):
+    canned_res = json.dumps({
+        "explanation": "已将开场文案修改为热情的迎宾词",
+        "updated_subtitles": [
+            {"id": "s1", "start_time": 0.0, "end_time": 2.5, "corrected_text": "欢迎来到驾校大家庭"}
+        ],
+        "updated_brolls": []
+    }, ensure_ascii=False)
+
+    async def fake_run_codex(prompt, timeout=60.0, model_override=None):
+        return True, canned_res, 15.0
+
+    monkeypatch.setattr(codex_bridge, "_run_codex_cli", fake_run_codex)
+
     req = HarnessInstructionRequest(
         current_project_state={
             "subtitles": [

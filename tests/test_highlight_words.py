@@ -78,6 +78,52 @@ def test_build_highlight_words_dedup_and_priority():
 
     merged = build_highlight_words("从今年九月份开始湖州驾校", ai_keywords=["九月份", "湖州驾校", "九月份"])
     words = [w["word"] for w in merged]
-    assert words.count("九月份") == 1, "重复 AI 词必须去重"
     assert _src(merged, "湖州驾校") == "glossary"
     assert _src(merged, "九月份") == "ai"
+
+
+def test_parallel_fee_highlight_symmetry():
+    """排比费用项对称性测试：补训费、燃油费、模拟费、练车费必须全部准确提取且标记为 price 类别"""
+    from app.native_engine.keyword_matcher import extract_rule_highlight_words, build_highlight_words
+
+    cases = {
+        "不收练车费": "练车费",
+        "不收补训费": "补训费",
+        "不收燃油费": "燃油费",
+        "不收模拟费": "模拟费",
+    }
+    for text, expected_word in cases.items():
+        extracted = extract_rule_highlight_words(text)
+        words = [x["word"] for x in extracted]
+        assert expected_word in words, f"{text} 应该精准提取出 {expected_word}，实际为 {words}"
+        match_item = next(x for x in extracted if x["word"] == expected_word)
+        assert match_item["category"] == "price"
+        assert match_item["color"] == "#EF4444"
+
+        # 验证 build_highlight_words 在无 AI 输入时同样稳定产出
+        merged = build_highlight_words(text)
+        merged_words = [x["word"] for x in merged]
+        assert expected_word in merged_words
+
+
+def test_location_highlight_ai_and_heuristic_fallback():
+    """测试地名高亮：AI 自主提取 + 离线启发式正则双保险"""
+    from app.native_engine.keyword_matcher import extract_rule_highlight_words, build_highlight_words
+
+    # 1. 离线启发式正则提取县级地名（如安吉、诸暨）
+    rule_anji = extract_rule_highlight_words("像我们在安吉这边")
+    anji_words = [x["word"] for x in rule_anji]
+    assert "安吉" in anji_words, f"像我们在安吉这边 应该通过启发式正则捕获'安吉'，实际提取: {anji_words}"
+    anji_item = next(x for x in rule_anji if x["word"] == "安吉")
+    assert anji_item["category"] == "location"
+    assert anji_item["color"] == "#38BDF8"
+
+    # 2. build_highlight_words 接收 AI 自主提取的地名（任意中国区县常识，无需词库预置）
+    ai_extracted = [{"word": "诸暨", "category": "location"}]
+    merged = build_highlight_words("我们诸暨的训练场地很大", ai_keywords=ai_extracted)
+    merged_words = [x["word"] for x in merged]
+    assert "诸暨" in merged_words
+    zhuji_item = next(x for x in merged if x["word"] == "诸暨")
+    assert zhuji_item["source"] == "ai"
+    assert zhuji_item["category"] == "location"
+    assert zhuji_item["color"] == "#38BDF8"

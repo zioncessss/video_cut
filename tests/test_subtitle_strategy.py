@@ -127,8 +127,8 @@ def test_generate_ass_file_2d_position_and_flexible_font(tmp_path):
     assert out.exists()
     content = ass_path.read_text(encoding="utf-8")
     
-    # 验证自定义 68px 字号写入样式
-    assert "Microsoft YaHei,68," in content
+    # 验证自定义 68px 字号写入样式与默认华文中宋
+    assert "STZhongsong,68," in content
     # 验证 2D 坐标 (1080 * 0.42 = 453, 1920 * 0.70 = 1344)
     assert r"\an5\pos(453,1344)" in content
 

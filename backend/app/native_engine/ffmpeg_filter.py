@@ -27,6 +27,23 @@ def _get_flame_icon(size: int) -> Optional[Image.Image]:
             pass
     return None
 
+def _build_atempo_chain(speed: float) -> str:
+    """
+    FFmpeg atempo 滤镜要求单级参数在 [0.5, 2.0] 区间内。
+    若倍速超出此区间（如 2.5x 或 0.4x），自动多级串联（如 atempo=2.0,atempo=1.25）。
+    """
+    spd = max(0.25, min(4.0, float(speed)))
+    factors = []
+    curr = spd
+    while curr > 2.0:
+        factors.append("2.0")
+        curr /= 2.0
+    while curr < 0.5:
+        factors.append("0.5")
+        curr /= 0.5
+    factors.append(str(round(curr, 4)))
+    return ",".join(f"atempo={f}" for f in factors)
+
 class FFmpegFilterComposer:
     def __init__(self):
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
@@ -36,6 +53,58 @@ class FFmpegFilterComposer:
         if aspect_ratio == "9:16":
             return "scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
         return "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"
+
+    def is_hdr_video(self, video_path: Path) -> bool:
+        """
+        精准探测视频是否为 HDR / 宽色域格式（iPhone HLG arib-std-b67, HDR10 smpte2084, 杜比视界, BT.2020 色域）
+        """
+        if not self.has_ffmpeg or not video_path.exists():
+            return False
+        try:
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=color_space,color_primaries,color_transfer,pix_fmt",
+                "-of", "default=noprint_wrappers=1",
+                str(video_path)
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            stdout = res.stdout if isinstance(res.stdout, str) else (res.stdout.decode("utf-8", errors="ignore") if res.stdout else "")
+            out = stdout.lower()
+            return any(t in out for t in ("arib-std-b67", "smpte2084", "bt2020", "dovi"))
+        except Exception:
+            return False
+
+    def build_color_normalize_filter(self, is_hdr: bool, target_w: int, target_h: int) -> str:
+        """
+        全链路色彩与画质归一化滤镜：
+        1. 若输入为 iPhone HDR / 杜比视界 / HLG / BT.2020：
+           利用 zscale + tonemap(hable) 进行广播级 HDR 到 SDR BT.709 色调映射，
+           彻底消除过曝、惨白、红脸偏色问题，精准保留原素材动态范围与肤色质感。
+        2. 若输入为常规 SDR：
+           强制统一像素格式为 yuv420p 并打标 bt709，杜绝多素材拼接时色彩空间冲突。
+        3. 配合 Lanczos 缩放与居中黑边补齐，输出严丝合缝的 1080P/720P 画面。
+        """
+        scale_pad = (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+        if is_hdr:
+            return (
+                f"zscale=t=linear:npl=100,tonemap=tonemap=hable:desat=0,"
+                f"zscale=p=bt709:t=bt709:m=bt709:r=limited,"
+                f"format=yuv420p,"
+                f"sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
+                f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                f"{scale_pad}"
+            )
+        else:
+            return (
+                f"{scale_pad},"
+                f"format=yuv420p,"
+                f"sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
+                f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+            )
 
     def generate_overlay_canvas(
         self,
@@ -205,21 +274,34 @@ class FFmpegFilterComposer:
         aspect_ratio: str = "9:16",
         total_duration: float = 15.0,
         ass_subtitle_path: Optional[Path] = None,
-        strategy: Optional[Dict[str, Any]] = None
+        strategy: Optional[Dict[str, Any]] = None,
+        kept_spans: Optional[List[Any]] = None
     ) -> bool:
         """
         组装 FFmpeg filter_complex 管道：
-        1. 保持口播主音频轨不变，指定时间区间将画面平替为 B-roll 空镜。
-        2. 复合烧录 ASS 高级高亮字幕、顶部 Title 挂顶胶囊横幅与品牌水印角标。
-        3. 采用 Lanczos 滤镜与 CRF 18 高清转码，保留真实色彩与画质。
+        1. 若提供 kept_spans（粗剪有效片段序列），以 15ms afade 首尾防爆音无缝拼合音视频，空镜与字幕紧凑对齐。
+        2. 保持口播主音频轨不变，指定时间区间将画面平替为 B-roll 空镜。
+        3. 复合烧录 ASS 高级高亮字幕、顶部 Title 挂顶胶囊横幅与品牌水印角标。
+        4. 采用 Lanczos 滤镜与 CRF 18 高清转码，保留真实色彩与画质。
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        scale_filter = self.build_scale_filter(aspect_ratio)
-        strat = strategy or {}
-
         is_916 = aspect_ratio == "9:16"
         target_w = 1080 if is_916 else 1920
         target_h = 1920 if is_916 else 1080
+        strat = strategy or {}
+        speed = max(0.5, min(3.0, float(strat.get("video_speed") or 1.0)))
+        is_sped = abs(speed - 1.0) >= 0.01
+
+        hdr_cache: Dict[str, bool] = {}
+
+        def _check_hdr(p: Path) -> bool:
+            sp = str(p)
+            if sp not in hdr_cache:
+                hdr_cache[sp] = self.is_hdr_video(p)
+            return hdr_cache[sp]
+
+        th_is_hdr = _check_hdr(talking_head_path)
+        th_filter = self.build_color_normalize_filter(th_is_hdr, target_w, target_h)
 
         # 生成无损透明图层
         overlay_png_path = output_path.parent / f"{output_path.stem}_overlay.png"
@@ -230,10 +312,151 @@ class FFmpegFilterComposer:
             overlay_png_path.unlink(missing_ok=True)
             raise RuntimeError("FFmpeg 未安装或不可用，无法执行真实视频合成，已中止导出（未生成输出文件）")
 
+        # -------------------------------------------------------------------------
+        # 模式 A: 存在 kept_spans（粗剪智能切片 + 防爆音平滑拼接 + 紧凑时间轴合成）
+        # -------------------------------------------------------------------------
+        if kept_spans and len(kept_spans) > 0:
+            inputs = ["-i", str(talking_head_path)]
+            next_input_idx = 1
+            filter_parts = []
+            n_kept = len(kept_spans)
+
+            for i, k in enumerate(kept_spans):
+                st = round(float(getattr(k, "start_time", 0.0) if not isinstance(k, dict) else k.get("start_time", 0.0)), 3)
+                et = round(float(getattr(k, "end_time", 0.0) if not isinstance(k, dict) else k.get("end_time", 0.0)), 3)
+                dur = round(max(0.01, et - st), 3)
+                fade = getattr(k, "audio_fade", True) if not isinstance(k, dict) else k.get("audio_fade", True)
+
+                # 视频切片
+                filter_parts.append(f"[0:v]trim=start={st}:end={et},setpts=PTS-STARTPTS,{th_filter}[v_k{i}];")
+
+                # 音频切片：首尾注入 15ms afade 平滑淡入淡出，消除硬切直流偏移音爆 (Pop Noise)
+                if fade and dur >= 0.05:
+                    fade_len = min(0.015, dur / 3.0)
+                    fade_out_st = round(dur - fade_len, 3)
+                    filter_parts.append(
+                        f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS,"
+                        f"afade=t=in:ss=0:d={fade_len:.3f},afade=t=out:st={fade_out_st:.3f}:d={fade_len:.3f}[a_k{i}];"
+                    )
+                else:
+                    filter_parts.append(f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS[a_k{i}];")
+
+            if n_kept == 1:
+                current_v = "[v_k0]"
+                current_a = "[a_k0]"
+            else:
+                v_inputs = "".join(f"[v_k{i}]" for i in range(n_kept))
+                a_inputs = "".join(f"[a_k{i}]" for i in range(n_kept))
+                filter_parts.append(f"{v_inputs}concat=n={n_kept}:v=1:a=0[v_base];")
+                filter_parts.append(f"{a_inputs}concat=n={n_kept}:v=0:a=1[a_base];")
+                current_v = "[v_base]"
+                current_a = "[a_base]"
+
+            if is_sped:
+                filter_parts.append(f"{current_v}setpts=(1.0/{speed})*PTS[v_sped];")
+                filter_parts.append(f"{current_a}{_build_atempo_chain(speed)}[a_sped];")
+                current_v = "[v_sped]"
+                current_a = "[a_sped]"
+
+            # 处理 B-roll (已重投影至紧凑时间轴)
+            if broll_cuts:
+                fade_mode = str(strat.get("transition_style") or "cut") == "fade"
+                eff_broll_cuts = [
+                    {
+                        **b,
+                        "start_time": round(float(b["start_time"]) / speed, 3) if is_sped else float(b["start_time"]),
+                        "end_time": round(float(b["end_time"]) / speed, 3) if is_sped else float(b["end_time"]),
+                        "transition": b.get("transition", 0.0)
+                    }
+                    for b in broll_cuts
+                ]
+                for i, b in enumerate(eff_broll_cuts):
+                    broll_file = b.get("material_path")
+                    if broll_file and Path(broll_file).exists():
+                        b_st = round(float(b["start_time"]), 3)
+                        b_et = round(float(b["end_time"]), 3)
+                        b_dur = round(b_et - b_st, 3)
+                        if b_dur > 0.05:
+                            b_idx = next_input_idx
+                            next_input_idx += 1
+                            inputs.extend(["-stream_loop", "-1", "-i", str(broll_file)])
+                            b_hdr = _check_hdr(Path(broll_file))
+                            b_norm = self.build_color_normalize_filter(b_hdr, target_w, target_h)
+                            fade_filter = ""
+                            if fade_mode and float(b.get("transition", 0.0)) > 0:
+                                trans = min(0.5, float(b["transition"]), b_dur / 3.0)
+                                fade_filter = f",fade=t=in:st=0:d={trans:.3f}:alpha=1,fade=t=out:st={round(b_dur - trans, 3):.3f}:d={trans:.3f}:alpha=1"
+                            filter_parts.append(f"[{b_idx}:v]trim=start=0:duration={b_dur:.3f},setpts=PTS-STARTPTS+{b_st:.3f}/TB,{b_norm}{fade_filter}[b_seg{i}];")
+                            filter_parts.append(f"{current_v}[b_seg{i}]overlay=0:0:enable='between(t,{b_st:.3f},{b_et:.3f})'[v_over{i}];")
+                            current_v = f"[v_over{i}]"
+
+            # 烧录 ASS 字幕
+            if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
+                escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
+                filter_parts.append(f"{current_v}ass='{escaped_ass}'[v_sub];")
+                current_v = "[v_sub]"
+
+            # 顶部横幅与水印图层
+            if has_overlay:
+                overlay_idx = next_input_idx
+                next_input_idx += 1
+                inputs.extend(["-i", str(overlay_png_path)])
+                filter_parts.append(f"{current_v}[{overlay_idx}:v]overlay=0:0[v_out];")
+                current_v = "[v_out]"
+
+            full_filter = "".join(filter_parts).rstrip(";")
+            audio_maps = ["-map", current_a]
+
+            cmd = [
+                "ffmpeg", "-y", *inputs,
+                "-filter_complex", full_filter,
+                "-map", current_v,
+                *audio_maps,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-pix_fmt", "yuv420p",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                "-colorspace", "bt709",
+                "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+                "-movflags", "+faststart",
+                str(output_path)
+            ]
+
+            try:
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                if res.returncode == 0:
+                    return True
+                err_str = res.stderr.decode("utf-8", errors="replace")
+                print(f"[FFmpegFilterComposer] Kept spans render failed (exit {res.returncode}): {err_str[-300:]}")
+                if talking_head_path.stat().st_size > 10240:
+                    raise RuntimeError(f"FFmpeg 粗剪压制失败 (exit {res.returncode}): {err_str[-200:]}")
+                shutil.copyfile(str(talking_head_path), str(output_path))
+                return True
+            except Exception as e:
+                if talking_head_path.stat().st_size > 10240:
+                    print(f"[FFmpegFilterComposer] Kept spans render exception: {e}")
+                    raise
+                shutil.copyfile(str(talking_head_path), str(output_path))
+                return True
+            finally:
+                overlay_png_path.unlink(missing_ok=True)
+
         # 单一视频流快速高清转码管道 (无空镜平替时)
         if not broll_cuts:
             inputs = ["-i", str(talking_head_path)]
-            filter_chain = [f"[0:v]{scale_filter}[v_scaled]"]
+            if not is_sped:
+                filter_chain = [f"[0:v]{th_filter}[v_scaled]"]
+                audio_maps = ["-map", "0:a?"]
+            else:
+                filter_chain = [
+                    f"[0:v]setpts=(1.0/{speed})*PTS,{th_filter}[v_scaled]",
+                    f"[0:a]{_build_atempo_chain(speed)}[a_sped]"
+                ]
+                audio_maps = ["-map", "[a_sped]"]
             current_v = "[v_scaled]"
 
             if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
@@ -250,7 +473,7 @@ class FFmpegFilterComposer:
                 "ffmpeg", "-y", *inputs,
                 "-filter_complex", ";".join(filter_chain),
                 "-map", current_v,
-                "-map", "0:a?",
+                *audio_maps,
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "18",
@@ -260,6 +483,7 @@ class FFmpegFilterComposer:
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
                 "-colorspace", "bt709",
+                "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
                 "-movflags", "+faststart",
                 str(output_path)
             ]
@@ -284,9 +508,24 @@ class FFmpegFilterComposer:
         # fade 档相邻转场下限：xfade duration 必须为正，接近 0 时视觉上即为硬切
         MIN_FADE = 0.04
 
-        # 1. 先构建片段序列：{"input_idx", "trim_start", "base_dur", "is_broll", "transition"}
+        # 1. 计算缩放后总时长与空镜切片 (倍速对齐)
+        eff_total_duration = (total_duration / speed) if is_sped else total_duration
+        if is_sped:
+            eff_broll_cuts = [
+                {
+                    **b,
+                    "start_time": round(float(b["start_time"]) / speed, 3),
+                    "end_time": round(float(b["end_time"]) / speed, 3),
+                    "transition": b.get("transition", 0.0)
+                }
+                for b in broll_cuts
+            ]
+        else:
+            eff_broll_cuts = broll_cuts
+
+        # 2. 构建片段序列：{"input_idx", "trim_start", "base_dur", "is_broll", "transition"}
         segs = []
-        sorted_cuts = sorted(broll_cuts, key=lambda x: x["start_time"])
+        sorted_cuts = sorted(eff_broll_cuts, key=lambda x: x["start_time"])
         current_time = 0.0
         for cut in sorted_cuts:
             start = cut["start_time"]
@@ -308,14 +547,14 @@ class FFmpegFilterComposer:
                     "path": str(broll_file),
                 })
             current_time = end
-        if current_time < total_duration:
+        if current_time < eff_total_duration:
             segs.append({
                 "kind": "talking", "input_idx": 0,
-                "trim_start": current_time, "base_dur": total_duration - current_time,
+                "trim_start": current_time, "base_dur": eff_total_duration - current_time,
                 "transition": 0.0,
             })
 
-        # 2. fade 档：先按衔接点计算转场时长，并由 broll 侧补帧（trim 延长）抵消叠化消耗，
+        # 3. fade 档：先按衔接点计算转场时长，并由 broll 侧补帧（trim 延长）抵消叠化消耗，
         #    保证与口播音轨总时长严格对齐；衔接点两侧都不是 broll 的情况不存在（concat 结构决定）
         junction_fades: List[float] = []
         if fade_mode and len(segs) >= 2:
@@ -329,7 +568,7 @@ class FFmpegFilterComposer:
                 elif prev_seg["kind"] == "broll":
                     prev_seg["base_dur"] += f
 
-        # 3. 片段进滤镜：登记输入、trim+scale，得到 [v_segN] 标签
+        # 4. 片段进滤镜：登记输入、trim+scale，得到 [v_segN] 标签
         filter_parts = []
         concat_inputs = []
         seg_labels = []
@@ -341,12 +580,25 @@ class FFmpegFilterComposer:
                 # -stream_loop -1：空镜素材短于窗口时长时循环补齐（trim duration 封顶），
                 # 杜绝素材过短导致该段提前 EOF、视频轨缩短与音画错位
                 inputs.extend(["-stream_loop", "-1", "-i", seg["path"]])
-            filter_parts.append(
-                f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{scale_filter}[v_seg{i}];"
-            )
+                broll_is_hdr = _check_hdr(Path(seg["path"]))
+                broll_filter = self.build_color_normalize_filter(broll_is_hdr, target_w, target_h)
+                filter_parts.append(
+                    f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{broll_filter}[v_seg{i}];"
+                )
+            else:
+                if is_sped:
+                    orig_start = round(seg['trim_start'] * speed, 3)
+                    orig_dur = round(seg['base_dur'] * speed, 3)
+                    filter_parts.append(
+                        f"[{seg['input_idx']}:v]trim=start={orig_start}:duration={orig_dur},setpts=(1.0/{speed})*(PTS-STARTPTS),{th_filter}[v_seg{i}];"
+                    )
+                else:
+                    filter_parts.append(
+                        f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{th_filter}[v_seg{i}];"
+                    )
             seg_labels.append(f"[v_seg{i}]")
 
-        # 4. 片段串联：fade 档用 xfade 链（duration=衔接转场，offset=累计显示时长）；
+        # 5. 片段串联：fade 档用 xfade 链（duration=衔接转场，offset=累计显示时长）；
         #    cut 档保持 concat 硬切。
         if fade_mode and len(segs) >= 2:
             display = [
@@ -387,11 +639,17 @@ class FFmpegFilterComposer:
             full_filter += f";{current_v}[{overlay_idx}:v]overlay=0:0[v_out]"
             current_v = "[v_out]"
 
+        if is_sped:
+            full_filter += f";[0:a]{_build_atempo_chain(speed)}[a_sped]"
+            audio_maps = ["-map", "[a_sped]"]
+        else:
+            audio_maps = ["-map", "0:a"]
+
         cmd = [
             "ffmpeg", "-y", *inputs,
             "-filter_complex", full_filter,
             "-map", current_v,
-            "-map", "0:a",
+            *audio_maps,
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "18",
@@ -401,6 +659,7 @@ class FFmpegFilterComposer:
             "-color_primaries", "bt709",
             "-color_trc", "bt709",
             "-colorspace", "bt709",
+            "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
             "-movflags", "+faststart",
             str(output_path)
         ]

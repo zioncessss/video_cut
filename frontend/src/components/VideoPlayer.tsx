@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
-import { EditingStrategy, BrollReplacement, Material, HighlightWord, getMediaUrl } from '../services/api';
+import { EditingStrategy, BrollReplacement, Material, HighlightWord, PruneSpan, getMediaUrl } from '../services/api';
 
 interface VideoPlayerProps {
   videoUrl?: string;
@@ -21,6 +21,8 @@ interface VideoPlayerProps {
   onStrategyChange?: (newStrategy: EditingStrategy) => void;
   onStrategyCommit?: (strategy: EditingStrategy) => void;
   isRendered?: boolean;
+  isActive?: boolean;
+  pruneSpans?: PruneSpan[];
 }
 
 type DragTarget = 'subtitle' | 'banner' | 'watermark' | null;
@@ -121,7 +123,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   strategy,
   onStrategyChange,
   onStrategyCommit,
-  isRendered = false
+  isRendered = false,
+  isActive = true,
+  pruneSpans = [],
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const brollVideoRef = useRef<HTMLVideoElement>(null);
@@ -129,11 +133,110 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [duration, setDuration] = useState<number>(0);
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+
+  // 容器切至后台隐藏时自动暂停主口播与分镜空镜视频播放
+  useEffect(() => {
+    if (isActive === false && isPlaying) {
+      if (videoRef.current) videoRef.current.pause();
+      if (brollVideoRef.current) brollVideoRef.current.pause();
+      setIsPlaying(false);
+    }
+  }, [isActive, isPlaying]);
+
+  const changePlaybackRate = (rate: number) => {
+    setPlaybackRate(rate);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
+    }
+    if (brollVideoRef.current) {
+      brollVideoRef.current.playbackRate = rate;
+    }
+  };
+
+  // 智能字幕时序平滑计算（带 70ms 听觉前置量与微停顿无缝接力）
+  const findActiveSubtitle = useCallback((time: number) => {
+    if (!subtitles || subtitles.length === 0) return null;
+    for (let i = 0; i < subtitles.length; i++) {
+      const s = subtitles[i];
+      const prevEnd = i > 0 ? subtitles[i - 1].end_time : 0;
+      const effectiveStart = Math.max(prevEnd, s.start_time - 0.07);
+
+      let effectiveEnd: number;
+      if (i + 1 < subtitles.length) {
+        const nextStart = subtitles[i + 1].start_time;
+        const gap = nextStart - s.end_time;
+        if (gap > 0 && gap <= 0.60) {
+          effectiveEnd = Math.max(s.end_time, nextStart - 0.07);
+        } else {
+          effectiveEnd = Math.min(nextStart, s.end_time + 0.25);
+        }
+      } else {
+        effectiveEnd = s.end_time + 0.30;
+      }
+
+      if (time >= effectiveStart && time < effectiveEnd) {
+        return s;
+      }
+    }
+    return null;
+  }, [subtitles]);
 
   // 实时分镜探测：判断当前播放时间点是否落在某段 B-roll 空镜窗口内
-  const activeBroll = (!isRendered && brolls && brolls.length > 0)
-    ? brolls.find(b => currentTime >= b.start_time && currentTime < b.end_time)
-    : null;
+  const findActiveBroll = useCallback((time: number) => {
+    if (isRendered || !brolls || brolls.length === 0) return null;
+    return brolls.find(b => time >= b.start_time && time < b.end_time) || null;
+  }, [isRendered, brolls]);
+
+  // 高精 60fps 逐帧监听机制 (基于 requestAnimationFrame)
+  // 彻底打破 Chromium 原生 timeupdate 250ms 一次的迟钝更新，将显示延迟降低至 0~16ms
+  const [activeSubtitle, setActiveSubtitle] = useState<any>(() => findActiveSubtitle(currentTime));
+  const [activeBroll, setActiveBroll] = useState<any>(() => findActiveBroll(currentTime));
+  const activeSubKeyRef = useRef<string | null>(null);
+  const activeBrollKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      const sub = findActiveSubtitle(currentTime);
+      const subKey = sub ? `${sub.start_time}_${sub.end_time}_${sub.corrected_text}` : null;
+      if (subKey !== activeSubKeyRef.current) {
+        activeSubKeyRef.current = subKey;
+        setActiveSubtitle(sub);
+      }
+      const b = findActiveBroll(currentTime);
+      const bKey = b ? `${b.material_id}_${b.start_time}_${b.end_time}` : null;
+      if (bKey !== activeBrollKeyRef.current) {
+        activeBrollKeyRef.current = bKey;
+        setActiveBroll(b);
+      }
+      return;
+    }
+
+    let rafId: number;
+    const tick = () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        const cur = videoRef.current.currentTime;
+        const sub = findActiveSubtitle(cur);
+        const subKey = sub ? `${sub.start_time}_${sub.end_time}_${sub.corrected_text}` : null;
+        if (subKey !== activeSubKeyRef.current) {
+          activeSubKeyRef.current = subKey;
+          setActiveSubtitle(sub);
+        }
+
+        const b = findActiveBroll(cur);
+        const bKey = b ? `${b.material_id}_${b.start_time}_${b.end_time}` : null;
+        if (bKey !== activeBrollKeyRef.current) {
+          activeBrollKeyRef.current = bKey;
+          setActiveBroll(b);
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, currentTime, findActiveSubtitle, findActiveBroll]);
+
   const activeBrollMaterial = (activeBroll && materialsMap) ? materialsMap[activeBroll.material_id] : null;
   const activeBrollUrl = activeBrollMaterial ? getMediaUrl(activeBrollMaterial.filepath) : null;
 
@@ -235,9 +338,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [seekTime, setSeekTime] = useState<number>(0);
   const [videoAspect, setVideoAspect] = useState<string>('9/16');
 
-  const activeSubtitle = subtitles.find(
-    s => currentTime >= s.start_time && currentTime <= s.end_time
-  );
 
   const togglePlay = () => {
     if (!videoRef.current) return;
@@ -250,9 +350,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
+  // 记录待恢复时间点，防范重新合成换 URL 时 `<video>` 初始 00:00 覆盖父级播放进度
+  const pendingSeekTimeRef = useRef<number | null>(currentTime > 0 ? currentTime : null);
+  const prevVideoUrlRef = useRef<string | undefined>(videoUrl);
+
   const handleTimeUpdate = () => {
     if (videoRef.current && !isSeeking) {
-      onTimeUpdate(videoRef.current.currentTime);
+      if (pendingSeekTimeRef.current !== null) {
+        return;
+      }
+      const cur = videoRef.current.currentTime;
+      // 009: 智能粗剪虚拟跳播 (Virtual Skip)
+      // 若当前播放位置落入活跃的剔除区间，秒级跳过废动作/口误
+      if (!isRendered && pruneSpans && pruneSpans.length > 0) {
+        const activeSpan = pruneSpans.find(
+          s => s.is_active && cur >= s.start_time - 0.05 && cur < s.end_time - 0.05
+        );
+        if (activeSpan) {
+          videoRef.current.currentTime = activeSpan.end_time;
+          onTimeUpdate(activeSpan.end_time);
+          return;
+        }
+      }
+      onTimeUpdate(cur);
     }
   };
 
@@ -262,17 +382,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [currentTime, isSeeking]);
 
-  // 当 videoUrl 发生变更（如生成成片后携带新时间戳），主动调用 load() 破除浏览器视频解码缓存
+  // 当 videoUrl 发生变更（如生成成片后携带新时间戳），主动调用 load() 破除浏览器视频解码缓存并维护待恢复时间
   useEffect(() => {
-    if (videoRef.current && videoUrl) {
-      videoRef.current.load();
+    if (videoUrl !== prevVideoUrlRef.current) {
+      prevVideoUrlRef.current = videoUrl;
+      if (currentTime > 0) {
+        pendingSeekTimeRef.current = currentTime;
+      }
+      if (videoRef.current && videoUrl) {
+        videoRef.current.load();
+      }
     }
-  }, [videoUrl]);
+  }, [videoUrl, currentTime]);
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       const d = videoRef.current.duration;
       setDuration(isNaN(d) ? 0 : d);
+      if (pendingSeekTimeRef.current !== null && pendingSeekTimeRef.current > 0) {
+        videoRef.current.currentTime = pendingSeekTimeRef.current;
+        pendingSeekTimeRef.current = null;
+      } else if (currentTime > 0) {
+        videoRef.current.currentTime = currentTime;
+      }
       if (videoRef.current.videoWidth && videoRef.current.videoHeight) {
         const vw = videoRef.current.videoWidth;
         const vh = videoRef.current.videoHeight;
@@ -345,10 +477,65 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${m}:${s}`;
   };
 
+  // 竖屏与 1080P 画布 1:1 语义智能折行函数（与后端 subtitle_styler.py 100% 算法同构）
+  const wrapSubtitleText = (text: string, maxLineLen: number = 15, protectedWords: string[] = []): string => {
+    if (!text || text.length <= maxLineLen || text.includes('\n') || text.includes('\\N')) {
+      return text;
+    }
+
+    const protectedRanges: Array<[number, number]> = [];
+    for (const w of protectedWords) {
+      if (w && text.includes(w)) {
+        let idx = 0;
+        while (true) {
+          const p = text.indexOf(w, idx);
+          if (p === -1) break;
+          protectedRanges.push([p, p + w.length]);
+          idx = p + 1;
+        }
+      }
+    }
+
+    const isProtected = (pos: number) => {
+      return protectedRanges.some(([start, end]) => pos > start && pos < end);
+    };
+
+    // 优先在自然标点、语气助词或连词前断句折行，避开高亮保护词且严禁弱连词挂尾
+    const regex = /[，,。？！?!；;]|(?<=[呢吧啊吗呀啦哒哦哈])|(?=(?:还|并且|但是|而且|然后|或者|包括|我们|你们|他们|其实|大家|全部|手把手))/g;
+    const danglingChars = ['和', '与', '跟', '及', '同', '在', '从', '到', '向', '由', '把', '让'];
+    const candidates: number[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const prefix = text.slice(0, match.index).replace(/[，, ]+$/, '');
+      const isDangling = danglingChars.some(d => prefix.endsWith(d));
+      if (!isDangling && match.index >= 3 && match.index <= text.length - 3 && !isProtected(match.index)) {
+        candidates.push(match.index);
+      }
+    }
+
+    if (candidates.length > 0) {
+      const mid = text.length / 2;
+      const best = candidates.reduce((prev, curr) =>
+        Math.abs(curr - mid) < Math.abs(prev - mid) ? curr : prev
+      );
+      return text.slice(0, best).replace(/[，, ]+$/, '') + '\n' + text.slice(best).replace(/^[，, ]+/, '');
+    }
+
+    // 若无明显连词/标点，在几何中点折行（若中点落在保护词内，则平移至保护词边缘）
+    let midIdx = Math.floor(text.length / 2);
+    for (const [start, end] of protectedRanges) {
+      if (start < midIdx && midIdx < end) {
+        midIdx = (midIdx - start) <= (end - midIdx) ? start : end;
+        break;
+      }
+    }
+    return text.slice(0, midIdx) + '\n' + text.slice(midIdx);
+  };
+
   // 根据当前字幕与策略切分普通文本与高亮文本（精准单词高亮）
   const renderSubtitleText = () => {
     if (!activeSubtitle) return null;
-    const text = activeSubtitle.corrected_text;
+    const rawText = activeSubtitle.corrected_text || '';
     const strat = strategy || {
       subtitle_theme: 'glow_gold',
       enable_highlight: true,
@@ -358,7 +545,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
 
     if (!strat.enable_highlight) {
-      return <span>{text}</span>;
+      const wrapped = wrapSubtitleText(rawText, 15, []);
+      const lines = wrapped.split(/\r?\n|\\N/);
+      if (lines.length > 1) {
+        return (
+          <span className="inline-flex flex-col items-center">
+            {lines.map((l, idx) => (
+              <span key={idx} className="inline-block whitespace-nowrap">
+                {l}
+              </span>
+            ))}
+          </span>
+        );
+      }
+      return <span>{rawText}</span>;
     }
 
     // 优先构建词汇与专属颜色映射表
@@ -388,7 +588,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     });
 
     const keywords = Array.from(hlColorMap.keys());
+    const text = wrapSubtitleText(rawText, 15, keywords);
+
     if (keywords.length === 0) {
+      const lines = text.split(/\r?\n|\\N/);
+      if (lines.length > 1) {
+        return (
+          <span className="inline-flex flex-col items-center">
+            {lines.map((l, idx) => (
+              <span key={idx} className="inline-block whitespace-nowrap">
+                {l}
+              </span>
+            ))}
+          </span>
+        );
+      }
       return <span>{text}</span>;
     }
 
@@ -396,53 +610,69 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     keywords.sort((a, b) => b.length - a.length);
     const escaped = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
     const regex = new RegExp(`(${escaped})`, 'g');
-    const parts = text.split(regex);
 
-    return (
-      <span>
-        {parts.map((part, i) => {
-          if (hlColorMap.has(part)) {
-            const wordColor = hlColorMap.get(part) || strat.highlight_color || '#FACC15';
-            const upper = wordColor.toUpperCase();
-            const isWhite = upper === '#FFFFFF' || upper === '#FFF';
-            return (
-              <span
-                key={i}
-                style={{
-                  color: wordColor,
-                  textShadow: isWhite
-                    ? '0 0 12px rgba(255,255,255,0.95), 0 2px 6px rgba(0,0,0,0.95)'
-                    : `0 0 10px ${wordColor}80, 0 2px 4px rgba(0,0,0,0.9)`
-                }}
-                className={`font-black inline-block transition-all ${
-                  strat.highlight_scale ? 'scale-105 origin-center font-extrabold' : ''
-                }`}
-              >
-                {part}
-              </span>
-            );
-          }
-          return <span key={i}>{part}</span>;
-        })}
-      </span>
-    );
+    const renderLine = (lineText: string, lineKey: number) => {
+      const parts = lineText.split(regex);
+      return (
+        <span key={lineKey} className="inline-block whitespace-nowrap">
+          {parts.map((part, i) => {
+            if (hlColorMap.has(part)) {
+              const wordColor = hlColorMap.get(part) || strat.highlight_color || '#FACC15';
+              const upper = wordColor.toUpperCase();
+              const isWhite = upper === '#FFFFFF' || upper === '#FFF';
+              return (
+                <span
+                  key={i}
+                  style={{
+                    color: wordColor,
+                    textShadow: isWhite
+                      ? '0 0 16px rgba(255,255,255,1), 0 0 6px rgba(255,255,255,0.85), 0 2px 6px rgba(0,0,0,0.95)'
+                      : `0 0 12px ${wordColor}95, 0 2px 6px rgba(0,0,0,0.95)`
+                  }}
+                  className={`font-black inline-block align-baseline transition-all ${
+                    isWhite
+                      ? 'text-[1.22em] mx-0.5'
+                      : strat.highlight_scale !== false
+                      ? 'text-[1.15em] mx-0.5'
+                      : ''
+                  }`}
+                >
+                  {part}
+                </span>
+              );
+            }
+            return <span key={i}>{part}</span>;
+          })}
+        </span>
+      );
+    };
+
+    const lines = (text || '').split(/\r?\n|\\N/);
+    if (lines.length > 1) {
+      return (
+        <span className="inline-flex flex-col items-center">
+          {lines.map((l, idx) => renderLine(l, idx))}
+        </span>
+      );
+    }
+    return renderLine(text || '', 0);
   };
 
   // 获取字幕主题样式类名 (支持自然融入视频背景，无黑底)
   const getThemeClass = () => {
     const theme = strategy?.subtitle_theme || 'glow_gold';
     switch (theme) {
-      // 1. 发光金黄 (完全融入画面，无黑底框，纯白文字 + 金光强调)
+      // 1. 发光金黄 (完全融入画面，无黑底框，纯白文字 + 柔和紧凑立体微阴影)
       case 'glow_gold':
-        return 'bg-transparent text-white font-extrabold drop-shadow-[0_2px_5px_rgba(0,0,0,0.95)] [text-shadow:_0_2px_4px_rgb(0_0_0_/_90%)]';
+        return 'bg-transparent text-white font-bold tracking-wider [text-shadow:_0_1.8px_3px_rgb(0_0_0_/_80%),_0_0_1px_rgb(0_0_0_/_60%)]';
       
       // 2. 超透毛玻璃白 (极微弱纯净透光，不遮挡画面)
       case 'glass_clean':
         return 'bg-black/20 backdrop-blur-[2px] text-white font-bold border border-white/15 shadow-sm [text-shadow:_0_1px_3px_rgb(0_0_0_/_80%)]';
       
-      // 3. 电影级自然立体白 (多层柔和深色外阴影，完美融入任何明暗视频)
+      // 3. 电影级自然立体白 (方案 A：纯白字身 + 紧凑微阴影与微羽化边缘，明暗场景均通透清晰)
       case 'cinema_shadow':
-        return 'bg-transparent text-white font-black tracking-wide drop-shadow-[0_4px_8px_rgba(0,0,0,1)] [text-shadow:_0_3px_6px_rgb(0_0_0_/_95%),_0_1px_2px_rgb(0_0_0_/_90%)]';
+        return 'bg-transparent text-white font-bold tracking-wider [text-shadow:_0_1.8px_3px_rgb(0_0_0_/_80%),_0_0_1px_rgb(0_0_0_/_60%)]';
       
       // 4. 科技翡翠
       case 'tech_emerald':
@@ -457,7 +687,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         return 'bg-black/80 backdrop-blur-md text-white font-bold border border-yellow-500/30 shadow-xl';
 
       default:
-        return 'bg-transparent text-white font-extrabold drop-shadow-[0_2px_5px_rgba(0,0,0,0.95)]';
+        return 'bg-transparent text-white font-bold tracking-wider [text-shadow:_0_1.5px_3px_rgb(0_0_0_/_85%),_0_0.5px_1px_rgb(0_0_0_/_60%)]';
     }
   };
 
@@ -543,10 +773,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       if (dragMode === 'move') {
         if (dragTarget === 'subtitle') {
-          const newX = Math.max(5, Math.min(95, Math.round(dragStartPosX + deltaPercentX)));
-          const newY = Math.max(5, Math.min(95, Math.round(dragStartPosY + deltaPercentY)));
-          if (newX !== currentStrat.subtitle_position_x || newY !== currentStrat.subtitle_position_y) {
-            changeFn({ ...currentStrat, subtitle_position_x: newX, subtitle_position_y: newY });
+          // 字幕宽度与X轴固定居中 (100% 宽度，X=50%)，仅允许垂直高度微调
+          const newY = Math.max(15, Math.min(92, Math.round(dragStartPosY + deltaPercentY)));
+          if (newY !== currentStrat.subtitle_position_y || currentStrat.subtitle_position_x !== 50 || currentStrat.subtitle_width_percent !== 100) {
+            changeFn({ ...currentStrat, subtitle_position_x: 50, subtitle_position_y: newY, subtitle_width_percent: 100 });
           }
         } else if (dragTarget === 'banner') {
           const newX = Math.max(5, Math.min(95, Math.round(dragStartPosX + deltaPercentX)));
@@ -658,13 +888,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // 3. 字幕：2D 坐标与连续字号计算
   const currentPosX = strategy?.subtitle_position_x ?? 50;
-  const currentPosY = strategy?.subtitle_position_y ?? 82;
+  const currentPosY = strategy?.subtitle_position_y ?? 74;
   const isSubtitleVisible = strategy?.show_subtitles !== false;
   const subtitleFontSizeBase = strategy?.subtitle_font_size || (
     strategy?.font_size === 'small' ? 56 : strategy?.font_size === 'large' ? 86 : strategy?.font_size === 'xlarge' ? 98 : 72
   );
-  // ASS 物理渲染等比缩放因子 (0.78 修正系数使 CSS 汉字宽度与 libass 1080P 渲染保持 1:1 像素级视觉一致)
-  const subtitlePx = Math.max(10, Math.round(subtitleFontSizeBase * scaleFactor * 0.78));
+  // ASS 物理渲染 1:1 等比缩放 (保持与 1080P 画布像素级绝对一致)
+  const subtitlePx = Math.max(10, Math.round(subtitleFontSizeBase * scaleFactor));
+
+  // 获取字幕字体族 (提供华文中宋/思源宋体、清雅仿宋、经典宋体、书法楷体与现代黑体)
+  const getSubtitleFontFamily = () => {
+    const family = strategy?.subtitle_font_family || 'notoserif';
+    switch (family) {
+      case 'notoserif':
+        return '"STZhongsong", "华文中宋", "Source Han Serif SC", "Noto Serif SC", "思源宋体", "STSong", "华文宋体", serif';
+      case 'fangsong':
+        return '"FangSong", "FangSong_GB2312", "STFangsong", "华文仿宋", "仿宋", serif';
+      case 'songti':
+        return '"STSong", "SimSun", "Songti SC", "华文宋体", "宋体", serif';
+      case 'kaiti':
+        return '"KaiTi", "STKaiti", "华文楷体", "楷体", "SimKai", "DFKai-SB", serif';
+      case 'yahei':
+        return '"Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif';
+      default:
+        return '"STZhongsong", "华文中宋", "Source Han Serif SC", "Noto Serif SC", "思源宋体", "STSong", "华文宋体", serif';
+    }
+  };
 
   return (
     <div className="flex flex-col items-center justify-center w-full h-full min-h-0 select-none overflow-hidden p-1">
@@ -856,41 +1105,39 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
             )}
 
-            {/* 3. 动态口播字幕层 (支持精准单词高亮、2D 上下左右拖拽、边界手柄拉宽与字号缩放) */}
+            {/* 3. 动态口播字幕层 (全宽 100% 锁定，电影立体白，仅允许垂直微调) */}
             {activeSubtitle && isSubtitleVisible && (
               <div
                 style={{
-                  left: `${currentPosX}%`,
+                  left: '50%',
                   top: `${currentPosY}%`,
                   transform: 'translate(-50%, -50%)',
-                  width: strategy?.subtitle_width_percent ? `${strategy.subtitle_width_percent}%` : undefined,
-                  maxWidth: `${strategy?.subtitle_width_percent || 94}%`,
+                  width: '100%',
+                  maxWidth: '100%',
+                  paddingLeft: '16px',
+                  paddingRight: '16px',
                   fontSize: `${subtitlePx}px`,
                 }}
                 onMouseEnter={() => setHoveredOverlay('subtitle')}
                 onMouseLeave={() => !dragTarget && setHoveredOverlay(null)}
-                onMouseDown={(e) => handleStartMove(e, 'subtitle', currentPosX, currentPosY)}
-                title="按住中心可自由拖动位置，拖拽边框手柄可拉宽拉高"
+                onMouseDown={(e) => handleStartMove(e, 'subtitle', 50, currentPosY)}
+                title="按住可上下微调垂直位置"
                 className={`absolute text-center z-20 select-none pointer-events-auto ${
                   dragTarget === 'subtitle'
-                    ? 'ring-2 ring-blue-400/80 rounded-2xl opacity-95 transition-none cursor-grabbing'
+                    ? 'ring-1 ring-indigo-400/80 rounded-xl opacity-95 transition-none cursor-ns-resize'
                     : 'cursor-grab'
                 }`}
               >
                 <div
                   style={{
-                    fontFamily: '"Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif',
+                    fontFamily: getSubtitleFontFamily(),
                   }}
-                  className={`inline-block ${
-                    strategy?.subtitle_width_percent ? 'w-full' : ''
-                  } px-1.5 py-0.5 rounded-lg transition-all ${getThemeClass()} leading-normal tracking-normal ${
-                    (activeSubtitle.corrected_text?.length || 0) <= 18 ? 'whitespace-nowrap' : 'break-words'
-                  }`}
+                  className={`inline-block w-full px-2 py-0.5 rounded-lg transition-all ${getThemeClass()} leading-snug tracking-wider text-center break-words`}
                 >
                   {renderSubtitleText()}
                 </div>
 
-                {/* 边界标识与拉伸缩放手柄 */}
+                {/* 垂直方向与字号微调手柄 (宽度已 100% 锁定，不可横向调节) */}
                 {(hoveredOverlay === 'subtitle' || dragTarget === 'subtitle') && (
                   <ResizeHandles
                     onStartResize={(e, mode) =>
@@ -898,11 +1145,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                         e,
                         'subtitle',
                         mode,
-                        strategy?.subtitle_width_percent || 90,
+                        100,
                         subtitleFontSizeBase
                       )
                     }
                     color="blue"
+                    allowHorizontal={false}
                   />
                 )}
               </div>
@@ -944,7 +1192,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </span>
 
         {/* 进度拖拽条：带 pointerDown/Up 与即时 scrub 保护，杜绝播放中被重置 */}
-        <div className="flex-1 flex items-center px-1">
+        <div className="flex-1 flex items-center px-1 relative h-5">
+          {/* 009: 剔除区间条带阴影渲染 (Prune Span Bands) */}
+          {duration > 0 && !isRendered && pruneSpans && pruneSpans.map(span => {
+            if (!span.is_active) return null;
+            const leftPct = Math.max(0, Math.min(100, (span.start_time / duration) * 100));
+            const widthPct = Math.max(0.5, Math.min(100 - leftPct, (span.duration / duration) * 100));
+            const reasonLabel =
+              span.reason === 'head_idle' ? '开机准备' :
+              span.reason === 'tail_idle' ? '关机废镜头' :
+              span.reason === 'retake_discard' ? '口误重说' :
+              span.reason === 'mid_silence' ? '长停顿压缩' : '手动剔除';
+            return (
+              <div
+                key={span.id}
+                style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                className="absolute top-1/2 -translate-y-1/2 h-2.5 bg-red-400/40 border-x border-red-500/60 pointer-events-none rounded-xs z-0"
+                title={`已智能剔除 [${reasonLabel}]: ${span.start_time.toFixed(1)}s - ${span.end_time.toFixed(1)}s`}
+              />
+            );
+          })}
           <input
             type="range"
             min="0"
@@ -958,13 +1225,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onPointerUp={handleSeekPointerUp}
             onMouseUp={handleSeekPointerUp}
             onTouchEnd={handleSeekPointerUp}
-            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 focus:outline-none"
+            className="w-full h-1.5 bg-gray-200/80 rounded-lg appearance-none cursor-pointer accent-indigo-600 focus:outline-none relative z-10"
           />
         </div>
 
         <span className="font-mono text-gray-400 text-[11px] min-w-[34px] select-none">
           {formatTime(duration)}
         </span>
+
+        <button
+          type="button"
+          onClick={() => {
+            const rates = [1.0, 1.25, 1.5, 2.0, 0.75];
+            const nextIdx = (rates.indexOf(playbackRate) + 1) % rates.length;
+            changePlaybackRate(rates[nextIdx]);
+          }}
+          className="px-1.5 py-0.5 rounded text-[11px] font-mono text-gray-700 hover:text-indigo-600 hover:bg-gray-100 transition-colors font-medium cursor-pointer"
+          title="点击切换播放倍速 (0.75x ~ 2.0x)"
+        >
+          {playbackRate}x
+        </button>
 
         <button
           type="button"

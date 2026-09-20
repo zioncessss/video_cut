@@ -19,6 +19,8 @@ export interface ElectronAPI {
     desktop: string;
   }>;
   openPathInExplorer: (fullPath: string) => Promise<{ success: boolean; message?: string }>;
+  isMaximized?: () => Promise<boolean>;
+  onMaximizedChange?: (callback: (maximized: boolean) => void) => () => void;
   /** sidecar 动态端口解析出的 API 基地址（preload 阶段同步获取） */
   apiBase: string;
 }

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE, testHarness, listModels, testMiniMaxConnection, TestHarnessResult, MiniMaxConnectionResult } from '../services/api';
+import { useDialog } from '../components/common/CustomDialog';
 import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Save, Zap, Loader2, ListChecks, Sparkles, Mic, Activity } from 'lucide-react';
 
 export const Settings: React.FC = () => {
+  const { showAlert, showToast } = useDialog();
   const [activeHarness, setActiveHarness] = useState<string>('api');
   const [asrProvider, setAsrProvider] = useState<string>('minimax');
   const [llmModel, setLlmModel] = useState<string>('GLM-5.3-Flash');
@@ -124,9 +126,9 @@ export const Settings: React.FC = () => {
         payload.llm_api_key = llmApiKey.trim();
       }
       await axios.post(`${API_BASE}/settings`, payload);
-      alert('设置已成功保存并持久化！');
+      showToast('设置已成功保存并持久化！', 'success');
     } catch (e) {
-      alert('保存设置失败');
+      showAlert({ title: '保存失败', message: '保存设置失败，请检查网络或后台服务状态。', type: 'error' });
     } finally {
       setSaving(false);
     }
