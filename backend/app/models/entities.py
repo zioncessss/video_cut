@@ -149,6 +149,10 @@ class EditingStrategy(BaseModel):
     retake_pause_min: float = 0.40
     retake_similarity_min: float = 0.60
 
+    # 010: 真实人物口播画质调优与滤镜预设
+    filter_preset: str = "clean_natural"  # clean_natural (自然通透·推荐), crisp_hd (质感超清), warm_radiant (元气暖肤), original (原色无滤镜)
+    filter_strength: float = 1.0          # 滤镜强度 0.0 ~ 1.0 (默认 1.0，0.0 为完全无额外调色)
+
 class BrollCueItem(BaseModel):
     """大模型稀疏分镜切入指示项"""
     start_time: float

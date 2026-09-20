@@ -918,6 +918,44 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
         }
     }
 
+@router.get("/filter-presets")
+async def get_filter_presets():
+    """获取所有官方口播画质调优预设列表及说明"""
+    presets = [
+        {
+            "id": "clean_natural",
+            "name": "自然通透",
+            "description": "面部暗沉驱散，皮肤质感自然白皙，发丝与眼神光清晰，适合日常手机口播",
+            "is_recommended": True,
+            "tags": ["日常口播", "提亮去黄", "眼神光增强"]
+        },
+        {
+            "id": "crisp_hd",
+            "name": "质感超清",
+            "description": "边缘轮廓极其立体硬朗，抗二次压缩能力最强，适合商单讲解与高质感需求",
+            "is_recommended": False,
+            "tags": ["商业课程", "极锐质感", "抗二次压缩"]
+        },
+        {
+            "id": "warm_radiant",
+            "name": "元气暖肤",
+            "description": "微升色温，面颊红润通透，改善苍白疲惫或冷光灯泛青泛灰",
+            "is_recommended": False,
+            "tags": ["美妆情感", "红润好气色", "柔化疲惫"]
+        },
+        {
+            "id": "original",
+            "name": "原始原色",
+            "description": "保持素材原始色彩，不施加额外调色与锐化处理",
+            "is_recommended": False,
+            "tags": ["原片直出", "无滤镜", "已布光素材"]
+        }
+    ]
+    return {
+        "code": 0,
+        "data": presets
+    }
+
 @router.get("/{project_id}", response_model=CutProject)
 async def get_project(project_id: str):
     p = project_storage_service.get_by_project_id(project_id)

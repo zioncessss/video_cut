@@ -1,6 +1,6 @@
 import React from 'react';
 import { EditingStrategy } from '../services/api';
-import { Palette, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck, Gauge } from 'lucide-react';
+import { Palette, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck, Gauge, Sparkles } from 'lucide-react';
 
 interface StrategyStudioProps {
   strategy: EditingStrategy;
@@ -826,7 +826,107 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
       </div>
 
+      {/* 6. 画面调优与口播滤镜 */}
+      <div className="bg-white rounded-xl p-3.5 border border-gray-200/80 shadow-xs">
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="flex items-center space-x-1.5">
+            <Sparkles className="w-4 h-4 text-indigo-600" />
+            <h3 className="font-semibold text-xs text-gray-800">画面调优与口播滤镜</h3>
+          </div>
+          <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full font-medium border border-indigo-100/80">
+            CAS 自适应微锐化
+          </span>
+        </div>
 
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          {[
+            {
+              id: 'clean_natural',
+              name: '自然通透',
+              recommended: true,
+              tag: '去黄通透 · 眼神光清澈',
+              desc: '面部暗沉驱散，皮肤质感自然白皙，适合日常手机口播',
+            },
+            {
+              id: 'crisp_hd',
+              name: '质感超清',
+              recommended: false,
+              tag: '立体反差 · 发丝锐利',
+              desc: '边缘轮廓极其硬朗，抗二次压缩能力最强',
+            },
+            {
+              id: 'warm_radiant',
+              name: '元气暖肤',
+              recommended: false,
+              tag: '微暖红润 · 好气色',
+              desc: '微升色温与饱和度，改善苍白疲惫或冷光泛青',
+            },
+            {
+              id: 'original',
+              name: '原始原色',
+              recommended: false,
+              tag: '原片色彩 · 无调色',
+              desc: '保持原始画质与锐度，完全旁路不施加调色',
+            },
+          ].map(item => {
+            const currentPreset = strategy.filter_preset || 'clean_natural';
+            const active = currentPreset === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => update({ filter_preset: item.id as any })}
+                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer relative overflow-hidden ${
+                  active
+                    ? 'border-indigo-600 bg-indigo-50/40 text-gray-900 shadow-xs ring-1 ring-indigo-500/30'
+                    : 'border-gray-200/90 text-gray-600 hover:bg-gray-50/70 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-gray-900 flex items-center space-x-1">
+                    <span>{item.name}</span>
+                    {item.recommended && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-800 font-semibold">
+                        推荐
+                      </span>
+                    )}
+                  </span>
+                  {active && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+                </div>
+                <div className="text-[10px] font-medium text-indigo-600/90 mb-0.5">{item.tag}</div>
+                <div className="text-[9px] text-gray-400 line-clamp-2 leading-tight">{item.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 滤镜强度滑块 */}
+        <div className={`pt-2 border-t border-gray-100 ${strategy.filter_preset === 'original' ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-gray-600 font-medium text-[11px]">
+              美化强度 ({Math.round((strategy.filter_strength ?? 1.0) * 100)}%)
+            </span>
+            <span className="text-[10px] font-mono text-gray-400">
+              {strategy.filter_preset === 'original' ? '原色已旁路' : '微平滑 + 调色 + CAS微锐化'}
+            </span>
+          </div>
+          <input
+            type="range"
+            min="0.0"
+            max="1.0"
+            step="0.05"
+            disabled={strategy.filter_preset === 'original'}
+            value={strategy.filter_strength ?? 1.0}
+            onChange={e => update({ filter_strength: parseFloat(e.target.value) })}
+            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+          />
+          <div className="flex items-center justify-between mt-1 text-[9px] text-gray-400">
+            <span>0% (完全原色)</span>
+            <span>50% (微弱柔和)</span>
+            <span>100% (黄金通透)</span>
+          </div>
+        </div>
+      </div>
 
       {/* 保存方案按钮 */}
       {onSave && (

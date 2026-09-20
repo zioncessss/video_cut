@@ -105,6 +105,8 @@ const DEFAULT_STRATEGY: EditingStrategy = {
   watermark_opacity: 0.45,
   broll_pacing: 'standard',
   video_speed: 1.0,
+  filter_preset: 'clean_natural',
+  filter_strength: 1.0,
 };
 
 export const VideoEditor: React.FC<VideoEditorProps> = ({

@@ -241,6 +241,8 @@ export interface EditingStrategy {
   mid_silence_breath_gap?: number;
   retake_pause_min?: number;
   retake_similarity_min?: number;
+  filter_preset?: 'clean_natural' | 'crisp_hd' | 'warm_radiant' | 'original';
+  filter_strength?: number; // 0.0 ~ 1.0 (默认 1.0)
 }
 
 export interface PruneSpan {

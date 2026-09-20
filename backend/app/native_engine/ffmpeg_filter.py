@@ -2,11 +2,118 @@ import subprocess
 import shutil
 import os
 from pathlib import Path
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
 import io
 import base64
 from PIL import Image, ImageDraw, ImageFont
+
+@dataclass
+class FilterPresetParams:
+    name: str
+    description: str
+    smartblur_lr: float
+    smartblur_ls: float
+    smartblur_lt: float
+    eq_contrast: float
+    eq_brightness: float
+    eq_saturation: float
+    eq_gamma: float
+    eq_gamma_r: float = 1.0
+    eq_gamma_b: float = 1.0
+    cas_strength: float = 0.30
+
+PORTRAIT_PRESETS: Dict[str, Optional[FilterPresetParams]] = {
+    "clean_natural": FilterPresetParams(
+        name="自然通透",
+        description="面部暗沉驱散，皮肤质感自然白皙，发丝与眼神光清晰，适合日常手机口播",
+        smartblur_lr=1.0,
+        smartblur_ls=0.25,
+        smartblur_lt=-3.5,
+        eq_contrast=1.04,
+        eq_brightness=0.02,
+        eq_saturation=1.06,
+        eq_gamma=1.03,
+        cas_strength=0.30
+    ),
+    "crisp_hd": FilterPresetParams(
+        name="质感超清",
+        description="边缘轮廓极其立体硬朗，抗二次压缩能力最强，适合商单讲解与高质感需求",
+        smartblur_lr=0.8,
+        smartblur_ls=0.15,
+        smartblur_lt=-3.0,
+        eq_contrast=1.06,
+        eq_brightness=0.01,
+        eq_saturation=1.04,
+        eq_gamma=1.01,
+        cas_strength=0.40
+    ),
+    "warm_radiant": FilterPresetParams(
+        name="元气暖肤",
+        description="微升色温，面颊红润通透，改善苍白疲惫或冷光灯泛青泛灰",
+        smartblur_lr=1.2,
+        smartblur_ls=0.30,
+        smartblur_lt=-4.0,
+        eq_contrast=1.03,
+        eq_brightness=0.03,
+        eq_saturation=1.08,
+        eq_gamma=1.04,
+        eq_gamma_r=1.02,
+        eq_gamma_b=0.98,
+        cas_strength=0.25
+    ),
+    "original": None  # Bypass: 保持素材原始色彩
+}
+
+def build_portrait_filter_chain(preset: str = "clean_natural", strength: float = 1.0, has_cas: bool = True) -> str:
+    """
+    组装针对真人出镜口播的高清画质调优滤镜子串：
+    1. 若为 original 或 strength <= 0.01，完全旁路返回空字符串。
+    2. 参数按 strength 线性插值，平滑过渡。
+    3. 组装三阶链路：smartblur(微皮平滑) -> eq(色彩中间调提亮) -> cas(自适应边缘微锐化)。
+    """
+    if preset not in PORTRAIT_PRESETS or preset == "original":
+        return ""
+    params = PORTRAIT_PRESETS.get(preset)
+    if not params:
+        return ""
+    str_val = max(0.0, min(1.0, float(strength)))
+    if str_val <= 0.01:
+        return ""
+
+    eff_ls = round(params.smartblur_ls * str_val, 2)
+    eff_contrast = round(1.0 + (params.eq_contrast - 1.0) * str_val, 3)
+    eff_brightness = round(0.0 + (params.eq_brightness - 0.0) * str_val, 3)
+    eff_saturation = round(1.0 + (params.eq_saturation - 1.0) * str_val, 3)
+    eff_gamma = round(1.0 + (params.eq_gamma - 1.0) * str_val, 3)
+    eff_gamma_r = round(1.0 + (params.eq_gamma_r - 1.0) * str_val, 3)
+    eff_gamma_b = round(1.0 + (params.eq_gamma_b - 1.0) * str_val, 3)
+    eff_cas = round(params.cas_strength * str_val, 2)
+
+    parts = []
+    if eff_ls > 0.01:
+        parts.append(f"smartblur=lr={params.smartblur_lr:.2f}:ls={eff_ls:.2f}:lt={params.smartblur_lt:.2f}")
+
+    eq_args = [
+        f"contrast={eff_contrast:.3f}",
+        f"brightness={eff_brightness:.3f}",
+        f"saturation={eff_saturation:.3f}",
+        f"gamma={eff_gamma:.3f}"
+    ]
+    if abs(eff_gamma_r - 1.0) >= 0.005:
+        eq_args.append(f"gamma_r={eff_gamma_r:.3f}")
+    if abs(eff_gamma_b - 1.0) >= 0.005:
+        eq_args.append(f"gamma_b={eff_gamma_b:.3f}")
+    parts.append(f"eq={':'.join(eq_args)}")
+
+    if eff_cas > 0.01:
+        if has_cas:
+            parts.append(f"cas={eff_cas:.2f}")
+        else:
+            parts.append(f"unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={eff_cas:.2f}:chroma_amount=0.0")
+
+    return ",".join(parts)
 
 def _get_flame_icon(size: int) -> Optional[Image.Image]:
     """利用 Windows 原生 Segoe UI Emoji 字体生成高保真真彩 🔥 图标"""
@@ -47,6 +154,19 @@ def _build_atempo_chain(speed: float) -> str:
 class FFmpegFilterComposer:
     def __init__(self):
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
+        self._has_cas: Optional[bool] = None
+
+    def check_has_cas(self) -> bool:
+        if self._has_cas is None:
+            if not self.has_ffmpeg:
+                self._has_cas = False
+            else:
+                try:
+                    res = subprocess.run(["ffmpeg", "-h", "filter=cas"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                    self._has_cas = (res.returncode == 0)
+                except Exception:
+                    self._has_cas = False
+        return self._has_cas
 
     def build_scale_filter(self, aspect_ratio: str = "9:16") -> str:
         """根据目标比例构建归一化缩放与无裁剪填充滤镜（采用 Lanczos 重采样高保真保持画面清晰度）"""
@@ -75,35 +195,50 @@ class FFmpegFilterComposer:
         except Exception:
             return False
 
-    def build_color_normalize_filter(self, is_hdr: bool, target_w: int, target_h: int) -> str:
+    def build_color_normalize_filter(
+        self,
+        is_hdr: bool,
+        target_w: int,
+        target_h: int,
+        filter_preset: str = "original",
+        filter_strength: float = 1.0
+    ) -> str:
         """
         全链路色彩与画质归一化滤镜：
         1. 若输入为 iPhone HDR / 杜比视界 / HLG / BT.2020：
            利用 zscale + tonemap(hable) 进行广播级 HDR 到 SDR BT.709 色调映射，
            彻底消除过曝、惨白、红脸偏色问题，精准保留原素材动态范围与肤色质感。
-        2. 若输入为常规 SDR：
-           强制统一像素格式为 yuv420p 并打标 bt709，杜绝多素材拼接时色彩空间冲突。
-        3. 配合 Lanczos 缩放与居中黑边补齐，输出严丝合缝的 1080P/720P 画面。
+        2. 针对真人出镜口播进行三阶微调（微平滑净肤 -> 通透提亮暖肤色 -> CAS 对比度自适应微锐化）。
+           【黑边防灰铁律】：滤镜必须在 scale 之后、pad 补黑边之前执行，严禁将纯黑边变灰！
+        3. 若输入为常规 SDR：强制统一像素格式为 yuv420p 并打标 bt709，杜绝多素材拼接时色彩空间冲突。
+        4. 配合 Lanczos 缩放与居中黑边补齐，输出严丝合缝的 1080P/720P 画面。
         """
-        scale_pad = (
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,"
-            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+        scale = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd"
+        pad = f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+        portrait_chain = build_portrait_filter_chain(filter_preset, filter_strength, has_cas=self.check_has_cas())
+
+        if portrait_chain:
+            scale_and_filter = f"{scale},{portrait_chain},{pad}"
+        else:
+            scale_and_filter = f"{scale},{pad}"
+
+        color_meta = (
+            "format=yuv420p,"
+            "sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
         )
+
         if is_hdr:
             return (
                 f"zscale=t=linear:npl=100,tonemap=tonemap=hable:desat=0,"
                 f"zscale=p=bt709:t=bt709:m=bt709:r=limited,"
-                f"format=yuv420p,"
-                f"sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
-                f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
-                f"{scale_pad}"
+                f"{color_meta},"
+                f"{scale_and_filter}"
             )
         else:
             return (
-                f"{scale_pad},"
-                f"format=yuv420p,"
-                f"sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
-                f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+                f"{scale_and_filter},"
+                f"{color_meta}"
             )
 
     def generate_overlay_canvas(
@@ -301,7 +436,13 @@ class FFmpegFilterComposer:
             return hdr_cache[sp]
 
         th_is_hdr = _check_hdr(talking_head_path)
-        th_filter = self.build_color_normalize_filter(th_is_hdr, target_w, target_h)
+        filter_preset = strat.get("filter_preset") or "clean_natural"
+        filter_strength = float(strat.get("filter_strength") if strat.get("filter_strength") is not None else 1.0)
+        th_filter = self.build_color_normalize_filter(
+            th_is_hdr, target_w, target_h,
+            filter_preset=filter_preset,
+            filter_strength=filter_strength
+        )
 
         # 生成无损透明图层
         overlay_png_path = output_path.parent / f"{output_path.stem}_overlay.png"

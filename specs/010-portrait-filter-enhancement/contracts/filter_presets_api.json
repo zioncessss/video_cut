@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FilterPresetsAPI",
+  "description": "口播滤镜预设与调优接口定义",
+  "definitions": {
+    "FilterPresetInfo": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["clean_natural", "crisp_hd", "warm_radiant", "original"] },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "is_recommended": { "type": "boolean" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name", "description", "is_recommended"]
+    },
+    "UpdateFilterStrategyRequest": {
+      "type": "object",
+      "properties": {
+        "filter_preset": { "type": "string", "enum": ["clean_natural", "crisp_hd", "warm_radiant", "original"] },
+        "filter_strength": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+      },
+      "required": ["filter_preset"]
+    }
+  },
+  "endpoints": [
+    {
+      "path": "/api/editor/filter-presets",
+      "method": "GET",
+      "summary": "获取所有可用的口播滤镜调优预设及其描述",
+      "response": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 0 },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/FilterPresetInfo" }
+          }
+        }
+      }
+    },
+    {
+      "path": "/api/editor/{project_id}/strategy",
+      "method": "PUT",
+      "summary": "更新工程剪辑策略（包含滤镜预设与强度配置）",
+      "request": {
+        "$ref": "#/definitions/UpdateFilterStrategyRequest"
+      }
+    }
+  ]
+}
