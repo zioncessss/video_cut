@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS subtitles (
     is_pruned INTEGER NOT NULL DEFAULT 0,
     prune_reason TEXT DEFAULT NULL,
     prune_span_id TEXT DEFAULT NULL,
+    words_json TEXT DEFAULT '[]',
     FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_subtitles_project ON subtitles(project_id, sort_index);

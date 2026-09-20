@@ -431,6 +431,7 @@ export interface RenderProjectResult {
   output_filename?: string;
   output_file_size_mb?: number;
   subtitles?: any[];
+  compact_subtitles?: any[];
   strategy?: EditingStrategy;
   cover_image_path?: string;
   cover_source?: string;
@@ -463,6 +464,7 @@ export interface ProjectSummary {
   created_at: number;
   updated_at: number;
   subtitles?: SubtitleSegment[];
+  compact_subtitles?: SubtitleSegment[];
   broll_replacements?: any[];
   strategy?: EditingStrategy;
   prune_spans?: PruneSpan[];
@@ -478,6 +480,7 @@ export const toggleSubtitlePrune = async (
   is_pruned: boolean;
   prune_spans: PruneSpan[];
   total_effective_duration: number;
+  compact_subtitles?: SubtitleSegment[];
 }> => {
   const res = await axios.post(`${API_BASE}/projects/${projectId}/subtitles/${subtitleId}/toggle-prune`, {
     is_pruned: isPruned
@@ -503,6 +506,7 @@ export const updatePruneConfig = async (
   success: boolean;
   total_pruned_seconds: number;
   prune_spans: PruneSpan[];
+  compact_subtitles?: SubtitleSegment[];
 }> => {
   const res = await axios.post(`${API_BASE}/projects/${projectId}/prune-config`, config);
   return res.data;

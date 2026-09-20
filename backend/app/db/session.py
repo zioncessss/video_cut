@@ -125,6 +125,10 @@ def _ensure_columns(conn) -> None:
         conn.execute("ALTER TABLE subtitles ADD COLUMN prune_span_id TEXT DEFAULT NULL;")
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE subtitles ADD COLUMN words_json TEXT DEFAULT '[]';")
+    except Exception:
+        pass
     conn.commit()
 
 

@@ -219,6 +219,17 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
         except Exception as e:
             print(f"[_enrich_project_export_meta] 自动恢复封面失败: {e}")
 
+    # 3. 动态重投影生成紧凑时间轴字幕（有效字幕起止时间与词级时钟精准对齐成片）
+    active_spans = [s for s in (p.prune_spans or []) if s.is_active]
+    if active_spans:
+        from app.native_engine.prune_engine import auto_prune_engine
+        th = storage_service.get_material(p.talking_head_id)
+        th_dur = float(th.duration if th and th.duration else 15.0)
+        kept = auto_prune_engine.compute_kept_spans(th_dur, active_spans)
+        p.compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept)
+    else:
+        p.compact_subtitles = [s for s in p.subtitles if not s.is_pruned]
+
     return p
 
 @router.get("/by-material/{material_id}", response_model=CutProject)
@@ -528,6 +539,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 matched_category=assigned_cat if not is_p else None,
                 matched_keywords=[w.word for w in h_words] if not is_p else [],
                 highlight_words=h_words,
+                words=item.get("words", []),
                 scene_decision=sd if not is_p else None,
                 broll_material_id=assigned_broll_id if not is_p else None,
                 is_pruned=is_p,
@@ -651,7 +663,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         project_storage_service.save_project(project)
         _set_progress(project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
         _set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
-        return project
+        return _enrich_project_export_meta(project)
     except Exception as e:
         _set_progress(req.talking_head_id, PipelineStage.FAILED, 0, f"初剪失败: {str(e)}")
         raise e
@@ -875,7 +887,7 @@ async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
         td = (STORAGE_DIR.parent / p.task_dir).resolve()
         if td.exists():
             _save_task_manifest(td, p)
-    return p
+    return _enrich_project_export_meta(p)
 
 @router.put("/{project_id}/strategy", response_model=CutProject)
 async def update_strategy(project_id: str, strategy: EditingStrategy):
@@ -889,7 +901,7 @@ async def update_strategy(project_id: str, strategy: EditingStrategy):
         td = (STORAGE_DIR.parent / p.task_dir).resolve()
         if td.exists():
             _save_task_manifest(td, p)
-    return p
+    return _enrich_project_export_meta(p)
 
 class TogglePruneRequest(BaseModel):
     is_pruned: Optional[bool] = None
@@ -944,12 +956,14 @@ async def toggle_subtitle_prune(project_id: str, subtitle_id: str, req: Optional
     total_effective_duration = round(sum(k.duration for k in kept), 3)
 
     project_storage_service.save_project(p)
+    compact_subs = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept)
     return {
         "success": True,
         "subtitle_id": subtitle_id,
         "is_pruned": target_sub.is_pruned,
         "prune_spans": [s.model_dump() for s in p.prune_spans],
-        "total_effective_duration": total_effective_duration
+        "total_effective_duration": total_effective_duration,
+        "compact_subtitles": [s.model_dump() if hasattr(s, "model_dump") else s for s in compact_subs]
     }
 
 class PruneConfigRequest(BaseModel):
@@ -1033,11 +1047,15 @@ async def update_prune_config(project_id: str, req: PruneConfigRequest):
 
     project_storage_service.save_project(p)
     total_pruned_seconds = round(sum(s.duration for s in p.prune_spans if s.is_active), 3)
+    active_spans = [s for s in p.prune_spans if s.is_active]
+    kept = auto_prune_engine.compute_kept_spans(th_dur, active_spans)
+    compact_subs = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept)
 
     return {
         "success": True,
         "total_pruned_seconds": total_pruned_seconds,
-        "prune_spans": [s.model_dump() for s in p.prune_spans]
+        "prune_spans": [s.model_dump() for s in p.prune_spans],
+        "compact_subtitles": [s.model_dump() if hasattr(s, "model_dump") else s for s in compact_subs]
     }
 
 @router.post("/{project_id}/render", response_model=CutProject)
@@ -1177,7 +1195,7 @@ async def render_project(
         p.status = CutProjectStatus.FAILED
 
     project_storage_service.save_project(p)
-    return p
+    return _enrich_project_export_meta(p)
 
 class CoverRequest(BaseModel):
     source: str = "frame"             # frame | upload | ai

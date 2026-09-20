@@ -140,3 +140,114 @@ def test_compute_kept_spans():
     assert kept[1].start_time == 13.0
     assert kept[1].end_time == 28.0
     assert kept[1].duration == 15.0
+
+def test_reproject_subtitles_to_compact():
+    """测试字幕紧凑时间轴重投影，包括词级时间戳毫秒级位移"""
+    from app.models.entities import SubtitleWord
+    subs = [
+        SubtitleSegment(
+            id="s1",
+            start_time=2.76,
+            end_time=4.88,
+            raw_text="湖州驾校从今年九月份开始",
+            corrected_text="湖州驾校从今年九月份开始",
+            words=[
+                SubtitleWord(word="湖州", start=2.76, end=3.10),
+                SubtitleWord(word="驾校", start=3.10, end=3.50)
+            ]
+        ),
+        SubtitleSegment(
+            id="s2",
+            start_time=22.02,
+            end_time=24.50,
+            raw_text="我来点个红心加关注",
+            corrected_text="我来点个红心加关注",
+            is_pruned=True,
+            prune_reason="retake_discard"
+        ),
+        SubtitleSegment(
+            id="s3",
+            start_time=24.60,
+            end_time=26.39,
+            raw_text="评论区找我聊一下吧",
+            corrected_text="评论区找我聊一下吧",
+            words=[
+                SubtitleWord(word="评论区", start=24.60, end=25.20)
+            ]
+        )
+    ]
+    # 模拟 kept_spans: [2.56, 21.84] (长度 19.28s) 与 [24.50, 26.50] (长度 2.0s)
+    kept = [
+        KeptSpan(start_time=2.56, end_time=21.84, duration=19.28),
+        KeptSpan(start_time=24.50, end_time=26.50, duration=2.00)
+    ]
+
+    compact_subs = auto_prune_engine.reproject_subtitles_to_compact(subs, kept)
+    assert len(compact_subs) == 2  # s2 被过滤
+    assert compact_subs[0].id == "s1"
+    # 原 2.76 - 2.56 = 0.20
+    assert abs(compact_subs[0].start_time - 0.20) < 0.01
+    assert abs(compact_subs[0].end_time - 2.32) < 0.01
+    assert abs(compact_subs[0].words[0].start - 0.20) < 0.01
+
+    # s3 处于第二块: 紧凑起点 19.28 + (24.60 - 24.50) = 19.38
+    assert compact_subs[1].id == "s3"
+    assert abs(compact_subs[1].start_time - 19.38) < 0.01
+
+def test_retake_reverse_fluency_prefers_earlier_fluent_sentence():
+    """测试流利度优选：后句严重卡壳停顿（>0.6s）时，逆转留后弃前，保留前驱流利原句"""
+    from app.models.entities import SubtitleWord
+    subs = [
+        # 前句：流利无停顿（1.22s）
+        SubtitleSegment(
+            id="sub_prev",
+            start_time=20.62,
+            end_time=21.84,
+            raw_text="点个红心加关注",
+            corrected_text="点个红心加关注",
+            words=[
+                SubtitleWord(word="点", start=20.62, end=20.80),
+                SubtitleWord(word="个", start=20.80, end=20.95),
+                SubtitleWord(word="红心", start=20.95, end=21.35),
+                SubtitleWord(word="加关注", start=21.35, end=21.84)
+            ]
+        ),
+        # 后句：死寂卡壳自言自语（句内停顿长达 1.16 秒）
+        SubtitleSegment(
+            id="sub_next",
+            start_time=22.02,
+            end_time=24.50,
+            raw_text="我来点个红心加关注",
+            corrected_text="我来点个红心加关注",
+            words=[
+                SubtitleWord(word="我", start=22.02, end=22.15),
+                SubtitleWord(word="来", start=22.15, end=22.28),
+                # 停顿: 23.44 - 22.28 = 1.16 秒死寂！
+                SubtitleWord(word="点", start=23.44, end=23.60),
+                SubtitleWord(word="个", start=23.60, end=23.75),
+                SubtitleWord(word="红心", start=23.75, end=24.15),
+                SubtitleWord(word="加关注", start=24.15, end=24.50)
+            ]
+        )
+    ]
+    duration = 27.0
+    prune_spans, pruned_ids = auto_prune_engine.analyze_and_prune(
+        subtitles=subs,
+        video_duration=duration,
+        config={
+            "enable_head_prune": False,
+            "enable_tail_prune": False,
+            "enable_retake_prune": True,
+            "retake_pause_min": 0.18,
+            "retake_similarity_min": 0.60
+        }
+    )
+
+    # 关键断言：必须剔除卡壳后句 sub_next，保留流畅前句 sub_prev！
+    assert "sub_next" in pruned_ids
+    assert "sub_prev" not in pruned_ids
+    retake_spans = [s for s in prune_spans if s.reason == PruneReason.RETAKE_DISCARD.value]
+    assert len(retake_spans) == 1
+    assert retake_spans[0].source_subtitle_id == "sub_next"
+    assert retake_spans[0].target_subtitle_id == "sub_prev"
+

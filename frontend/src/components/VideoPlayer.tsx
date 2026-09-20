@@ -1191,27 +1191,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           {formatTime(isSeeking ? seekTime : currentTime)}
         </span>
 
-        {/* 进度拖拽条：带 pointerDown/Up 与即时 scrub 保护，杜绝播放中被重置 */}
+        {/* 进度拖拽条：带 pointerDown/Up 与即时 scrub 保护，纯净无留红渲染 */}
         <div className="flex-1 flex items-center px-1 relative h-5">
-          {/* 009: 剔除区间条带阴影渲染 (Prune Span Bands) */}
-          {duration > 0 && !isRendered && pruneSpans && pruneSpans.map(span => {
-            if (!span.is_active) return null;
-            const leftPct = Math.max(0, Math.min(100, (span.start_time / duration) * 100));
-            const widthPct = Math.max(0.5, Math.min(100 - leftPct, (span.duration / duration) * 100));
-            const reasonLabel =
-              span.reason === 'head_idle' ? '开机准备' :
-              span.reason === 'tail_idle' ? '关机废镜头' :
-              span.reason === 'retake_discard' ? '口误重说' :
-              span.reason === 'mid_silence' ? '长停顿压缩' : '手动剔除';
-            return (
-              <div
-                key={span.id}
-                style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                className="absolute top-1/2 -translate-y-1/2 h-2.5 bg-red-400/40 border-x border-red-500/60 pointer-events-none rounded-xs z-0"
-                title={`已智能剔除 [${reasonLabel}]: ${span.start_time.toFixed(1)}s - ${span.end_time.toFixed(1)}s`}
-              />
-            );
-          })}
           <input
             type="range"
             min="0"

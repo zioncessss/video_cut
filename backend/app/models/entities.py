@@ -176,6 +176,7 @@ class CutProject(BaseModel):
     strategy: EditingStrategy = Field(default_factory=EditingStrategy)
     status: CutProjectStatus = CutProjectStatus.DRAFT
     prune_spans: List[PruneSpan] = Field(default_factory=list)
+    compact_subtitles: Optional[List[SubtitleSegment]] = None
     output_video_path: Optional[str] = None
     output_absolute_path: Optional[str] = None
     output_filename: Optional[str] = None

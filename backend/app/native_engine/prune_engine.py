@@ -74,24 +74,24 @@ class AutoPruneEngine:
                 return obj.get(key, default)
             return getattr(obj, key, default)
 
+        def _get_max_intra_word_gap(sub) -> float:
+            words = _get_val(sub, "words") or []
+            if not words or len(words) < 2:
+                return 0.0
+            max_g = 0.0
+            for w_idx in range(len(words) - 1):
+                w_cur = words[w_idx]
+                w_nxt = words[w_idx + 1]
+                w_cur_end = float(_get_val(w_cur, "end", _get_val(w_cur, "end_time", 0.0)))
+                w_nxt_start = float(_get_val(w_nxt, "start", _get_val(w_nxt, "start_time", 0.0)))
+                g = w_nxt_start - w_cur_end
+                if g > max_g:
+                    max_g = g
+            return max_g
+
         n = len(subtitles)
 
-        # 1. 头部废动作检测 (Head Idle)
-        first_sub = subtitles[0]
-        first_start = float(_get_val(first_sub, "start_time", 0.0))
-        if enable_head and first_start > head_padding + 0.05:
-            prune_end = round(max(0.0, first_start - head_padding), 3)
-            if prune_end > 0.05:
-                span = PruneSpan(
-                    start_time=0.0,
-                    end_time=prune_end,
-                    reason=PruneReason.HEAD_IDLE.value,
-                    duration=prune_end,
-                    is_active=True
-                )
-                prune_spans.append(span)
-
-        # 2. 口误重说检测 (Retake Detection - "舍弃前驱，保留后效")
+        # 1. 口误重说与卡壳检测 (Retake & Stumble Detection - 支持声学流利度优选)
         retake_marked_indices = set()
         if enable_retake and n >= 2:
             i = 0
@@ -109,18 +109,15 @@ class AutoPruneEngine:
                 is_retake = False
 
                 if cur_text and next_text:
-                    # 规则 A: 相同词连说但停顿正常（排除紧凑修辞强调）
-                    # 若完全相同或高度包含，且停顿大于等于 retake_pause_min
                     ratio = difflib.SequenceMatcher(None, cur_text, next_text).ratio()
                     lcs_len = _longest_common_substring_len(cur_text, next_text)
                     min_len = min(len(cur_text), len(next_text))
                     
-                    # 包含关系（如: "从今年九月份开始啊" vs "湖州驾校从今年九月份开始", 或 "点个红心加关注" vs "我来点个红心加关注"）
                     is_substring_included = (cur_text in next_text) or (next_text in cur_text)
                     lcs_coverage = (lcs_len / min_len) if min_len > 0 else 0.0
 
                     # 判定条件：
-                    # 1. 停顿属于口误卡壳区间 (gap >= retake_pause_min 且 gap <= 3.5s)
+                    # 1. 停顿属于口误卡壳区间 (gap >= retake_pause_min 或包含关系时 gap >= 0.15) 且 gap <= 3.5s
                     # 2. 文本重合度高 (ratio >= retake_similarity_min 或 lcs_coverage >= 0.7 且公共字数 >= 3)
                     if (gap >= retake_pause_min or (gap >= 0.15 and is_substring_included)) and gap <= 3.5:
                         if ratio >= retake_similarity_min or (lcs_coverage >= 0.70 and lcs_len >= 3):
@@ -129,43 +126,95 @@ class AutoPruneEngine:
                                 is_retake = True
 
                 if is_retake:
-                    retake_marked_indices.add(i)
+                    cur_max_gap = _get_max_intra_word_gap(cur_sub)
+                    next_max_gap = _get_max_intra_word_gap(next_sub)
                     cur_id = _get_val(cur_sub, "id")
                     next_id = _get_val(next_sub, "id")
-                    pruned_sub_ids.append(cur_id)
 
-                    cur_start = float(_get_val(cur_sub, "start_time", 0.0))
-                    # 剔除整个前置错误片段，在后置保留句前保留安全起音气口
-                    prune_end = round(max(cur_end, next_start - head_padding), 3)
-                    span = PruneSpan(
-                        start_time=round(cur_start, 3),
-                        end_time=prune_end,
-                        reason=PruneReason.RETAKE_DISCARD.value,
-                        source_subtitle_id=cur_id,
-                        target_subtitle_id=next_id,
-                        duration=round(prune_end - cur_start, 3),
-                        is_active=True
-                    )
-                    prune_spans.append(span)
+                    # 决策优化：声学流利度优选 (Acoustic Fluency First)
+                    # 如果后句内部发生严重卡壳/长停顿 (>= 0.60s)，而前句极其流利 (< 0.25s)，
+                    # 说明后句是卡壳口误重录，应果断保留流利的前句、剔除后句！
+                    discard_next = False
+                    if next_max_gap >= 0.60 and cur_max_gap < 0.25:
+                        discard_next = True
+                    elif next_text.startswith(("我来", "这个", "就是", "然后", "那个")) and next_max_gap >= 0.40 and cur_max_gap < 0.25:
+                        discard_next = True
+
+                    if discard_next:
+                        retake_marked_indices.add(i + 1)
+                        pruned_sub_ids.append(next_id)
+                        discard_start = float(_get_val(next_sub, "start_time", 0.0))
+                        discard_end = float(_get_val(next_sub, "end_time", 0.0))
+                        # 查找下一有效句以保留起音气口
+                        after_start = float(_get_val(subtitles[i + 2], "start_time", discard_end)) if (i + 2 < n) else discard_end
+                        prune_end = round(max(discard_end, after_start - head_padding), 3)
+                        prune_start = round(max(cur_end, discard_start - 0.05), 3)
+                        span = PruneSpan(
+                            start_time=prune_start,
+                            end_time=prune_end,
+                            reason=PruneReason.RETAKE_DISCARD.value,
+                            source_subtitle_id=next_id,
+                            target_subtitle_id=cur_id,
+                            duration=round(prune_end - prune_start, 3),
+                            is_active=True
+                        )
+                        prune_spans.append(span)
+                        i += 2
+                        continue
+                    else:
+                        retake_marked_indices.add(i)
+                        pruned_sub_ids.append(cur_id)
+                        cur_start = float(_get_val(cur_sub, "start_time", 0.0))
+                        # 剔除前置错误片段，在后置保留句前保留安全起音气口
+                        prune_end = round(max(cur_end, next_start - head_padding), 3)
+                        span = PruneSpan(
+                            start_time=round(cur_start, 3),
+                            end_time=prune_end,
+                            reason=PruneReason.RETAKE_DISCARD.value,
+                            source_subtitle_id=cur_id,
+                            target_subtitle_id=next_id,
+                            duration=round(prune_end - cur_start, 3),
+                            is_active=True
+                        )
+                        prune_spans.append(span)
                 i += 1
+
+        # 2. 头部废动作检测 (Head Idle) - 必须以第一个真正保留的有效字幕为基准！
+        if enable_head:
+            first_active_sub = None
+            for idx, sub in enumerate(subtitles):
+                if idx not in retake_marked_indices:
+                    first_active_sub = sub
+                    break
+            if first_active_sub is not None:
+                first_active_start = float(_get_val(first_active_sub, "start_time", 0.0))
+                if first_active_start > head_padding + 0.05:
+                    prune_end = round(max(0.0, first_active_start - head_padding), 3)
+                    if prune_end > 0.05:
+                        span = PruneSpan(
+                            start_time=0.0,
+                            end_time=prune_end,
+                            reason=PruneReason.HEAD_IDLE.value,
+                            duration=prune_end,
+                            is_active=True
+                        )
+                        prune_spans.append(span)
 
         # 3. 中段单纯长停顿气口压缩 (Mid-Silence Compression)
         if enable_mid_silence and n >= 2:
             half_breath = round(mid_silence_breath_gap / 2.0, 3)
-            for i in range(n - 1):
-                # 如果当前或下一句已被口误剔除，跳过中段单纯静音判断
-                if i in retake_marked_indices or (i + 1) in retake_marked_indices:
-                    continue
-
-                cur_sub = subtitles[i]
-                next_sub = subtitles[i + 1]
+            active_indices = [idx for idx in range(n) if idx not in retake_marked_indices]
+            for k in range(len(active_indices) - 1):
+                idx_cur = active_indices[k]
+                idx_nxt = active_indices[k + 1]
+                cur_sub = subtitles[idx_cur]
+                next_sub = subtitles[idx_nxt]
 
                 cur_end = float(_get_val(cur_sub, "end_time", 0.0))
                 next_start = float(_get_val(next_sub, "start_time", 0.0))
                 gap = next_start - cur_end
 
                 if gap > mid_silence_threshold:
-                    # 中段静音压缩：绝不压成 0 秒，严格保留两端各 half_breath (合计 mid_silence_breath_gap) 的呼吸气口
                     cut_start = round(cur_end + half_breath, 3)
                     cut_end = round(next_start - half_breath, 3)
                     if cut_end > cut_start + 0.1:
@@ -178,27 +227,33 @@ class AutoPruneEngine:
                         )
                         prune_spans.append(span)
 
-        # 4. 尾部废动作检测 (Tail Idle)
-        last_sub = subtitles[-1]
-        last_end = float(_get_val(last_sub, "end_time", 0.0))
-        if enable_tail and (video_duration - last_end > tail_padding + 0.05):
-            prune_start = round(last_end + tail_padding, 3)
-            if prune_start < video_duration - 0.05:
-                span = PruneSpan(
-                    start_time=prune_start,
-                    end_time=round(video_duration, 3),
-                    reason=PruneReason.TAIL_IDLE.value,
-                    duration=round(video_duration - prune_start, 3),
-                    is_active=True
-                )
-                prune_spans.append(span)
+        # 4. 尾部废动作检测 (Tail Idle) - 必须以最后一个真正保留的有效字幕为基准！
+        if enable_tail:
+            last_active_sub = None
+            for idx in range(n - 1, -1, -1):
+                if idx not in retake_marked_indices:
+                    last_active_sub = subtitles[idx]
+                    break
+            if last_active_sub is not None:
+                last_active_end = float(_get_val(last_active_sub, "end_time", 0.0))
+                if video_duration - last_active_end > tail_padding + 0.05:
+                    prune_start = round(last_active_end + tail_padding, 3)
+                    if prune_start < video_duration - 0.05:
+                        span = PruneSpan(
+                            start_time=prune_start,
+                            end_time=round(video_duration, 3),
+                            reason=PruneReason.TAIL_IDLE.value,
+                            duration=round(video_duration - prune_start, 3),
+                            is_active=True
+                        )
+                        prune_spans.append(span)
 
-        # 5. 区间合并与按时间排序
+        # 5. 区间合并与消除微小杂音碎片
         merged_spans = self._merge_and_sort_spans(prune_spans)
         return merged_spans, pruned_sub_ids
 
     def _merge_and_sort_spans(self, spans: List[PruneSpan]) -> List[PruneSpan]:
-        """合并重叠或微小相邻的剔除区间，保证单调递增无冲突"""
+        """合并重叠或微小相邻的剔除区间，消除 <0.35s 的杂音/吸气孤岛，保证单调递增无冲突"""
         if not spans:
             return []
         sorted_spans = sorted(spans, key=lambda s: s.start_time)
@@ -209,8 +264,8 @@ class AutoPruneEngine:
                 merged.append(s)
                 continue
             prev = merged[-1]
-            # 若两区间重叠或间隙小于 0.05 秒，合并
-            if s.start_time <= prev.end_time + 0.05:
+            # 若两区间重叠，或两区间之间的保留间距小于 0.35 秒（微小杂音/吸气孤岛碎片），自动连片合并
+            if s.start_time <= prev.end_time + 0.35:
                 new_end = max(prev.end_time, s.end_time)
                 prev.end_time = round(new_end, 3)
                 prev.duration = round(prev.end_time - prev.start_time, 3)
@@ -300,5 +355,78 @@ class AutoPruneEngine:
         if mapped_start is not None and mapped_end is not None and mapped_end > mapped_start:
             return round(mapped_start, 3), round(mapped_end, 3)
         return None
+
+    def reproject_subtitles_to_compact(
+        self,
+        subtitles: List[Any],
+        kept_spans: List[KeptSpan]
+    ) -> List[Any]:
+        """
+        将字幕列表投影至紧凑时间轴：
+        1. 自动过滤掉已被剔除的字幕；
+        2. 重新计算每个字幕在紧凑时间轴上的 start_time 与 end_time；
+        3. 重新计算字幕内部 words 数组中每个字的 start 与 end；
+        4. 保证成片预览与字幕高亮毫秒级同步。
+        """
+        if not subtitles or not kept_spans:
+            return subtitles
+
+        compact_subs = []
+        for sub in subtitles:
+            # 如果显式标记为剔除，跳过
+            if getattr(sub, 'is_pruned', False) or (isinstance(sub, dict) and sub.get('is_pruned')):
+                continue
+
+            orig_start = float(sub.start_time if hasattr(sub, 'start_time') else sub.get('start_time', 0.0))
+            orig_end = float(sub.end_time if hasattr(sub, 'end_time') else sub.get('end_time', 0.0))
+
+            mapped = self.map_interval_to_compact(orig_start, orig_end, kept_spans)
+            if not mapped:
+                continue
+
+            if hasattr(sub, 'model_copy'):
+                new_sub = sub.model_copy(deep=True)
+                new_sub.start_time = mapped[0]
+                new_sub.end_time = mapped[1]
+                if getattr(new_sub, 'words', None):
+                    compact_words = []
+                    for w in new_sub.words:
+                        w_st = float(w.start if hasattr(w, 'start') else w.get('start', 0.0))
+                        w_et = float(w.end if hasattr(w, 'end') else w.get('end', 0.0))
+                        w_mapped = self.map_interval_to_compact(w_st, w_et, kept_spans)
+                        if w_mapped:
+                            if hasattr(w, 'model_copy'):
+                                nw = w.model_copy()
+                                nw.start = w_mapped[0]
+                                nw.end = w_mapped[1]
+                                compact_words.append(nw)
+                            else:
+                                nw = dict(w)
+                                nw['start'] = w_mapped[0]
+                                nw['end'] = w_mapped[1]
+                                compact_words.append(nw)
+                    new_sub.words = compact_words
+                compact_subs.append(new_sub)
+            elif isinstance(sub, dict):
+                new_sub = dict(sub)
+                new_sub['start_time'] = mapped[0]
+                new_sub['end_time'] = mapped[1]
+                if 'words' in new_sub and isinstance(new_sub['words'], list):
+                    compact_words = []
+                    for w in new_sub['words']:
+                        w_st = float(w.get('start', 0.0))
+                        w_et = float(w.get('end', 0.0))
+                        w_mapped = self.map_interval_to_compact(w_st, w_et, kept_spans)
+                        if w_mapped:
+                            nw = dict(w)
+                            nw['start'] = w_mapped[0]
+                            nw['end'] = w_mapped[1]
+                            compact_words.append(nw)
+                    new_sub['words'] = compact_words
+                compact_subs.append(new_sub)
+            else:
+                compact_subs.append(sub)
+
+        return compact_subs
 
 auto_prune_engine = AutoPruneEngine()

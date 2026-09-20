@@ -125,6 +125,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
+  const [compactSubtitles, setCompactSubtitles] = useState<SubtitleItem[]>([]);
   const [brolls, setBrolls] = useState<BrollReplacement[]>([]);
   const [pruneSpans, setPruneSpans] = useState<PruneSpan[]>([]);
   const [materialsMap, setMaterialsMap] = useState<Record<string, Material>>({});
@@ -199,6 +200,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         }
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
+        setCompactSubtitles(proj.compact_subtitles || []);
         setBrolls(proj.broll_replacements || []);
         setPruneSpans(proj.prune_spans || []);
         if (proj.strategy) setStrategy(proj.strategy);
@@ -247,6 +249,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         loadedProjectIdRef.current = proj.id;
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
+        setCompactSubtitles(proj.compact_subtitles || []);
         setBrolls(proj.broll_replacements || []);
         setPruneSpans(proj.prune_spans || []);
         if (proj.strategy) setStrategy(proj.strategy);
@@ -284,6 +287,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       loadedProjectIdRef.current = '';
       if (onProjectLoaded) onProjectLoaded('');
       setSubtitles([]);
+      setCompactSubtitles([]);
       setBrolls([]);
       setOutputVideoUrl('');
       setCoverUrl('');
@@ -427,6 +431,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       }
       const currentSubs = res.subtitles || [];
       setSubtitles(currentSubs);
+      setCompactSubtitles(res.compact_subtitles || []);
       if (res.broll_replacements) {
         setBrolls(res.broll_replacements);
       }
@@ -634,6 +639,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         latestSubtitlesRef.current = updated;
         setSubtitles(updated);
         setPruneSpans(res.prune_spans || []);
+        if (res.compact_subtitles) {
+          setCompactSubtitles(res.compact_subtitles);
+        }
         setHasUnrenderedChanges(true);
         showToast(res.is_pruned ? '已标记剔除该片段' : '已恢复该片段', 'info');
       }
@@ -821,9 +829,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (res.cover_image_path) {
         setCoverUrl(getMediaUrl(res.cover_image_path.replace(/^\//, '')));
       }
-      // 若当前播放指针处于片头空白无字幕阶段（如 00:00），自动对齐至第一条字幕起始时间，确保用户直接看到最新字体成片效果
-      if (currentTime < (subtitles[0]?.start_time || 1.0) && subtitles.length > 0) {
-        setCurrentTime(subtitles[0].start_time);
+      if (res.compact_subtitles) {
+        setCompactSubtitles(res.compact_subtitles);
+      }
+      // 若当前播放指针处于片头空白无字幕阶段（如 00:00），自动对齐至第一条成片字幕起始时间，确保用户直接看到最新字体成片效果
+      const firstActiveStart = res.compact_subtitles?.[0]?.start_time ?? subtitles[0]?.start_time ?? 0.2;
+      if (currentTime < firstActiveStart) {
+        setCurrentTime(firstActiveStart);
       }
       setPreviewMode('rendered');
       setHasUnrenderedChanges(false);
@@ -1214,6 +1226,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             {activeTab === 'subtitles' ? (
               <SubtitleList
                 subtitles={subtitles}
+                compactSubtitles={compactSubtitles}
+                isCompactMode={previewMode === 'rendered'}
                 currentTime={currentTime}
                 saveStatus={saveStatus}
                 lastSavedAt={lastSavedAt}

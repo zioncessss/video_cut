@@ -8,6 +8,7 @@ from app.models.entities import (
     CutProject,
     CutProjectStatus,
     SubtitleSegment,
+    SubtitleWord,
     BrollReplacement,
     EditingStrategy,
     HighlightWord,
@@ -126,14 +127,18 @@ class ProjectRepository:
                     [w.model_dump() if hasattr(w, 'model_dump') else w for w in (s.highlight_words or [])],
                     ensure_ascii=False
                 ) if s.highlight_words else '[]'
+                words_json = json.dumps(
+                    [w.model_dump() if hasattr(w, 'model_dump') else w for w in (s.words or [])],
+                    ensure_ascii=False
+                ) if getattr(s, 'words', None) else '[]'
                 sd_json = json.dumps(s.scene_decision.model_dump(), ensure_ascii=False) if s.scene_decision else None
                 cat_val = s.matched_category.value if (s.matched_category and hasattr(s.matched_category, 'value')) else (str(s.matched_category) if s.matched_category else None)
                 conn.execute("""
                     INSERT INTO subtitles
                     (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
                      matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited,
-                     is_pruned, prune_reason, prune_span_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     is_pruned, prune_reason, prune_span_id, words_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     s.id,
                     project.id,
@@ -150,7 +155,8 @@ class ProjectRepository:
                     1 if s.is_manual_edited else 0,
                     1 if getattr(s, 'is_pruned', False) else 0,
                     getattr(s, 'prune_reason', None),
-                    getattr(s, 'prune_span_id', None)
+                    getattr(s, 'prune_span_id', None),
+                    words_json
                 ))
 
             # 3. 保存/更新 Strategy
@@ -228,10 +234,17 @@ class ProjectRepository:
             except Exception:
                 scene_decision = None
 
+            sub_keys = sub_row.keys()
             cat_val = sub_row["matched_category"]
             cat_enum = MaterialCategory(cat_val) if cat_val else None
+            words_list = []
+            if "words_json" in sub_keys and sub_row["words_json"]:
+                try:
+                    raw_words = json.loads(sub_row["words_json"])
+                    words_list = [SubtitleWord(**w) for w in raw_words if isinstance(w, dict) and "word" in w]
+                except Exception:
+                    words_list = []
 
-            sub_keys = sub_row.keys()
             seg = SubtitleSegment(
                 id=sub_row["id"],
                 start_time=sub_row["start_time"],
@@ -241,6 +254,7 @@ class ProjectRepository:
                 matched_category=cat_enum,
                 matched_keywords=kw_list,
                 highlight_words=highlight_words,
+                words=words_list,
                 scene_decision=scene_decision,
                 broll_material_id=sub_row["broll_material_id"],
                 is_manual_edited=bool(sub_row["is_manual_edited"]),
@@ -301,6 +315,16 @@ class ProjectRepository:
                 raw_asr = json.loads(row["raw_asr_json"])
             except Exception:
                 pass
+
+        if raw_asr and subtitles:
+            for seg in subtitles:
+                if not seg.words:
+                    for r in raw_asr:
+                        if abs(seg.start_time - r.get("start_time", 0)) < 0.15 and abs(seg.end_time - r.get("end_time", 0)) < 0.15:
+                            raw_w = r.get("words", [])
+                            if raw_w:
+                                seg.words = [SubtitleWord(**w) for w in raw_w if isinstance(w, dict) and "word" in w]
+                            break
 
         # 分镜时间线：优先从 brolls_json 完整还原（含 id/playback_mode/编排后的时间窗），
         # 旧库无该列数据时回退按字幕派生（保留兼容）
