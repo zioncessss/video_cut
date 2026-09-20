@@ -1,12 +1,13 @@
 import React from 'react';
-import { EditingStrategy } from '../services/api';
-import { Palette, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck, Gauge, Sparkles } from 'lucide-react';
+import { EditingStrategy, PruneSpan } from '../services/api';
+import { Palette, Type, Shield, Film, Check, Flame, Cpu, Sun, Layers, ShieldCheck, Gauge, Sparkles, Scissors } from 'lucide-react';
 
 interface StrategyStudioProps {
   strategy: EditingStrategy;
   onChange: (newStrategy: EditingStrategy) => void;
   onSave?: () => void;
   saving?: boolean;
+  pruneSpans?: PruneSpan[];
 }
 
 export const StrategyStudio: React.FC<StrategyStudioProps> = ({
@@ -14,6 +15,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
   onChange,
   onSave,
   saving = false,
+  pruneSpans = [],
 }) => {
   const fontOptions = [
     {
@@ -826,7 +828,164 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
       </div>
 
-      {/* 6. 画面调优与口播滤镜 */}
+      {/* 6. 智能粗剪与头尾裁剪 */}
+      <div className="bg-white rounded-xl p-3.5 border border-gray-200/80 shadow-xs">
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="flex items-center space-x-1.5">
+            <Scissors className="w-4 h-4 text-indigo-600" />
+            <h3 className="font-semibold text-xs text-gray-800">智能粗剪与头尾裁剪</h3>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+              (strategy.enable_auto_prune ?? true)
+                ? 'text-emerald-700 bg-emerald-50 border-emerald-200/80'
+                : 'text-gray-400 bg-gray-50 border-gray-200'
+            }`}>
+              {(strategy.enable_auto_prune ?? true) ? '已开启 · 自动除废' : '已关闭'}
+            </span>
+            <button
+              type="button"
+              onClick={() => update({ enable_auto_prune: !(strategy.enable_auto_prune ?? true) })}
+              className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+                (strategy.enable_auto_prune ?? true) ? 'bg-indigo-600' : 'bg-gray-200'
+              }`}
+            >
+              <div
+                className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                  (strategy.enable_auto_prune ?? true) ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* 粗剪收益摘要卡片 */}
+        {pruneSpans && pruneSpans.filter(s => s.is_active).length > 0 && (
+          <div className="mb-3 rounded-lg bg-indigo-50/50 border border-indigo-100 p-2.5 flex items-center justify-between text-[11px] text-indigo-900">
+            <div className="flex items-center space-x-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />
+              <span>
+                已识别 <strong>{pruneSpans.filter(s => s.is_active).length}</strong> 处冗余片段，合成时将自动剪除{' '}
+                <strong>{pruneSpans.filter(s => s.is_active).reduce((acc, s) => acc + s.duration, 0).toFixed(1)}s</strong>{' '}
+                无效时长
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* 细分裁剪策略开关 */}
+        <div className={`space-y-2 ${(strategy.enable_auto_prune ?? true) ? '' : 'opacity-40 pointer-events-none'}`}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* 头端开机动作裁剪 */}
+            <div
+              onClick={() => update({ enable_head_prune: !(strategy.enable_head_prune ?? true) })}
+              className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                (strategy.enable_head_prune ?? true)
+                  ? 'border-indigo-500/40 bg-indigo-50/20'
+                  : 'border-gray-200/80 bg-gray-50/40'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-gray-800">头部动作切除</span>
+                <input
+                  type="checkbox"
+                  checked={strategy.enable_head_prune ?? true}
+                  onChange={() => {}}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 pointer-events-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-500 leading-tight">切除首句说话前的找镜头、深呼吸等准备动作</p>
+            </div>
+
+            {/* 尾端关机废镜头裁剪 */}
+            <div
+              onClick={() => update({ enable_tail_prune: !(strategy.enable_tail_prune ?? true) })}
+              className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                (strategy.enable_tail_prune ?? true)
+                  ? 'border-indigo-500/40 bg-indigo-50/20'
+                  : 'border-gray-200/80 bg-gray-50/40'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-gray-800">尾部关机切除</span>
+                <input
+                  type="checkbox"
+                  checked={strategy.enable_tail_prune ?? true}
+                  onChange={() => {}}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 pointer-events-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-500 leading-tight">切除末句说完后伸手关机与停顿废镜头</p>
+            </div>
+
+            {/* 口误重说卡壳过滤 */}
+            <div
+              onClick={() => update({ enable_retake_prune: !(strategy.enable_retake_prune ?? true) })}
+              className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                (strategy.enable_retake_prune ?? true)
+                  ? 'border-indigo-500/40 bg-indigo-50/20'
+                  : 'border-gray-200/80 bg-gray-50/40'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-gray-800">口误留后弃前</span>
+                <input
+                  type="checkbox"
+                  checked={strategy.enable_retake_prune ?? true}
+                  onChange={() => {}}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 pointer-events-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-500 leading-tight">卡壳重说时自动剔除前置错句，保留正确后句</p>
+            </div>
+
+            {/* 中段停顿自然压缩 */}
+            <div
+              onClick={() => update({ enable_mid_silence_prune: !(strategy.enable_mid_silence_prune ?? true) })}
+              className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                (strategy.enable_mid_silence_prune ?? true)
+                  ? 'border-indigo-500/40 bg-indigo-50/20'
+                  : 'border-gray-200/80 bg-gray-50/40'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-gray-800">停顿气口压缩</span>
+                <input
+                  type="checkbox"
+                  checked={strategy.enable_mid_silence_prune ?? true}
+                  onChange={() => {}}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 pointer-events-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-500 leading-tight">压缩中途大于0.9s的空白停顿，保留0.2s自然气口</p>
+            </div>
+          </div>
+
+          {/* 气口微调滑块 */}
+          <div className="pt-2 border-t border-gray-100 flex items-center justify-between text-[11px]">
+            <span className="text-gray-500">头尾起音安全缓冲</span>
+            <div className="flex items-center space-x-2">
+              <span className="text-indigo-600 font-mono font-medium">
+                {Number(strategy.head_padding_seconds ?? 0.10).toFixed(2)}s
+              </span>
+              <input
+                type="range"
+                min="0.05"
+                max="0.30"
+                step="0.01"
+                value={strategy.head_padding_seconds ?? 0.10}
+                onChange={e => update({
+                  head_padding_seconds: parseFloat(e.target.value),
+                  tail_padding_seconds: Math.round((parseFloat(e.target.value) + 0.02) * 100) / 100
+                })}
+                className="w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 7. 画面调优与口播滤镜 */}
       <div className="bg-white rounded-xl p-3.5 border border-gray-200/80 shadow-xs">
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center space-x-1.5">

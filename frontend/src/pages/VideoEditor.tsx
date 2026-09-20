@@ -834,6 +834,12 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (res.compact_subtitles) {
         setCompactSubtitles(res.compact_subtitles);
       }
+      if (res.prune_spans) {
+        setPruneSpans(res.prune_spans);
+      }
+      if (res.subtitles) {
+        setSubtitles(res.subtitles);
+      }
       // 若当前播放指针处于片头空白无字幕阶段（如 00:00），自动对齐至第一条成片字幕起始时间，确保用户直接看到最新字体成片效果
       const firstActiveStart = res.compact_subtitles?.[0]?.start_time ?? subtitles[0]?.start_time ?? 0.2;
       if (currentTime < firstActiveStart) {
@@ -1246,6 +1252,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                 onChange={handleStrategyChange}
                 onSave={handleSaveStrategy}
                 saving={savingStrategy}
+                pruneSpans={pruneSpans}
               />
             )}
           </div>

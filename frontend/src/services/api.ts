@@ -434,6 +434,7 @@ export interface RenderProjectResult {
   output_file_size_mb?: number;
   subtitles?: any[];
   compact_subtitles?: any[];
+  prune_spans?: PruneSpan[];
   strategy?: EditingStrategy;
   cover_image_path?: string;
   cover_source?: string;

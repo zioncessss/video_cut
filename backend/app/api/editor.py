@@ -172,6 +172,79 @@ class UpdateSubtitlesRequest(BaseModel):
     subtitles: List[Dict[str, Any]]
     broll_replacements: Optional[List[Dict[str, Any]]] = None
 
+def _sync_prune_spans(p: CutProject, force: bool = False) -> bool:
+    """
+    联动粗剪区间计算：
+    - 若开启了智能粗剪 (enable_auto_prune)，且 (force 或 prune_spans 为空)，自动基于当前字幕与素材时长计算 prune_spans 与 compact_subtitles
+    - 若关闭了智能粗剪，清理自动生成的 prune_spans，仅保留手动标记的片段
+    返回是否有数据变更
+    """
+    from app.native_engine.prune_engine import auto_prune_engine
+
+    if not p.strategy.enable_auto_prune:
+        manual_spans = [s for s in (p.prune_spans or []) if s.reason == PruneReason.MANUAL.value and s.is_active]
+        if len(p.prune_spans or []) != len(manual_spans):
+            p.prune_spans = manual_spans
+            for sub in p.subtitles:
+                if not any(s.source_subtitle_id == sub.id for s in manual_spans):
+                    sub.is_pruned = False
+                    sub.prune_reason = None
+            th = storage_service.get_material(p.talking_head_id)
+            th_dur = float(th.duration if th and th.duration and th.duration > 0 else 15.0)
+            if manual_spans:
+                kept = auto_prune_engine.compute_kept_spans(th_dur, manual_spans)
+                p.compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept)
+            else:
+                p.compact_subtitles = [s for s in p.subtitles if not s.is_pruned]
+            return True
+        return False
+
+    if not p.subtitles:
+        return False
+
+    has_auto_spans = any(s.reason != PruneReason.MANUAL.value for s in (p.prune_spans or []))
+    if not force and has_auto_spans and len(p.prune_spans or []) > 0:
+        return False
+
+    th = storage_service.get_material(p.talking_head_id)
+    th_dur = float(th.duration if th and th.duration and th.duration > 0 else 15.0)
+    prune_cfg = {
+        "enable_head_prune": p.strategy.enable_head_prune,
+        "enable_tail_prune": p.strategy.enable_tail_prune,
+        "enable_retake_prune": p.strategy.enable_retake_prune,
+        "enable_mid_silence_prune": p.strategy.enable_mid_silence_prune,
+        "head_padding_seconds": p.strategy.head_padding_seconds,
+        "tail_padding_seconds": p.strategy.tail_padding_seconds,
+        "mid_silence_threshold": p.strategy.mid_silence_threshold,
+        "mid_silence_breath_gap": p.strategy.mid_silence_breath_gap,
+        "retake_pause_min": p.strategy.retake_pause_min,
+        "retake_similarity_min": p.strategy.retake_similarity_min,
+    }
+    new_spans, pruned_ids = auto_prune_engine.analyze_and_prune(
+        subtitles=p.subtitles,
+        video_duration=th_dur,
+        config=prune_cfg
+    )
+
+    manual_spans = [s for s in (p.prune_spans or []) if s.reason == PruneReason.MANUAL.value and s.is_active]
+    p.prune_spans = new_spans + [s for s in manual_spans if not any(ns.id == s.id for ns in new_spans)]
+
+    for sub in p.subtitles:
+        if any(s.source_subtitle_id == sub.id for s in manual_spans):
+            sub.is_pruned = True
+            sub.prune_reason = PruneReason.MANUAL.value
+        elif sub.id in pruned_ids:
+            sub.is_pruned = True
+            sub.prune_reason = PruneReason.RETAKE_DISCARD.value
+        else:
+            sub.is_pruned = False
+            sub.prune_reason = None
+
+    active_spans = [s for s in p.prune_spans if s.is_active]
+    kept = auto_prune_engine.compute_kept_spans(th_dur, active_spans)
+    p.compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept)
+    return True
+
 def _enrich_project_export_meta(p: CutProject) -> CutProject:
     """真实性守卫与元数据补全：校验成片与封面磁盘存在性，若被外部清理则自愈防御，杜绝死引用与黑屏"""
     if not p:
@@ -219,7 +292,14 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
         except Exception as e:
             print(f"[_enrich_project_export_meta] 自动恢复封面失败: {e}")
 
-    # 3. 动态重投影生成紧凑时间轴字幕（有效字幕起止时间与词级时钟精准对齐成片）
+    # 3. 动态检查并同步智能粗剪区间与紧凑时间轴
+    changed = _sync_prune_spans(p, force=False)
+    if changed:
+        try:
+            project_storage_service.save_project(p)
+        except Exception as se:
+            print(f"[_enrich_project_export_meta] 保存粗剪区间异常: {se}")
+
     active_spans = [s for s in (p.prune_spans or []) if s.is_active]
     if active_spans:
         from app.native_engine.prune_engine import auto_prune_engine
@@ -985,7 +1065,14 @@ async def update_strategy(project_id: str, strategy: EditingStrategy):
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
+    prune_fields = [
+        'enable_auto_prune', 'enable_head_prune', 'enable_tail_prune', 'enable_retake_prune',
+        'enable_mid_silence_prune', 'head_padding_seconds', 'tail_padding_seconds',
+        'mid_silence_threshold', 'mid_silence_breath_gap', 'retake_pause_min', 'retake_similarity_min'
+    ]
+    prune_changed = any(getattr(p.strategy, f, None) != getattr(strategy, f, None) for f in prune_fields)
     p.strategy = strategy
+    _sync_prune_spans(p, force=prune_changed)
     project_storage_service.save_project(p)
     if p.task_dir:
         td = (STORAGE_DIR.parent / p.task_dir).resolve()
@@ -1184,8 +1271,12 @@ async def render_project(
     output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}_{dt_str}.mp4"
     output_path = target_task_dir / output_filename
 
-    # 1. 计算有效保留时间区间 (KeptSpans)
+    # 1. 确保粗剪区间与策略同步，并计算有效保留时间区间 (KeptSpans)
     from app.native_engine.prune_engine import auto_prune_engine
+    changed = _sync_prune_spans(p, force=False)
+    if changed:
+        project_storage_service.save_project(p)
+
     active_prune_spans = [s for s in (p.prune_spans or []) if s.is_active]
     th_dur = float(th.duration if th.duration > 0 else 15.0)
     kept_spans = auto_prune_engine.compute_kept_spans(th_dur, active_prune_spans) if active_prune_spans else None
