@@ -61,6 +61,8 @@ async def apply_instruction(payload: NaturalInstructionPayload):
             elif isinstance(s, SubtitleSegment):
                 new_subs.append(s)
         project.subtitles = new_subs
+        from app.api.editor import _sync_prune_spans
+        _sync_prune_spans(project, force=True)
 
     if result.updated_brolls:
         new_brolls = []
