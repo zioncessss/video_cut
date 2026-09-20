@@ -165,3 +165,55 @@ def test_generate_ass_reads_highlight_words_source(tmp_path):
     content2 = out2.read_text(encoding="utf-8")
     assert hl_marker + "湖州驾校" in content2
     assert hl_marker + "九月份" not in content2, "回退模式下 AI 词不应被高亮"
+
+
+def test_watermark_default_and_sanitization(tmp_path):
+    """测试水印策略默认关闭、未写文字绝不开启、写了文字留存"""
+    from app.db.repository import ProjectRepository, MaterialRepository
+    from app.db.session import init_db
+    from app.models.entities import Material, MaterialCategory
+    import time
+
+    strat = EditingStrategy()
+    assert strat.enable_watermark is False
+    assert strat.watermark_text == ""
+
+    # 测试 repository 保存逻辑：未填写水印文字绝不开启亦不保存文本
+    db_file = tmp_path / "test_wm.db"
+    init_db(db_file)
+    mrepo = MaterialRepository(db_file)
+    m = Material(category=MaterialCategory.TALKING_HEAD, filename="th.mp4",
+                 filepath="storage/materials/talking_head/th.mp4", duration=15.0, created_at=time.time())
+    mrepo.save(m)
+
+    repo = ProjectRepository(db_path=db_file)
+    p = CutProject(title="水印测试", talking_head_id=m.id)
+    
+    # 模拟客户端误传 enable_watermark=True 但无有效文字
+    p.strategy.enable_watermark = True
+    p.strategy.watermark_text = "   "
+    repo.save(p)
+
+    loaded = repo.get_by_id(p.id)
+    assert loaded is not None
+    assert loaded.strategy.enable_watermark is False
+    assert loaded.strategy.watermark_text == ""
+
+    # 模拟用户输入了有效文字并开启
+    p.strategy.enable_watermark = True
+    p.strategy.watermark_text = "@我的口播频道"
+    repo.save(p)
+
+    loaded2 = repo.get_by_id(p.id)
+    assert loaded2.strategy.enable_watermark is True
+    assert loaded2.strategy.watermark_text == "@我的口播频道"
+
+    # 模拟历史污染文案自动清洗
+    from app.db.session import get_db_connection
+    with get_db_connection(db_file) as conn:
+        conn.execute("UPDATE strategies SET watermark_text = '@顺达驾校官方教学', enable_watermark = 1 WHERE project_id = ?", (p.id,))
+        conn.commit()
+
+    loaded3 = repo.get_by_id(p.id)
+    assert loaded3.strategy.enable_watermark is False
+    assert loaded3.strategy.watermark_text == ""

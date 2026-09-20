@@ -162,6 +162,14 @@ class ProjectRepository:
             # 3. 保存/更新 Strategy
             strat = project.strategy
             words_json = json.dumps(strat.custom_highlight_words, ensure_ascii=False) if strat.custom_highlight_words else '[]'
+            wm_text = (strat.watermark_text or "").strip()
+            if wm_text == "@顺达驾校官方教学" or not wm_text:
+                wm_enabled = 0
+                wm_text_to_save = ""
+            else:
+                wm_enabled = 1 if strat.enable_watermark else 0
+                wm_text_to_save = wm_text
+
             conn.execute("""
                 INSERT OR REPLACE INTO strategies
                 (project_id, subtitle_theme, font_size, subtitle_font_family, subtitle_font_size, show_subtitles, subtitle_position_y, subtitle_position_x, subtitle_width_percent,
@@ -192,8 +200,8 @@ class ProjectRepository:
                 getattr(strat, 'banner_width_percent', None),
                 getattr(strat, 'banner_position_x', 50),
                 getattr(strat, 'banner_position_y', 6),
-                1 if strat.enable_watermark else 0,
-                strat.watermark_text,
+                wm_enabled,
+                wm_text_to_save,
                 strat.watermark_position,
                 getattr(strat, 'watermark_size', 'medium'),
                 getattr(strat, 'watermark_font_size', None),
@@ -286,16 +294,16 @@ class ProjectRepository:
                 highlight_scale=bool(strat_row["highlight_scale"]),
                 custom_highlight_words=c_words,
                 enable_top_banner=bool(strat_row["enable_top_banner"]),
-                banner_main_title=strat_row["banner_main_title"],
-                banner_sub_title=strat_row["banner_sub_title"] or "",
+                banner_main_title="" if strat_row["banner_main_title"] == "科目二一把过秘籍" else (strat_row["banner_main_title"] or ""),
+                banner_sub_title="" if strat_row["banner_sub_title"] == "教练手把手教学" else (strat_row["banner_sub_title"] or ""),
                 banner_style=strat_row["banner_style"],
                 banner_size=strat_row["banner_size"] if "banner_size" in keys else "medium",
                 banner_font_size=strat_row["banner_font_size"] if "banner_font_size" in keys else None,
                 banner_width_percent=strat_row["banner_width_percent"] if "banner_width_percent" in keys else None,
                 banner_position_x=strat_row["banner_position_x"] if "banner_position_x" in keys else 50,
                 banner_position_y=strat_row["banner_position_y"] if "banner_position_y" in keys else 6,
-                enable_watermark=bool(strat_row["enable_watermark"]),
-                watermark_text=strat_row["watermark_text"],
+                enable_watermark=bool(strat_row["enable_watermark"]) if (strat_row["watermark_text"] or "").strip() and strat_row["watermark_text"] != "@顺达驾校官方教学" else False,
+                watermark_text="" if strat_row["watermark_text"] == "@顺达驾校官方教学" else (strat_row["watermark_text"] or ""),
                 watermark_position=strat_row["watermark_position"],
                 watermark_size=strat_row["watermark_size"] if "watermark_size" in keys else "medium",
                 watermark_font_size=strat_row["watermark_font_size"] if "watermark_font_size" in keys else None,

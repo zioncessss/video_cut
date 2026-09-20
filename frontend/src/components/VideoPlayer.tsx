@@ -708,8 +708,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const hasBanner = Boolean(strategy?.enable_top_banner && strategy?.banner_main_title);
-  const hasWatermark = Boolean(strategy?.enable_watermark && strategy?.watermark_text);
+  const hasBanner = Boolean(strategy?.enable_top_banner && strategy?.banner_main_title?.trim());
+  const hasWatermark = Boolean(
+    strategy?.enable_watermark &&
+    strategy?.watermark_text?.trim() &&
+    strategy.watermark_text.trim() !== '@顺达驾校官方教学'
+  );
 
   // 字号大小类名映射
   const getFontSizeClass = () => {

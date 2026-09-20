@@ -129,6 +129,17 @@ def _ensure_columns(conn) -> None:
         conn.execute("ALTER TABLE subtitles ADD COLUMN words_json TEXT DEFAULT '[]';")
     except Exception:
         pass
+    # 历史硬编码水印文案与无字开启状态自愈清洗（未填文字绝不默认开启或保存文案）
+    try:
+        conn.execute("""
+            UPDATE strategies 
+            SET enable_watermark = 0, watermark_text = '' 
+            WHERE watermark_text = '@顺达驾校官方教学' 
+               OR watermark_text IS NULL 
+               OR trim(watermark_text) = '';
+        """)
+    except Exception:
+        pass
     conn.commit()
 
 

@@ -253,8 +253,9 @@ class FFmpegFilterComposer:
         1. 包含圆角胶囊半透明磨砂底框、🔥 真彩 Emoji、粗体主标题、金色副标语的挂顶 Banner。
         2. 包含自适应圆角微底框的右上角 / 自由定位品牌水印角标。
         """
-        has_banner = bool(strategy.get("enable_top_banner") and strategy.get("banner_main_title"))
-        has_watermark = bool(strategy.get("enable_watermark") and strategy.get("watermark_text"))
+        has_banner = bool(strategy.get("enable_top_banner") and str(strategy.get("banner_main_title") or "").strip())
+        wm_text = str(strategy.get("watermark_text") or "").strip()
+        has_watermark = bool(strategy.get("enable_watermark") and wm_text and wm_text != "@顺达驾校官方教学")
 
         if not has_banner and not has_watermark:
             return None

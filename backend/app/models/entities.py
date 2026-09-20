@@ -113,9 +113,9 @@ class EditingStrategy(BaseModel):
     custom_highlight_words: List[str] = Field(default_factory=list)
     transition_style: str = "cut"       # cut(硬切) | fade(叠化 0.3~0.5s，时长取各句 scene_decision)
     
-    enable_top_banner: bool = False   # 005 默认关闭：首批成片评审后按需开启
-    banner_main_title: str = "科目二一把过秘籍"
-    banner_sub_title: Optional[str] = "教练手把手教学"
+    enable_top_banner: bool = False   # 默认关闭：用户按需开启
+    banner_main_title: str = ""
+    banner_sub_title: Optional[str] = ""
     banner_style: str = "capsule"       # capsule, full_width
     banner_size: str = "medium"         # small, medium, large
     banner_font_size: Optional[int] = None # 自定义字号 (24~72px)
@@ -123,8 +123,8 @@ class EditingStrategy(BaseModel):
     banner_position_x: int = 50         # 水平百分比 5~95% (默认50%居中)
     banner_position_y: int = 6          # 垂直百分比 2~85% (默认6%顶部)
     
-    enable_watermark: bool = False    # 005 默认关闭：首批成片评审后按需开启
-    watermark_text: str = "@顺达驾校官方教学"
+    enable_watermark: bool = False    # 默认关闭：用户输入有效文本并开启时才生效
+    watermark_text: str = ""          # 默认空串：未填写时不开启亦不保存虚假文案
     watermark_position: str = "top_right"  # top_right, top_left, bottom_right, bottom_left
     watermark_size: str = "medium"         # small, medium, large
     watermark_font_size: Optional[int] = None # 自定义字号 (14~60px)

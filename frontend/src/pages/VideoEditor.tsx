@@ -77,6 +77,21 @@ interface VideoEditorProps {
   isActive?: boolean;
 }
 
+export const sanitizeStrategy = (strat: EditingStrategy): EditingStrategy => {
+  const cloned = { ...strat };
+  const wmText = (cloned.watermark_text || '').trim();
+  if (wmText === '@顺达驾校官方教学' || !wmText) {
+    cloned.enable_watermark = false;
+    cloned.watermark_text = '';
+  } else {
+    cloned.watermark_text = wmText;
+  }
+  if (cloned.banner_main_title === '驾考拿证必看宝典' || cloned.banner_main_title === '科目二一把过秘籍') {
+    cloned.banner_main_title = '';
+  }
+  return cloned;
+};
+
 const DEFAULT_STRATEGY: EditingStrategy = {
   subtitle_theme: 'cinema_shadow',
   highlight_color: '#FBBF24',
@@ -91,13 +106,13 @@ const DEFAULT_STRATEGY: EditingStrategy = {
   highlight_scale: true,
   custom_highlight_words: [],
   enable_top_banner: false,
-  banner_main_title: '驾考拿证必看宝典',
+  banner_main_title: '',
   banner_style: 'capsule',
   banner_font_size: 48,
   banner_position_x: 50,
   banner_position_y: 10,
-  enable_watermark: true,
-  watermark_text: '@顺达驾校官方教学',
+  enable_watermark: false,
+  watermark_text: '',
   watermark_position: 'top_right',
   watermark_font_size: 32,
   watermark_position_x: 96,
@@ -205,7 +220,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         setCompactSubtitles(proj.compact_subtitles || []);
         setBrolls(proj.broll_replacements || []);
         setPruneSpans(proj.prune_spans || []);
-        if (proj.strategy) setStrategy(proj.strategy);
+        if (proj.strategy) setStrategy(sanitizeStrategy(proj.strategy));
         if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
           setAspectRatio(proj.aspect_ratio as any);
         }
@@ -254,7 +269,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         setCompactSubtitles(proj.compact_subtitles || []);
         setBrolls(proj.broll_replacements || []);
         setPruneSpans(proj.prune_spans || []);
-        if (proj.strategy) setStrategy(proj.strategy);
+        if (proj.strategy) setStrategy(sanitizeStrategy(proj.strategy));
         if (proj.aspect_ratio === '16:9' || proj.aspect_ratio === '9:16') {
           setAspectRatio(proj.aspect_ratio as any);
         }
@@ -370,7 +385,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (strategySaveTimeoutRef.current && projectId) {
         clearTimeout(strategySaveTimeoutRef.current);
         strategySaveTimeoutRef.current = null;
-        updateProjectStrategy(projectId, latestStrategyRef.current).catch(() => {});
+        updateProjectStrategy(projectId, sanitizeStrategy(latestStrategyRef.current)).catch(() => {});
       }
       loadProjectById(initialProjectId);
     }
@@ -389,7 +404,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (strategySaveTimeoutRef.current && projectId) {
         clearTimeout(strategySaveTimeoutRef.current);
         strategySaveTimeoutRef.current = null;
-        updateProjectStrategy(projectId, latestStrategyRef.current).catch(() => {});
+        updateProjectStrategy(projectId, sanitizeStrategy(latestStrategyRef.current)).catch(() => {});
       }
       setSelectedThId(initialSelectedTalkingHeadId);
       loadedThIdRef.current = initialSelectedTalkingHeadId;
@@ -439,7 +454,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       }
       setPruneSpans(res.prune_spans || []);
       if (res.strategy) {
-        setStrategy(res.strategy);
+        setStrategy(sanitizeStrategy(res.strategy));
       }
       if (res.cover_image_path) {
         setCoverUrl(getMediaUrl(res.cover_image_path.replace(/^\//, '')));
@@ -667,7 +682,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
     strategySaveTimeoutRef.current = setTimeout(async () => {
       try {
-        await updateProjectStrategy(projectId, newStrategy);
+        await updateProjectStrategy(projectId, sanitizeStrategy(newStrategy));
       } catch (e) {
         console.error('Debounced strategy save failed', e);
       }
@@ -686,7 +701,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     setHasUnrenderedChanges(true);
     if (projectId) {
       try {
-        await updateProjectStrategy(projectId, committedStrategy);
+        await updateProjectStrategy(projectId, sanitizeStrategy(committedStrategy));
       } catch (e) {
         console.error('Immediate strategy save failed', e);
       }
@@ -707,7 +722,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         clearTimeout(strategySaveTimeoutRef.current);
         strategySaveTimeoutRef.current = null;
         if (projectId && latestStrategyRef.current) {
-          updateProjectStrategy(projectId, latestStrategyRef.current).catch(() => {});
+          updateProjectStrategy(projectId, sanitizeStrategy(latestStrategyRef.current)).catch(() => {});
         }
       }
     } else if (isActive === true) {
@@ -735,7 +750,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         clearTimeout(strategySaveTimeoutRef.current);
       }
       if (latestStrategyRef.current && projectId) {
-        updateProjectStrategy(projectId, latestStrategyRef.current).catch(() => {});
+        updateProjectStrategy(projectId, sanitizeStrategy(latestStrategyRef.current)).catch(() => {});
       }
     };
   }, [projectId]);
@@ -751,7 +766,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
     setSavingStrategy(true);
     try {
-      await updateProjectStrategy(projectId, strategy);
+      await updateProjectStrategy(projectId, sanitizeStrategy(strategy));
       showToast('剪辑策略已保存', 'success');
       setAiFeedback('剪辑策略已成功保存至当前工程！渲染时将以该样式导出。');
     } catch (err) {
@@ -805,7 +820,10 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
       setSaveStatus('saving');
       const subsToSave = latestSubtitlesRef.current.length > 0 ? latestSubtitlesRef.current : subtitles;
-      const stratToSave = latestStrategyRef.current || strategy;
+      const rawStrat = latestStrategyRef.current || strategy;
+      const stratToSave = sanitizeStrategy(rawStrat);
+      setStrategy(stratToSave);
+      latestStrategyRef.current = stratToSave;
 
       await updateProjectSubtitles(projectId, subsToSave);
       await updateProjectStrategy(projectId, stratToSave);
@@ -1490,7 +1508,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                           if (strategySaveTimeoutRef.current && projectId) {
                             clearTimeout(strategySaveTimeoutRef.current);
                             strategySaveTimeoutRef.current = null;
-                            updateProjectStrategy(projectId, latestStrategyRef.current).catch(() => {});
+                            updateProjectStrategy(projectId, sanitizeStrategy(latestStrategyRef.current)).catch(() => {});
                           }
                           setSelectedThId(t.id);
                           loadedThIdRef.current = t.id;

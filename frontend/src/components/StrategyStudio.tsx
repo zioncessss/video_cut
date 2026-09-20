@@ -336,7 +336,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 type="text"
                 value={strategy.banner_main_title || ''}
                 onChange={e => update({ banner_main_title: e.target.value })}
-                placeholder="例如: 科目二一把过秘籍"
+                placeholder="例如: 爆款核心干货速览"
                 className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-purple-500 font-medium"
               />
             </div>
@@ -346,7 +346,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 type="text"
                 value={strategy.banner_sub_title || ''}
                 onChange={e => update({ banner_sub_title: e.target.value })}
-                placeholder="例如: 教练手把手教学"
+                placeholder="例如: 3分钟带你看懂门道"
                 className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-purple-500"
               />
             </div>
@@ -562,9 +562,14 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 type="text"
                 value={strategy.watermark_text || ''}
                 onChange={e => update({ watermark_text: e.target.value })}
-                placeholder="例如: @顺达驾校官方教学"
+                placeholder="例如: @你的账号或品牌名"
                 className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-emerald-500"
               />
+              {!strategy.watermark_text?.trim() && (
+                <p className="mt-1 text-[10px] text-amber-600 flex items-center gap-1">
+                  <span>💡</span> 未填写水印文字，重新合成时不会渲染，亦不会保存默认开启
+                </p>
+              )}
             </div>
 
             {/* 水印尺寸调节：预设档位 + 连续灵活滑块 */}

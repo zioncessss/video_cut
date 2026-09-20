@@ -428,6 +428,12 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         else:
             strat = EditingStrategy(video_speed=req.video_speed)
 
+        # 水印文案与开启状态安全约束：未写文字绝不默认开启
+        wm_text = (strat.watermark_text or "").strip()
+        if wm_text == "@顺达驾校官方教学" or not wm_text:
+            strat.enable_watermark = False
+            strat.watermark_text = ""
+
         if req.video_speed and abs(req.video_speed - 1.0) > 0.001:
             strat.video_speed = req.video_speed
 
@@ -1099,6 +1105,13 @@ async def update_strategy(project_id: str, strategy: EditingStrategy):
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
+    wm_text = (strategy.watermark_text or "").strip()
+    if wm_text == "@顺达驾校官方教学" or not wm_text:
+        strategy.enable_watermark = False
+        strategy.watermark_text = ""
+    else:
+        strategy.watermark_text = wm_text
+
     prune_fields = [
         'enable_auto_prune', 'enable_head_prune', 'enable_tail_prune', 'enable_retake_prune',
         'enable_mid_silence_prune', 'head_padding_seconds', 'tail_padding_seconds',
@@ -1284,6 +1297,14 @@ async def render_project(
 
     if video_speed is not None and not isinstance(video_speed, type(Query(None))):
         p.strategy.video_speed = max(0.5, min(3.0, round(float(video_speed), 2)))
+
+    # 渲染合成前水印安全约束：若未填写水印文本或为旧硬编码，绝对不开启且清空文本
+    wm_text = (p.strategy.watermark_text or "").strip()
+    if wm_text == "@顺达驾校官方教学" or not wm_text:
+        p.strategy.enable_watermark = False
+        p.strategy.watermark_text = ""
+    else:
+        p.strategy.watermark_text = wm_text
 
     p.status = CutProjectStatus.PROCESSING
 
