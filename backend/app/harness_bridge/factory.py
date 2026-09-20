@@ -8,24 +8,19 @@ from app.harness_bridge.api_engine import ApiHarnessBridge
 
 _instances: Dict[str, BaseHarnessBridge] = {}
 
+_HARNESS_MAP = {
+    "zcode": ZCodeHarnessBridge,
+    "codex": CodexHarnessBridge,
+    "api": ApiHarnessBridge,
+}
+
 def get_harness_by_key(key: str) -> BaseHarnessBridge:
     k = key.lower()
-    if k == "zcode":
-        if "zcode" not in _instances:
-            _instances["zcode"] = ZCodeHarnessBridge()
-        return _instances["zcode"]
-    elif k == "codex":
-        if "codex" not in _instances:
-            _instances["codex"] = CodexHarnessBridge()
-        return _instances["codex"]
-    elif k == "api":
-        if "api" not in _instances:
-            _instances["api"] = ApiHarnessBridge()
-        return _instances["api"]
-    else:
-        if "embedded" not in _instances:
-            _instances["embedded"] = EmbeddedHarnessBridge()
-        return _instances["embedded"]
+    cls = _HARNESS_MAP.get(k, EmbeddedHarnessBridge)
+    name = k if k in _HARNESS_MAP else "embedded"
+    if name not in _instances:
+        _instances[name] = cls()
+    return _instances[name]
 
 def get_active_harness() -> BaseHarnessBridge:
     """
