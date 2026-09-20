@@ -142,10 +142,10 @@ class EditingStrategy(BaseModel):
     enable_tail_prune: bool = True
     enable_retake_prune: bool = True
     enable_mid_silence_prune: bool = True
-    head_padding_seconds: float = 0.20
-    tail_padding_seconds: float = 0.25
-    mid_silence_threshold: float = 1.20
-    mid_silence_breath_gap: float = 0.30
+    head_padding_seconds: float = 0.10
+    tail_padding_seconds: float = 0.12
+    mid_silence_threshold: float = 0.90
+    mid_silence_breath_gap: float = 0.20
     retake_pause_min: float = 0.40
     retake_similarity_min: float = 0.60
 

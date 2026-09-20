@@ -55,12 +55,12 @@ class AutoPruneEngine:
         enable_retake = cfg.get("enable_retake_prune", True)
         enable_mid_silence = cfg.get("enable_mid_silence_prune", True)
 
-        head_padding = float(cfg.get("head_padding_seconds", 0.20))
-        tail_padding = float(cfg.get("tail_padding_seconds", 0.25))
+        head_padding = float(cfg.get("head_padding_seconds", 0.10))
+        tail_padding = float(cfg.get("tail_padding_seconds", 0.12))
         retake_pause_min = float(cfg.get("retake_pause_min", 0.40))
         retake_similarity_min = float(cfg.get("retake_similarity_min", 0.60))
-        mid_silence_threshold = float(cfg.get("mid_silence_threshold", 1.20))
-        mid_silence_breath_gap = float(cfg.get("mid_silence_breath_gap", 0.30))
+        mid_silence_threshold = float(cfg.get("mid_silence_threshold", 0.90))
+        mid_silence_breath_gap = float(cfg.get("mid_silence_breath_gap", 0.20))
 
         prune_spans: List[PruneSpan] = []
         pruned_sub_ids: List[str] = []
