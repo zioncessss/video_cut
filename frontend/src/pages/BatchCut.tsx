@@ -69,6 +69,9 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const [renderingProjectIds, setRenderingProjectIds] = useState<Record<string, boolean>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jobDetailsCacheRef = useRef<Record<string, any>>({});
+  const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef<boolean>(true);
 
   const handleRenderProject = async (projId: string) => {
     setRenderingProjectIds(prev => ({ ...prev, [projId]: true }));
@@ -83,38 +86,76 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
     }
   };
 
-  const loadData = async () => {
+  const loadData = async (forceRefreshDetails = false) => {
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+
+    if (forceRefreshDetails) {
+      jobDetailsCacheRef.current = {};
+    }
+
     try {
       const [resJobs, projs] = await Promise.all([
         axios.get(`${API_BASE}/batch/jobs`).catch(() => ({ data: { data: [] } })),
         fetchAllProjects().catch(() => [])
       ]);
 
+      if (!isMountedRef.current) return;
+
       const list = resJobs.data?.data || [];
       setJobs(list);
       setProjects(projs);
 
-      // 拉取运行中或最近的批次详情
-      const details: Record<string, any> = {};
-      await Promise.all(
-        list.slice(0, 10).map(async (j: any) => {
-          try {
-            const d = await axios.get(`${API_BASE}/batch/jobs/${j.job_id}`);
-            details[j.job_id] = d.data.data;
-          } catch (e) {}
-        })
-      );
-      setJobDetails(details);
+      // 仅拉取未完成或尚未缓存最终详情的批次
+      const needFetch = list.slice(0, 10).filter((j: any) => {
+        const cached = jobDetailsCacheRef.current[j.job_id];
+        return !cached || j.status !== 'finished' || cached.status !== 'finished';
+      });
+
+      if (needFetch.length > 0) {
+        await Promise.all(
+          needFetch.map(async (j: any) => {
+            try {
+              const d = await axios.get(`${API_BASE}/batch/jobs/${j.job_id}`);
+              if (d.data?.data) {
+                jobDetailsCacheRef.current[j.job_id] = d.data.data;
+              }
+            } catch (e) {}
+          })
+        );
+      }
+
+      if (!isMountedRef.current) return;
+      setJobDetails({ ...jobDetailsCacheRef.current });
+
+      // 动态自适应轮询间隔：存在进行中任务时 3s 高频刷新，空闲无任务时拉长至 10s
+      const hasRunning = list.some((j: any) => j.status !== 'finished');
+      const nextInterval = hasRunning ? 3000 : 10000;
+      pollingTimerRef.current = setTimeout(() => {
+        loadData();
+      }, nextInterval);
     } catch (e) {
       console.error('[BatchCut] 加载数据失败:', e);
+      if (isMountedRef.current) {
+        pollingTimerRef.current = setTimeout(() => {
+          loadData();
+        }, 10000);
+      }
     }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchHardwareMetrics().then(setHardware).catch(() => {});
     loadData();
-    const interval = setInterval(loadData, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      isMountedRef.current = false;
+      if (pollingTimerRef.current) {
+        clearTimeout(pollingTimerRef.current);
+      }
+    };
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -361,7 +402,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
           <button
             type="button"
-            onClick={loadData}
+            onClick={() => loadData(true)}
             className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
             title="刷新数据"
           >

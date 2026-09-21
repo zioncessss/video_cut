@@ -38,32 +38,94 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Python Dependencies
+      - name: Install Python & Packaging Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
+          pip install -r backend/requirements.txt pyinstaller
+
+      - name: Setup macOS FFmpeg & Build macOS Sidecar
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install ffmpeg
+          mkdir -p resources/engine/bin
+          cp $(which ffmpeg) resources/engine/bin/ffmpeg
+          cp $(which ffprobe) resources/engine/bin/ffprobe
+          chmod +x resources/engine/bin/*
+          python -m PyInstaller --noconfirm --clean --name videocut-engine \
+            --paths backend \
+            --collect-all faster_whisper \
+            --collect-all ctranslate2 \
+            --collect-all av \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan.on \
+            backend/engine_main.py \
+            --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
+          cp -r build_engine/dist/videocut-engine resources/engine/
+          chmod +x resources/engine/videocut-engine/videocut-engine
+
+      - name: Setup Windows FFmpeg & Build Windows Sidecar
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/engine/bin | Out-Null
+          $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+          if ($ffmpegCmd) {
+            Copy-Item $ffmpegCmd.Source resources/engine/bin/ffmpeg.exe -Force
+          }
+          $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+          if ($ffprobeCmd) {
+            Copy-Item $ffprobeCmd.Source resources/engine/bin/ffprobe.exe -Force
+          }
+          python -m PyInstaller --noconfirm --clean --name videocut-engine `
+            --paths backend `
+            --collect-all faster_whisper `
+            --collect-all ctranslate2 `
+            --collect-all av `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan.on `
+            backend/engine_main.py `
+            --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
+          Copy-Item build_engine/dist/videocut-engine resources/engine/videocut-engine -Recurse -Force
 
       - name: Install Frontend Dependencies
         run: |
           pnpm install --frozen-lockfile=false
 
-      - name: Build Desktop Application
+      - name: Build Desktop Application (Electron + Vite)
         run: |
           pnpm build
 
-      - name: Package Windows Installer
+      - name: Package Windows Application (x64 NSIS)
         if: matrix.os == 'windows-latest'
         run: |
           pnpm build:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Package macOS Applications (DMG + ZIP)
+      - name: Package macOS Applications (Intel x64 + Apple Silicon arm64 DMG/ZIP)
         if: matrix.os == 'macos-latest'
         run: |
           npx electron-builder --mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Build Artifacts to Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: videocut-${{ matrix.os }}-build
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            resources/一键解除Mac拦截.command
+            scripts/fix-macos-gatekeeper.sh
+          if-no-files-found: warn
 
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -74,5 +136,6 @@ jobs:
             dist/*.dmg
             dist/*.zip
             resources/一键解除Mac拦截.command
+            scripts/fix-macos-gatekeeper.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

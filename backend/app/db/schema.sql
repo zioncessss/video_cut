@@ -37,8 +37,7 @@ CREATE TABLE IF NOT EXISTS projects (
     cover_source TEXT DEFAULT NULL,
     prune_spans_json TEXT DEFAULT '[]',
     created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    FOREIGN KEY(talking_head_id) REFERENCES materials(id) ON DELETE CASCADE
+    updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_projects_th ON projects(talking_head_id);
 

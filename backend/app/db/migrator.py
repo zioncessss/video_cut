@@ -146,6 +146,66 @@ def migrate_category_experience(db_path: Optional[Path] = None, dry_run: bool = 
     return actions
 
 
+def migrate_projects_remove_cascade(db_path: Optional[Path] = None, dry_run: bool = False) -> list:
+    """平滑升级：移除 projects 表中 talking_head_id 的 ON DELETE CASCADE 外键，防止素材维护误删成片"""
+    actions: list = []
+    conn = sqlite3.connect(str(db_path or _default_db_path()), timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'").fetchone()
+        table_exists = bool(row)
+        need_rebuild = table_exists and "talking_head_id" in (row["sql"] or "") and "ON DELETE CASCADE" in (row["sql"] or "")
+        if need_rebuild:
+            actions.append("projects 表平滑重建：移除 talking_head_id ON DELETE CASCADE 外键约束")
+            if not dry_run:
+                conn.execute("PRAGMA foreign_keys=off")
+                conn.executescript("""
+                DROP TABLE IF EXISTS projects_nocascade;
+                CREATE TABLE projects_nocascade (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    talking_head_id TEXT NOT NULL,
+                    aspect_ratio TEXT NOT NULL DEFAULT '9:16',
+                    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'processing', 'completed', 'failed')),
+                    output_video_path TEXT,
+                    raw_asr_json TEXT,
+                    last_engine_used TEXT DEFAULT NULL,
+                    corrections_summary_json TEXT DEFAULT NULL,
+                    correction_latency_ms REAL DEFAULT NULL,
+                    brolls_json TEXT DEFAULT NULL,
+                    task_dir TEXT DEFAULT NULL,
+                    cover_image_path TEXT DEFAULT NULL,
+                    cover_source TEXT DEFAULT NULL,
+                    prune_spans_json TEXT DEFAULT '[]',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                INSERT INTO projects_nocascade (
+                    id, title, talking_head_id, aspect_ratio, status, output_video_path,
+                    raw_asr_json, last_engine_used, corrections_summary_json,
+                    correction_latency_ms, brolls_json, task_dir, cover_image_path,
+                    cover_source, prune_spans_json, created_at, updated_at
+                )
+                SELECT
+                    id, title, talking_head_id, aspect_ratio, status, output_video_path,
+                    raw_asr_json, last_engine_used, corrections_summary_json,
+                    correction_latency_ms, brolls_json, task_dir, cover_image_path,
+                    cover_source, prune_spans_json, created_at, updated_at
+                FROM projects;
+                DROP TABLE projects;
+                ALTER TABLE projects_nocascade RENAME TO projects;
+                CREATE INDEX IF NOT EXISTS idx_projects_th ON projects(talking_head_id);
+                """)
+                conn.execute("PRAGMA foreign_keys=on")
+        else:
+            actions.append("[跳过] projects 表已无 talking_head_id 级联约束")
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    return actions
+
+
 def _default_db_path() -> Path:
     from app.core.config import DB_PATH
     return DB_PATH
@@ -162,6 +222,22 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
                 print(f"[Migrator][005] {a}")
     except Exception as e:
         print(f"[Migrator][005] 分类迁移异常: {e}")
+
+    # 010 确保 projects 表无有害级联删除约束
+    try:
+        cascade_actions = migrate_projects_remove_cascade(db_path)
+        for a in cascade_actions:
+            if not a.startswith("[跳过]"):
+                print(f"[Migrator][Schema] {a}")
+    except Exception as e:
+        print(f"[Migrator][Schema] 移除级联异常: {e}")
+
+    # 自动自愈磁盘自包含任务工程与 JSON
+    try:
+        from app.native_engine.project_storage import project_storage_service
+        project_storage_service._heal_from_disk()
+    except Exception as e:
+        print(f"[Migrator] 磁盘自愈异常: {e}")
 
     mat_repo = MaterialRepository(db_path)
     proj_repo = ProjectRepository(db_path)

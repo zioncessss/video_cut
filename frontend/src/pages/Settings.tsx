@@ -69,12 +69,12 @@ export const Settings: React.FC = () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await testHarness(activeHarness, llmModel);
+      const res = await testHarness('api', llmModel);
       setTestResult(res);
     } catch (e: any) {
       setTestResult({
         success: false,
-        engine: activeHarness,
+        engine: 'api',
         latency_ms: 0,
         active_model: '',
         message: e?.response?.data?.message || '测试请求超时或连接失败'
@@ -115,7 +115,7 @@ export const Settings: React.FC = () => {
     setSaving(true);
     try {
       const payload: Record<string, unknown> = {
-        active_harness: activeHarness,
+        active_harness: 'api',
         llm_model: llmModel,
         llm_base_url: llmBaseUrl,
         llm_protocol: llmProtocol,
@@ -139,63 +139,36 @@ export const Settings: React.FC = () => {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 tracking-tight flex items-center space-x-2">
           <SettingsIcon className="w-6 h-6 text-gray-700" />
-          <span>系统与 Harness 引擎设置 (Settings)</span>
+          <span>系统与大模型引擎设置 (Settings)</span>
         </h1>
         <p className="text-sm text-gray-500 mt-1">
-          字幕纠偏等固定格式任务由「直连大模型 API」高效驱动；开放式剪辑指令与聊天自动路由 Codex / ZCode CLI 智能体。
+          字幕纠偏与网感优化由「直连大模型 API」高效驱动；语音转写由 MiniMax 云端极速识别支持。
         </p>
       </div>
 
       <div className="bg-white border border-gray-200/80 rounded-2xl p-6 shadow-sm space-y-6">
-        {/* Harness 运行时选择 */}
+        {/* 字幕纠偏与智能分析引擎 */}
         <div>
-          <label className="block text-sm font-semibold text-gray-800 mb-3">
-            字幕纠偏引擎 (Tier A - 固定格式任务)
+          <label className="block text-sm font-semibold text-gray-800 mb-2">
+            字幕纠偏与智能引擎 (LLM Engine)
           </label>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            {[
-              { id: 'api', label: '直连大模型 API', desc: 'OpenAI 兼容 /chat/completions，最快最稳（推荐）' },
-              { id: 'embedded', label: 'Embedded Agent', desc: '内置词库确定性纠偏（离线可用）' },
-              { id: 'codex', label: 'Codex Harness', desc: '外部 Codex CLI 智能体进程' },
-              { id: 'zcode', label: 'ZCode Harness', desc: '外部 ZCode Harness 执行器' },
-            ].map(engine => {
-              const isSelected = activeHarness === engine.id;
-              const isAvailable = engine.id === 'embedded' ? true : detected[engine.id];
-              return (
-                <button
-                  key={engine.id}
-                  onClick={() => setActiveHarness(engine.id)}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    isSelected
-                      ? 'border-blue-600 bg-blue-50/30 ring-2 ring-blue-600/10'
-                      : 'border-gray-200 bg-white hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-xs text-gray-900">{engine.label}</span>
-                    {isAvailable ? (
-                      <span className="text-[10px] text-emerald-600 flex items-center">
-                        <CheckCircle2 className="w-3 h-3 mr-0.5" /> 已就绪
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-gray-400 flex items-center">
-                        <AlertCircle className="w-3 h-3 mr-0.5" /> {engine.id === 'api' ? '未配置' : '未检测到CLI'}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-gray-500">{engine.desc}</p>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 检测详情提示 */}
-          {zcodePath && (
-            <div className="mt-3 p-3 bg-emerald-50/60 border border-emerald-200/60 rounded-xl text-xs text-emerald-800 flex items-center space-x-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-              <span>检测到本地 ZCode 智能引擎核心已就绪：<code className="font-mono text-[11px] bg-emerald-100/70 px-1.5 py-0.5 rounded">{zcodePath}</code></span>
+          <div className="p-4 rounded-xl border border-blue-600 bg-blue-50/30 ring-2 ring-blue-600/10">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-semibold text-xs text-gray-900">直连大模型 API (OpenAI 兼容协议)</span>
+              {detected.api ? (
+                <span className="text-[10px] text-emerald-600 flex items-center font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> 已就绪
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-600 flex items-center font-medium">
+                  <AlertCircle className="w-3.5 h-3.5 mr-1" /> 待配置 API Key
+                </span>
+              )}
             </div>
-          )}
+            <p className="text-[11px] text-gray-500">
+              采用 OpenAI 兼容 <code className="font-mono bg-white px-1 py-0.5 rounded text-gray-700">/chat/completions</code> 协议，响应迅速、纠偏准确，支持各类主流大模型（如 MiniMax、GLM、DeepSeek 等）。
+            </p>
+          </div>
         </div>
 
         {/* ASR 语音识别引擎选择 */}
@@ -217,9 +190,6 @@ export const Settings: React.FC = () => {
           </div>
         </div>
 
-        {/* ===== 以下配置区随引擎切换：api=直连配置；codex/zcode=本地配置说明 ===== */}
-        {activeHarness === 'api' && (
-        <>
         {/* 直连 API 连接配置 */}
         <div className="space-y-4 pt-4 border-t border-gray-100">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -382,43 +352,6 @@ export const Settings: React.FC = () => {
             </div>
           )}
         </div>
-        </>
-        )}
-
-        {activeHarness === 'codex' && (
-        <div className="space-y-4">
-          <div className="p-4 bg-blue-50/60 border border-blue-200/60 rounded-xl text-xs text-blue-900 space-y-1">
-            <p className="font-semibold">Codex 引擎使用本地配置，不使用上方直连 API 设置</p>
-            <p>调用路径：优先连接本地代理 <code className="font-mono bg-white/70 px-1 py-0.5 rounded">{engineConfig?.codex?.base_url || '（未检测到，将回退 CLI 进程）'}</code>，代理不可用时自动启动 <code className="font-mono bg-white/70 px-1 py-0.5 rounded">codex exec</code> 子进程。</p>
-            <p>供应商 / 模型 / token 全部继承本地 <code className="font-mono bg-white/70 px-1 py-0.5 rounded">~/.codex/config.toml</code>{engineConfig?.codex?.model ? `，当前本地模型：${engineConfig.codex.model}` : ''}{engineConfig?.codex?.has_token ? '，token 已就绪' : ''}。</p>
-          </div>
-          <div>
-            <label className="block text-sm font-semibold text-gray-800 mb-1">模型覆盖 (可选 -m)</label>
-            <p className="text-[11px] text-gray-500 mb-2">留空完全继承本地 codex 配置；仅在需要临时指定其它模型时填写。</p>
-            <input
-              type="text"
-              value={llmModel}
-              onChange={e => setLlmModel(e.target.value)}
-              placeholder="留空继承 ~/.codex/config.toml 的模型"
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
-            />
-          </div>
-        </div>
-        )}
-
-        {activeHarness === 'zcode' && (
-        <div className="p-4 bg-emerald-50/60 border border-emerald-200/60 rounded-xl text-xs text-emerald-900 space-y-1">
-          <p className="font-semibold">ZCode 引擎直接启动本地 CLI 进程，无需任何 API 配置</p>
-          <p>调用路径：node 启动 <code className="font-mono bg-white/70 px-1 py-0.5 rounded">{engineConfig?.zcode?.cli_path || zcodePath || 'zcode.cjs'}</code>，模型与鉴权使用 ZCode 自身登录态（当前引擎内置 GLM 系列），与上方直连 API 设置互不影响。</p>
-        </div>
-        )}
-
-        {activeHarness === 'embedded' && (
-        <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-700">
-          <p className="font-semibold mb-1">Embedded 引擎为纯本地词库纠偏</p>
-          <p>仅按 <code className="font-mono bg-white px-1 py-0.5 rounded">storage/glossary.json</code> 做确定性错词替换与关键词高亮，无网络与模型依赖；开放式指令/聊天在该引擎下不可用（会明确报错）。</p>
-        </div>
-        )}
 
         {/* 连通性测试反馈卡片 */}
         {testResult && (

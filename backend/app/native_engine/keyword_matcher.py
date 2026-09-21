@@ -65,12 +65,32 @@ HIGHLIGHT_STOPWORDS = {
     "浪费", "花费", "耗费", "白费"
 }
 
+# 提取词前缀虚词清洗表（防止匹配出'是保险费'、'那这个费用'、'练车的费用'等带语法残渣的词）
+PREFIXES_TO_STRIP = (
+    "是", "那", "这", "的", "个", "有", "包含", "除", "交", "收", "免", "无",
+    "做", "去", "在", "不", "关于", "对于", "全部的", "总共", "大概", "通常",
+    "也就是", "咱们", "去到", "场练车的", "练车的"
+)
+
+def clean_highlight_term(w: str) -> str:
+    """去除分词正则可能吞入的语法虚词前缀"""
+    w = (w or "").strip()
+    changed = True
+    while changed and len(w) > 2:
+        changed = False
+        for p in PREFIXES_TO_STRIP:
+            if w.startswith(p) and len(w) - len(p) >= 2:
+                w = w[len(p):].strip()
+                changed = True
+                break
+    return w
+
 
 # 核心地域/校区词库（短视频同城推流第一信任抓手，青蓝色 #38BDF8）
 DOMAIN_LOCATION_WORDS = [
     "杭州", "湖州", "宁波", "绍兴", "嘉兴", "温州", "金华", "台州", "丽水", "衢州", "舟山",
     "余杭", "萧山", "临平", "西湖", "滨江", "拱墅", "上城", "钱塘", "富阳", "临安",
-    "训练场", "场地", "考场", "校区", "五万平", "模拟场"
+    "车管所", "训练场", "场地", "考场", "校区", "五万平", "模拟场"
 ]
 
 DOMAIN_LOCATION_PATTERNS = [
@@ -80,15 +100,17 @@ DOMAIN_LOCATION_PATTERNS = [
 
 # 核心费用/数字正则（金额是学员最核心关切，鲜亮红 #EF4444）
 DOMAIN_PRICE_PATTERNS = [
-    re.compile(r'[一二两三四五六七八九十]+[百千万](?:[一二两三四五六七八九十]+(?:[百千万]|块|元)?)?[多块元]?'),
+    re.compile(r'[一二两三四五六七八九十几个]+[百千万](?:[一二两三四五六七八九十]+(?:[百千万]|块|元)?)?[多块元]?'),
     re.compile(r'\d+多?[块元]?'),
-    re.compile(r'(?:不收|免收|收取|没有|包含|除|交|无)?([\u4e00-\u9fa5]{1,3}费)'),
+    re.compile(r'几百块钱'),
+    re.compile(r'(?:[^\s，。？！]{1,4}(?:费用|费|明细表|明细))'),
 ]
 
 # 核心收费/痛点/避坑词（完播率与信任感核心锚点，鲜亮红 #EF4444）
 DOMAIN_PRICE_TERMS = [
     "练车费", "补训费", "燃油费", "模拟费", "报名费", "学费", "补考费", "体检费", "加急费", "工本费", "打卡费", "场地费",
-    "后期收费", "乱收费", "隐形消费", "隐形的坑", "无隐形消费", "一口价", "全包", "避雷帖", "避雷", "踩坑",
+    "考试费", "四科考试费", "理论培训费", "培训费", "保险费", "面签费", "费用明细表", "费用明细", "明细表", "多少钱",
+    "练车费用", "考场练车", "后期收费", "乱收费", "隐形消费", "隐形的坑", "无隐形消费", "一口价", "全包", "避雷帖", "避雷", "踩坑",
     "套路", "价格低到离谱", "低到离谱", "再便宜", "交完钱", "收费", "价格", "吃拿卡要",
     "越承诺套路越深"
 ]
@@ -97,7 +119,8 @@ DOMAIN_PRICE_TERMS = [
 DOMAIN_EXAM_TERMS = [
     "科目二", "科目三", "科目一", "科目四", "科二", "科三", "科一", "科四",
     "倒库", "侧方停车", "侧方", "坡道起步", "打方向", "离合", "拿证", "两三个月",
-    "一把过", "手把手教学", "免排队", "极速拿证", "教练", "金牌教练", "学车", "驾校"
+    "一把过", "手把手教学", "免排队", "极速拿证", "教练", "金牌教练", "学车", "驾校",
+    "考驾照", "驾照", "练车", "滴滴我", "联系我"
 ]
 
 # 纯白大字视觉强调词（纯白 #FFFFFF）
@@ -110,7 +133,7 @@ def extract_rule_highlight_words(text: str) -> List[Dict[str, Any]]:
     """
     全自动精准短视频高亮词规则引擎：
     按 费用(price) > 地名(location) > 考点(exam) > 强调(white) 优先级提取，
-    严格执行负向过滤，自动消除重叠区间，单句最多提取 1~2 个最关键的高光抓手词。
+    严格执行负向过滤与前缀虚词清洗，自动消除重叠区间，单句最多提取 1~2 个最关键的高光抓手词。
     """
     if not text:
         return []
@@ -124,7 +147,8 @@ def extract_rule_highlight_words(text: str) -> List[Dict[str, Any]]:
 
     for pat in DOMAIN_PRICE_PATTERNS:
         for m in pat.finditer(text):
-            w = m.group(1).strip() if m.groups() else m.group(0).strip()
+            raw_w = m.group(1).strip() if m.groups() else m.group(0).strip()
+            w = clean_highlight_term(raw_w)
             if len(w) >= 2 and w not in HIGHLIGHT_STOPWORDS and not w.isdigit():
                 candidates.append({"word": w, "color": "#EF4444", "category": "price", "priority": 95})
 
@@ -135,7 +159,8 @@ def extract_rule_highlight_words(text: str) -> List[Dict[str, Any]]:
 
     for pat in DOMAIN_LOCATION_PATTERNS:
         for m in pat.finditer(text):
-            w = m.group(1).strip() if m.groups() else m.group(0).strip()
+            raw_w = m.group(1).strip() if m.groups() else m.group(0).strip()
+            w = clean_highlight_term(raw_w)
             if len(w) >= 2 and w not in HIGHLIGHT_STOPWORDS:
                 candidates.append({"word": w, "color": "#38BDF8", "category": "location", "priority": 88})
 

@@ -74,9 +74,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('shell:open-path', async (_event, fullPath: string) => {
     try {
       // 后端返回的是相对工程根的路径（如 storage/materials/...），相对路径一律先解析为绝对路径
+      const basePath = app.isPackaged ? resolve(process.resourcesPath, '..') : resolve(__dirname, '../../');
       const target = isAbsolute(fullPath)
         ? fullPath
-        : resolve(__dirname, '../../', fullPath);
+        : resolve(basePath, fullPath);
       const err = await shell.openPath(target);
       return { success: !err, message: err };
     } catch (e: any) {

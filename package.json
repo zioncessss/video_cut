@@ -10,6 +10,9 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "build:win": "electron-vite build && electron-builder --win",
+    "build:mac": "electron-vite build && electron-builder --mac",
+    "build:mac:x64": "electron-vite build && electron-builder --mac --x64",
+    "build:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
     "build:mac-zip": "electron-vite build && electron-builder --mac zip",
     "build:all": "electron-vite build && electron-builder -mw"
   },

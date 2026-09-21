@@ -3,22 +3,15 @@ import { AssetLibrary } from './pages/AssetLibrary';
 import { VideoEditor } from './pages/VideoEditor';
 import { BatchCut } from './pages/BatchCut';
 import { Settings } from './pages/Settings';
-import { HarnessChatDrawer } from './components/HarnessChatDrawer';
 import { DialogProvider } from './components/common/CustomDialog';
 import appLogo from './assets/icon.png';
-import { Folder, Film, Layers, Settings as SettingsIcon, Sparkles, Minus, Square, Copy, X } from 'lucide-react';
+import { Folder, Film, Layers, Settings as SettingsIcon, Minus, Square, Copy, X } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
   const [selectedTalkingHeadId, setSelectedTalkingHeadId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [isChatDrawerOpen, setIsChatDrawerOpen] = useState<boolean>(false);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
-  const [strategyPlan, setStrategyPlan] = useState<{
-    explanation: string;
-    updated_subtitles?: any[];
-    updated_brolls?: any[];
-  } | null>(null);
 
   // 监听 Electron 窗口最大化/还原状态
   useEffect(() => {
@@ -55,14 +48,6 @@ export const App: React.FC = () => {
     { id: 'batch', label: '批量混剪', icon: Layers },
     { id: 'settings', label: '设置', icon: SettingsIcon },
   ];
-
-  const handleApplyStrategy = (plan: any) => {
-    setStrategyPlan(plan);
-    // 如果当前不在工作台，自动切换回工作台以便用户直观看到修改
-    if (currentTab !== 'editor') {
-      setCurrentTab('editor');
-    }
-  };
 
   return (
     <DialogProvider>
@@ -120,21 +105,6 @@ export const App: React.FC = () => {
               </span>
             </div>
 
-            {/* Harness 对话副驾驶主唤起按钮 */}
-            <button
-              onClick={() => setIsChatDrawerOpen((prev) => !prev)}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer active:scale-95 ${
-                isChatDrawerOpen
-                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
-                  : 'bg-white hover:bg-blue-50 text-blue-700 border border-blue-200/80 shadow-xs'
-              }`}
-              title="打开/收起 Harness 创意与剪辑副驾驶"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
-              <span>对话副驾驶</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-100/80 text-blue-800 font-mono">GLM</span>
-            </button>
-
             {/* Electron 无边框窗口控制按钮组 */}
             {window.electronAPI && (
               <div className="flex items-center space-x-1 border-l border-gray-200 pl-3">
@@ -190,8 +160,6 @@ export const App: React.FC = () => {
             initialSelectedTalkingHeadId={selectedTalkingHeadId}
             onProjectLoaded={(pid) => setActiveProjectId(pid)}
             onTalkingHeadChanged={(thId) => setSelectedTalkingHeadId(thId)}
-            externalStrategyPlan={strategyPlan}
-            onOpenChatDrawer={() => setIsChatDrawerOpen(true)}
           />
         </div>
         <div className={`h-full w-full overflow-auto ${currentTab === 'batch' ? '' : 'hidden'}`}>
@@ -207,15 +175,6 @@ export const App: React.FC = () => {
           <Settings />
         </div>
       </main>
-
-        {/* 全局常驻 Harness 对话副驾驶抽屉 */}
-        <HarnessChatDrawer
-          currentProjectId={activeProjectId}
-          onApplyStrategyToProject={handleApplyStrategy}
-          isOpen={isChatDrawerOpen}
-          onOpenChange={setIsChatDrawerOpen}
-          showFloatingTrigger={false}
-        />
       </div>
     </DialogProvider>
   );

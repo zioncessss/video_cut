@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize2, Minimize2, X } from 'lucide-react';
 import { EditingStrategy, BrollReplacement, Material, HighlightWord, PruneSpan, getMediaUrl } from '../services/api';
 
 interface VideoPlayerProps {
@@ -23,6 +23,8 @@ interface VideoPlayerProps {
   isRendered?: boolean;
   isActive?: boolean;
   pruneSpans?: PruneSpan[];
+  isEnlarged?: boolean;
+  onToggleEnlarge?: () => void;
 }
 
 type DragTarget = 'subtitle' | 'banner' | 'watermark' | null;
@@ -126,6 +128,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isRendered = false,
   isActive = true,
   pruneSpans = [],
+  isEnlarged: propsIsEnlarged,
+  onToggleEnlarge,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const brollVideoRef = useRef<HTMLVideoElement>(null);
@@ -134,6 +138,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [duration, setDuration] = useState<number>(0);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+
+  const [internalEnlarged, setInternalEnlarged] = useState<boolean>(false);
+  const isEnlarged = propsIsEnlarged !== undefined ? propsIsEnlarged : internalEnlarged;
+  const toggleEnlarge = useCallback(() => {
+    if (onToggleEnlarge) {
+      onToggleEnlarge();
+    } else {
+      setInternalEnlarged(prev => !prev);
+    }
+  }, [onToggleEnlarge]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isEnlarged) {
+        toggleEnlarge();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isEnlarged, toggleEnlarge]);
 
   // 容器切至后台隐藏时自动暂停主口播与分镜空镜视频播放
   useEffect(() => {
@@ -937,7 +961,36 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   return (
-    <div className="flex flex-col items-center justify-center w-full h-full min-h-0 select-none overflow-hidden p-1">
+    <div
+      className={
+        isEnlarged
+          ? 'fixed inset-0 z-50 bg-black/92 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 animate-in fade-in duration-150 select-none overflow-hidden'
+          : 'flex flex-col items-center justify-center w-full h-full min-h-0 select-none overflow-hidden p-1'
+      }
+    >
+      {/* 放大观看模式顶部状态与关闭条 */}
+      {isEnlarged && (
+        <div className="w-full max-w-4xl flex items-center justify-between pb-3 text-white/90">
+          <div className="flex items-center space-x-2">
+            <span className="px-2.5 py-1 rounded-lg bg-white/10 text-xs font-semibold backdrop-blur-xs">
+              {is169 ? '16:9 横屏' : '9:16 竖屏'}
+            </span>
+            <span className="text-xs font-medium text-white/70">
+              {isRendered ? '成片预览' : '实时编辑'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={toggleEnlarge}
+            className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer flex items-center space-x-1.5 text-xs font-medium"
+            title="退出放大 (Esc)"
+          >
+            <Minimize2 className="w-4 h-4" />
+            <span>还原窗口 (Esc)</span>
+          </button>
+        </div>
+      )}
+
       {/* 视窗容器：100% 紧贴原视频原生比例，杜绝强行上下填充多余黑边，确保字幕和角标直接贴合在视频画面上 */}
       <div
         ref={containerRef}
@@ -945,9 +998,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           aspectRatio: is169 ? '16 / 9' : (videoAspect || '9 / 16'),
         }}
         className={`relative flex items-center justify-center bg-black rounded-2xl overflow-hidden shadow-2xl border border-gray-800/80 select-none transition-all duration-150 ${
-          is169
-            ? 'w-full max-w-[540px] max-h-[calc(100%-46px)]'
-            : 'h-full max-h-[calc(100%-46px)] max-w-full'
+          isEnlarged
+            ? (is169 ? 'w-full max-w-5xl max-h-[78vh]' : 'h-full max-h-[82vh] max-w-full')
+            : (is169 ? 'w-full max-w-[540px] max-h-[calc(100%-46px)]' : 'h-full max-h-[calc(100%-46px)] max-w-full')
         }`}
       >
         {videoUrl ? (
@@ -1180,12 +1233,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         )}
       </div>
 
-      {/* 现代化全宽控制栏：带平滑拖拽进度条、±5秒快进退与音量 */}
-      <div className="w-full max-w-[480px] mt-2 flex-shrink-0 flex items-center space-x-2 text-xs text-gray-700 bg-white border border-gray-200/80 px-3 py-1.5 rounded-xl shadow-xs">
+      {/* 现代化全宽控制栏：带平滑拖拽进度条、±5秒快进退、音量与放大/缩小切换 */}
+      <div
+        className={`w-full flex-shrink-0 flex items-center space-x-2 text-xs transition-all ${
+          isEnlarged
+            ? 'max-w-2xl mt-3 text-white bg-gray-900/90 border border-white/10 px-4 py-2 rounded-2xl shadow-2xl backdrop-blur-md'
+            : 'max-w-[480px] mt-2 text-gray-700 bg-white border border-gray-200/80 px-3 py-1.5 rounded-xl shadow-xs'
+        }`}
+      >
         <button
           type="button"
           onClick={togglePlay}
-          className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-800 transition-colors cursor-pointer"
+          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+            isEnlarged ? 'hover:bg-white/10 text-white' : 'hover:bg-gray-100 text-gray-800'
+          }`}
           title={isPlaying ? '暂停' : '播放'}
         >
           {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
@@ -1194,7 +1255,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <button
           type="button"
           onClick={() => stepTime(-5)}
-          className="px-1.5 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors font-mono cursor-pointer"
+          className={`px-1.5 py-0.5 rounded text-[11px] transition-colors font-mono cursor-pointer ${
+            isEnlarged ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+          }`}
           title="后退 5 秒"
         >
           -5s
@@ -1202,13 +1265,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <button
           type="button"
           onClick={() => stepTime(5)}
-          className="px-1.5 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors font-mono cursor-pointer"
+          className={`px-1.5 py-0.5 rounded text-[11px] transition-colors font-mono cursor-pointer ${
+            isEnlarged ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+          }`}
           title="快进 5 秒"
         >
           +5s
         </button>
 
-        <span className="font-mono text-gray-600 text-[11px] min-w-[34px] text-right select-none">
+        <span className={`font-mono text-[11px] min-w-[34px] text-right select-none ${
+          isEnlarged ? 'text-white/80' : 'text-gray-600'
+        }`}>
           {formatTime(isSeeking ? seekTime : currentTime)}
         </span>
 
@@ -1227,11 +1294,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onPointerUp={handleSeekPointerUp}
             onMouseUp={handleSeekPointerUp}
             onTouchEnd={handleSeekPointerUp}
-            className="w-full h-1.5 bg-gray-200/80 rounded-lg appearance-none cursor-pointer accent-indigo-600 focus:outline-none relative z-10"
+            className={`w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none relative z-10 ${
+              isEnlarged ? 'bg-white/20' : 'bg-gray-200/80'
+            }`}
           />
         </div>
 
-        <span className="font-mono text-gray-400 text-[11px] min-w-[34px] select-none">
+        <span className={`font-mono text-[11px] min-w-[34px] select-none ${
+          isEnlarged ? 'text-white/50' : 'text-gray-400'
+        }`}>
           {formatTime(duration)}
         </span>
 
@@ -1242,7 +1313,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             const nextIdx = (rates.indexOf(playbackRate) + 1) % rates.length;
             changePlaybackRate(rates[nextIdx]);
           }}
-          className="px-1.5 py-0.5 rounded text-[11px] font-mono text-gray-700 hover:text-indigo-600 hover:bg-gray-100 transition-colors font-medium cursor-pointer"
+          className={`px-1.5 py-0.5 rounded text-[11px] font-mono transition-colors font-medium cursor-pointer ${
+            isEnlarged ? 'text-white/80 hover:text-white hover:bg-white/10' : 'text-gray-700 hover:text-indigo-600 hover:bg-gray-100'
+          }`}
           title="点击切换播放倍速 (0.75x ~ 2.0x)"
         >
           {playbackRate}x
@@ -1251,10 +1324,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <button
           type="button"
           onClick={() => setIsMuted(!isMuted)}
-          className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
+          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+            isEnlarged ? 'hover:bg-white/10 text-white/70 hover:text-white' : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
+          }`}
           title={isMuted ? '取消静音' : '静音'}
         >
           {isMuted ? <VolumeX className="w-4 h-4 text-red-500" /> : <Volume2 className="w-4 h-4" />}
+        </button>
+
+        <button
+          type="button"
+          onClick={toggleEnlarge}
+          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+            isEnlarged ? 'hover:bg-white/10 text-white/80 hover:text-white' : 'hover:bg-gray-100 text-gray-600 hover:text-indigo-600'
+          }`}
+          title={isEnlarged ? '还原窗口 (Esc)' : '放大观看 (剧场模式)'}
+        >
+          {isEnlarged ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
         </button>
       </div>
     </div>

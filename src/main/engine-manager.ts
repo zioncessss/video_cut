@@ -61,8 +61,11 @@ export class EngineManager {
     }
 
     const isWin = process.platform === 'win32';
-    // 双模式：打包形态优先 resources/engine/videocut-engine/（onedir 产物）；开发态回退 .venv uvicorn
-    const sidecarDir = resolve(projectRoot, 'resources', 'engine', 'videocut-engine');
+    // 资源根路径：打包态为 process.resourcesPath，开发态为项目根 resources
+    const resourcesDir = app.isPackaged
+      ? process.resourcesPath
+      : resolve(projectRoot, 'resources');
+    const sidecarDir = resolve(resourcesDir, 'engine', 'videocut-engine');
     const sidecarPath = resolve(sidecarDir, isWin ? 'videocut-engine.exe' : 'videocut-engine');
     const useSidecar = (app.isPackaged || process.env.FORCE_SIDECAR === '1') && existsSync(sidecarPath);
 
@@ -82,7 +85,7 @@ export class EngineManager {
       // 真实执行铁律：引擎不存在必须显式报错，绝不静默降级开白窗
       throw new Error(`未找到算力引擎：既无 sidecar 产物 (${sidecarPath})，也无开发环境 (${venvPython})`);
     }
-    const cwd = projectRoot;
+    const cwd = app.isPackaged && process.platform === 'darwin' ? app.getPath('userData') : projectRoot;
 
     console.log(`[EngineManager] Starting Python engine (${useSidecar ? 'sidecar' : 'dev'}) using: ${pythonExecutable} on port ${this.port}`);
 
@@ -94,8 +97,12 @@ export class EngineManager {
       VIDEOCUT_HOST: '127.0.0.1'
     };
     if (useSidecar) {
-      // 便携数据目录：安装根下 storage/（已决策数据不迁 userData）
-      this.storageDir = resolve(projectRoot, 'storage');
+      // 存储目录：Windows 便携目录 storage/；macOS 打包态置于 userData/storage 防止 /Applications 只读权限受阻
+      if (process.platform === 'darwin' && app.isPackaged) {
+        this.storageDir = resolve(app.getPath('userData'), 'storage');
+      } else {
+        this.storageDir = resolve(projectRoot, 'storage');
+      }
       env.VIDEOCUT_STORAGE_DIR = this.storageDir;
     } else {
       env.PYTHONPATH = resolve(projectRoot, 'backend');
@@ -109,9 +116,10 @@ export class EngineManager {
       uvicornArgs.push('--reload');
     }
     if (useSidecar) {
-      // sidecar 模式：随包 ffmpeg/ffprobe 优先于系统 PATH
-      const engineBin = resolve(sidecarDir, 'bin');
-      env.PATH = `${engineBin};${env.PATH ?? ''}`;
+      // sidecar 模式：随包 ffmpeg/ffprobe 优先于系统 PATH（跨平台分隔符 win 为 ;，mac/linux 为 :）
+      const engineBin = resolve(resourcesDir, 'engine', 'bin');
+      const pathSep = isWin ? ';' : ':';
+      env.PATH = `${engineBin}${pathSep}${env.PATH ?? ''}`;
     }
 
     this.process = spawn(

@@ -97,8 +97,14 @@ class ProjectRepository:
         ) if getattr(project, 'prune_spans', None) else '[]'
 
         with get_db_connection(self.db_path) as conn:
-            # 0. 确保同一素材只保留最新唯一权威工程，清理同素材的其他历史记录
-            conn.execute("DELETE FROM projects WHERE talking_head_id = ? AND id != ?", (project.talking_head_id, project.id))
+            # 0. 若当前为草稿工程，清理同素材历史草稿（保护已完成成片成果不被误删）
+            st = getattr(project, 'status', None)
+            st_val = st.value if hasattr(st, 'value') else str(st or '')
+            if st_val == 'draft':
+                conn.execute(
+                    "DELETE FROM projects WHERE talking_head_id = ? AND id != ? AND status != 'completed'",
+                    (project.talking_head_id, project.id)
+                )
 
             # 1. 保存/更新 Project 主表（含 AI 纠偏元数据与分镜时间线）
             conn.execute("""
@@ -421,9 +427,12 @@ class ProjectRepository:
                 return self._assemble_project(row, conn)
         return None
 
-    def delete_by_material(self, talking_head_id: str) -> bool:
+    def delete_by_material(self, talking_head_id: str, only_draft: bool = False) -> bool:
         with get_db_connection(self.db_path) as conn:
-            cur = conn.execute("DELETE FROM projects WHERE talking_head_id = ?", (talking_head_id,))
+            if only_draft:
+                cur = conn.execute("DELETE FROM projects WHERE talking_head_id = ? AND status != 'completed'", (talking_head_id,))
+            else:
+                cur = conn.execute("DELETE FROM projects WHERE talking_head_id = ?", (talking_head_id,))
             return cur.rowcount > 0
 
     def delete(self, project_id: str) -> bool:

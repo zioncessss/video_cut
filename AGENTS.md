@@ -36,3 +36,14 @@ at specs/010-portrait-filter-enhancement/plan.md
 5. **测试数据边界**：
    - `tests/conftest.py` 已将数据库重定向到临时库，测试不得读写真实 `storage/videocut.db`。
    - 凡断言 LLM/纠错输出的测试，必须固定 embedded 词库引擎或 mock CLI 响应，禁止依赖真实 codex/zcode 联网调用（输出随模型波动，必然产生偶发失败）。
+
+## 🛡️ 高亮词与视觉策略全生命周期不丢失准则 (Highlight & Visual Strategy Integrity Rules)
+1. **高亮词全生命周期无损传递 (Zero Loss Across Entire Lifecycle)**：
+   - 任何涉及字幕、策略流转的环节（ASR 转写、大模型决策、磁盘自愈、工程保存、字幕编辑、重新合成、倍速渲染），必须保证 `highlight_words` 与关键词元数据 100% 无损传递。
+   - 严禁任何自愈、迁移或更新函数以“空列表 `[]`”冲掉存量高亮词。客户端传入空列表时，服务端必须做防御性合并（优先保留存量词，无词时自动调用 `build_highlight_words` 规则自愈）。
+2. **渲染压制层零信任防御兜底 (Zero-Trust Defensive Rendering)**：
+   - 当策略开启高亮（`enable_highlight = True`）时，`generate_ass_file` 必须具备防御底线：若字幕因任何原因丢失高亮词，渲染层必须就地触发 `build_highlight_words(text)` 自愈提取，**绝对不允许静默压制成无高亮的纯白白板成片**。
+3. **集成测试真实性准则 (End-to-End Test Integrity)**：
+   - 严禁测试仅通过手工注入 `highlight_words` 的 mock 数据测试单个渲染函数而忽视上游输入状态。
+   - 关键工程链路（磁盘自愈 -> 工程载入 -> 字幕更新 -> ASS生成与压制）必须具备真实的端到端集成测试（如 `test_highlight_pipeline_integrity.py`），严格断言产物中包含高亮标签，防止“单测 100% 绿灯、真实业务却已损坏”的伪安全感。
+

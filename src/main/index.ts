@@ -1,11 +1,17 @@
-import { app, BrowserWindow, shell, Tray, Menu, dialog } from 'electron';
+import { app, BrowserWindow, shell, Tray, Menu, dialog, nativeImage } from 'electron';
 import { join, resolve } from 'path';
-import { is } from '@electron-toolkit/utils';
+import { is, electronApp } from '@electron-toolkit/utils';
 import { EngineManager } from './engine-manager';
 import { registerIpcHandlers } from './ipc-handlers';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+// 设置 Windows 下的 AppUserModelId（极为关键：确保 Windows 任务栏显示正确图标，而非 Electron 默认原子图标）
+if (process.platform === 'win32') {
+  electronApp.setAppUserModelId('com.videocut.desktop');
+  app.setAppUserModelId('com.videocut.desktop');
+}
 
 // 单实例锁：二次启动时聚焦已有窗口（T015 托盘安全策略的一部分）
 const gotTheLock = app.requestSingleInstanceLock();
@@ -21,15 +27,30 @@ if (!gotTheLock) {
 }
 
 function getIconPath(): string {
-  // 打包态 icon 在 resources/；开发态在项目根 resources/
+  const isWin = process.platform === 'win32';
+  const iconName = isWin ? 'icon.ico' : 'icon.png';
   return app.isPackaged
-    ? join(process.resourcesPath, 'icon.png')
-    : resolve(__dirname, '../../resources/icon.png');
+    ? join(process.resourcesPath, iconName)
+    : resolve(__dirname, '../../resources', iconName);
+}
+
+function getAppIcon(): Electron.NativeImage {
+  const iconPath = getIconPath();
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    // 兜底尝试 png
+    const fallbackPath = app.isPackaged
+      ? join(process.resourcesPath, 'icon.png')
+      : resolve(__dirname, '../../resources/icon.png');
+    return nativeImage.createFromPath(fallbackPath);
+  }
+  return icon;
 }
 
 function createTray(): void {
   try {
-    tray = new Tray(getIconPath());
+    const icon = getAppIcon();
+    tray = new Tray(icon);
     tray.setToolTip('VideoCut 智能剪辑');
     const menu = Menu.buildFromTemplate([
       {
@@ -67,6 +88,7 @@ function createTray(): void {
 }
 
 function createWindow(): void {
+  const appIcon = getAppIcon();
   mainWindow = new BrowserWindow({
     width: 1380,
     height: 900,
@@ -76,7 +98,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     frame: false,
     backgroundColor: '#F8FAFC',
-    icon: getIconPath(),
+    icon: appIcon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -85,6 +107,10 @@ function createWindow(): void {
       webSecurity: false // 允许本地视频与切片安全读取
     }
   });
+
+  if (process.platform === 'win32') {
+    mainWindow.setIcon(appIcon);
+  }
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show();

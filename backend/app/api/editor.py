@@ -1088,7 +1088,22 @@ async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
-    p.subtitles = [SubtitleSegment(**s) for s in req.subtitles]
+    existing_map = {s.id: s for s in p.subtitles}
+    updated_subs = []
+    for s_item in req.subtitles:
+        seg = SubtitleSegment(**s_item)
+        if not seg.highlight_words:
+            old_s = existing_map.get(seg.id)
+            if old_s and old_s.highlight_words:
+                seg.highlight_words = old_s.highlight_words
+                seg.matched_keywords = old_s.matched_keywords
+            else:
+                auto_hws = build_highlight_words(seg.corrected_text or seg.raw_text)
+                seg.highlight_words = [HighlightWord(**w) for w in auto_hws if isinstance(w, dict) and w.get("word")]
+                seg.matched_keywords = [w.word for w in seg.highlight_words]
+        updated_subs.append(seg)
+    p.subtitles = updated_subs
+
     if req.broll_replacements is not None:
         p.broll_replacements = [BrollReplacement(**b) for b in req.broll_replacements]
     _sync_prune_spans(p, force=True)
@@ -1367,6 +1382,17 @@ async def render_project(
                     })
 
     # 3. 生成 ASS 高级高亮字幕文件与 SRT 文件至专属任务目录（重投影至紧凑时间轴）
+    if p.strategy.enable_highlight:
+        has_repaired_hws = False
+        for s in p.subtitles:
+            if not s.highlight_words:
+                auto_hws = build_highlight_words(s.corrected_text or s.raw_text)
+                s.highlight_words = [HighlightWord(**w) for w in auto_hws if isinstance(w, dict) and w.get("word")]
+                s.matched_keywords = [w.word for w in s.highlight_words]
+                has_repaired_hws = True
+        if has_repaired_hws:
+            project_storage_service.save_project(p)
+
     ass_path = target_task_dir / "subtitles.ass"
     speed = float(p.strategy.video_speed or 1.0)
     render_subtitles = _prepare_render_subtitles(p.subtitles, speed=speed, kept_spans=kept_spans)
@@ -1658,6 +1684,12 @@ def _cleanup_project_files(p: CutProject):
                 cp.unlink(missing_ok=True)
         except Exception as e:
             print(f"[_cleanup_project_files] 清理封面文件失败 {p.cover_image_path}: {e}")
+
+    # 4. 清理残留历史/影子 JSON，杜绝幽灵复活
+    try:
+        project_storage_service._remove_shadow_json(p.id, p.talking_head_id)
+    except Exception as e:
+        print(f"[_cleanup_project_files] 清理影子 JSON 失败: {e}")
 
 class BatchDeleteProjectsRequest(BaseModel):
     project_ids: List[str]

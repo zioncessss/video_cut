@@ -271,6 +271,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 word_ass_colors[cws] = ass_hl_color
                 matched.append(cws)
 
+        # 零信任防御兜底：若策略开启高亮但上游未传或丢失高亮词，就地触发规则引擎提取高光词
+        if enable_hl and not matched and text:
+            try:
+                from app.native_engine.keyword_matcher import build_highlight_words
+                auto_hws = build_highlight_words(text)
+                for w in auto_hws:
+                    if isinstance(w, dict) and w.get("word"):
+                        w_text = str(w["word"]).strip()
+                        if w_text:
+                            word_color = str(w.get("color") or hl_color_hex).strip()
+                            ass_c = hex_to_ass_color(word_color)
+                            word_ass_colors[w_text] = ass_c
+                            matched.append(w_text)
+            except Exception:
+                pass
+
         # 9:16 竖屏单行优先（<=15字不换行），且避开高亮保护词中间截断与弱连词挂尾
         text = wrap_long_subtitle(text, max_line_len=15, protected_words=matched)
 

@@ -47,6 +47,8 @@ storage/outputs/*
 !storage/outputs/.gitkeep
 storage/tasks/*
 !storage/tasks/.gitkeep
+storage/covers/*
+!storage/covers/.gitkeep
 storage/projects/*
 !storage/projects/.gitkeep
 !storage/projects/f9122796-5629-49a3-b22a-2e52006dc393.json

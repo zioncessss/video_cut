@@ -52,7 +52,8 @@ import {
   Plus,
   X,
   Upload,
-  AlertTriangle
+  AlertTriangle,
+  Maximize2
 } from 'lucide-react';
 import { useDialog } from '../components/common/CustomDialog';
 
@@ -66,14 +67,8 @@ interface CorrectionItem {
 interface VideoEditorProps {
   onProjectLoaded?: (projectId: string) => void;
   onTalkingHeadChanged?: (talkingHeadId: string) => void;
-  externalStrategyPlan?: {
-    explanation: string;
-    updated_subtitles?: any[];
-    updated_brolls?: any[];
-  } | null;
   initialProjectId?: string | null;
   initialSelectedTalkingHeadId?: string | null;
-  onOpenChatDrawer?: () => void;
   isActive?: boolean;
 }
 
@@ -127,10 +122,8 @@ const DEFAULT_STRATEGY: EditingStrategy = {
 export const VideoEditor: React.FC<VideoEditorProps> = ({
   onProjectLoaded,
   onTalkingHeadChanged,
-  externalStrategyPlan,
   initialProjectId,
   initialSelectedTalkingHeadId,
-  onOpenChatDrawer,
   isActive = true,
 }) => {
   const { showAlert, showToast } = useDialog();
@@ -156,6 +149,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const coverFileInputRef = useRef<HTMLInputElement>(null);
   const [outputTimestamp, setOutputTimestamp] = useState<number>(Date.now());
   const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('interactive');
+  const [isPlayerEnlarged, setIsPlayerEnlarged] = useState<boolean>(false);
   const [exportInfo, setExportInfo] = useState<{
     url: string;
     filename: string;
@@ -544,21 +538,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setOneClickStage('');
     }
   };
-
-  // 监听来自全局 Harness 对话框的策略变更意图，热更新工程
-  useEffect(() => {
-    if (externalStrategyPlan) {
-      if (externalStrategyPlan.updated_subtitles && externalStrategyPlan.updated_subtitles.length > 0) {
-        setSubtitles(externalStrategyPlan.updated_subtitles);
-        if (projectId) {
-          axios.put(`${API_BASE}/projects/${projectId}/subtitles`, { subtitles: externalStrategyPlan.updated_subtitles }).catch(() => {});
-        }
-      }
-      if (externalStrategyPlan.explanation) {
-        setAiFeedback(`[副驾驶策略应用] ${externalStrategyPlan.explanation}`);
-      }
-    }
-  }, [externalStrategyPlan, projectId]);
 
   const subtitleSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -1169,6 +1148,16 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                   <span>{settingCover ? '截取中...' : '截取当前帧'}</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => setIsPlayerEnlarged(prev => !prev)}
+                className="text-gray-600 hover:text-indigo-600 px-1.5 py-0.5 rounded hover:bg-gray-100 font-medium transition-colors flex items-center space-x-1 cursor-pointer"
+                title="放大观看 (Esc 退出)"
+              >
+                <Maximize2 className="w-3 h-3 text-gray-500" />
+                <span>放大观看</span>
+              </button>
             </div>
           </div>
 
@@ -1212,6 +1201,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             isRendered={previewMode === 'rendered'}
             isActive={isActive}
             pruneSpans={pruneSpans}
+            isEnlarged={isPlayerEnlarged}
+            onToggleEnlarge={() => setIsPlayerEnlarged(prev => !prev)}
           />
         </div>
 
@@ -1379,17 +1370,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           >
             {applyingInstruction ? '应用中...' : '发送'}
           </button>
-          {onOpenChatDrawer && (
-            <button
-              type="button"
-              onClick={onOpenChatDrawer}
-              className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 font-medium px-2.5 py-1 rounded-lg transition-colors flex items-center space-x-1 whitespace-nowrap flex-shrink-0 cursor-pointer"
-              title="展开智能对话微调"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-              <span>对话微调</span>
-            </button>
-          )}
+
         </div>
 
         {/* 导出倍速自选控件：支持键入任意自定义浮点数 (如 1.08, 1.12, 1.15) */}
