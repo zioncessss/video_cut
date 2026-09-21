@@ -104,16 +104,13 @@ jobs:
       - name: Package Windows Application (x64 NSIS)
         if: matrix.os == 'windows-latest'
         run: |
-          pnpm build:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx electron-builder --win -p never
 
       - name: Package macOS Applications (Intel x64 + Apple Silicon arm64 DMG/ZIP)
         if: matrix.os == 'macos-latest'
         run: |
-          npx electron-builder --mac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx electron-builder --mac --x64 -p never
+          npx electron-builder --mac --arm64 -p never
 
       - name: Upload Build Artifacts to Actions
         uses: actions/upload-artifact@v4
@@ -123,19 +120,26 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
-            resources/一键解除Mac拦截.command
+            scripts/fix-macos-gatekeeper.command
             scripts/fix-macos-gatekeeper.sh
+            resources/一键解除Mac拦截.command
           if-no-files-found: warn
 
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          name: VideoCut ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
           files: |
             dist/*.exe
             dist/*.dmg
             dist/*.zip
-            resources/一键解除Mac拦截.command
+            scripts/fix-macos-gatekeeper.command
             scripts/fix-macos-gatekeeper.sh
+            resources/一键解除Mac拦截.command
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

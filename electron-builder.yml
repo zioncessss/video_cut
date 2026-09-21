@@ -58,7 +58,7 @@ mac:
   artifactName: ${productName}-${version}-${arch}-mac.${ext}
 
 dmg:
-  title: ${productName} ${version}
+  title: ${productName} ${version} (${arch})
   contents:
     - x: 130
       y: 220
