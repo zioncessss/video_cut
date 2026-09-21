@@ -21,6 +21,7 @@ extraResources:
     to: .
     filter:
       - "**/*"
+      - "!icon.icns"
 
 win:
   target:
