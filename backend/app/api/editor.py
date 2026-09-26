@@ -1524,6 +1524,25 @@ async def render_project(
     include_cover: bool = Query(True, description="导出时是否生成并导出封面图片"),
     embed_cover_as_first_frame: Optional[bool] = Query(None, description="是否将封面压入视频首帧 (0.08s)")
 ):
+    # 防御性解包：当函数在内部被直接作为异步 Python 函数调用（如批量剪辑、后台流水线、单测）时，
+    # 缺省参数不会经过 FastAPI 依赖注入，而是直接传入 Query(...) 描述符对象，必须统一提取真实默认值。
+    def _unwrap(v, default):
+        if hasattr(v, "default"):
+            d = v.default
+            if d is ... or type(d).__name__ == "PydanticUndefined":
+                return default
+            return d
+        return v if v is not None else default
+
+    filter_banned_words = bool(_unwrap(filter_banned_words, False))
+    include_cover = bool(_unwrap(include_cover, True))
+
+    exp_val = _unwrap(export_dir, None)
+    export_dir = str(exp_val) if (exp_val and isinstance(exp_val, str)) else None
+
+    ec_val = _unwrap(embed_cover_as_first_frame, None)
+    embed_cover_as_first_frame = bool(ec_val) if ec_val is not None else None
+
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
@@ -1532,8 +1551,12 @@ async def render_project(
     if not th:
         raise HTTPException(status_code=404, detail="口播素材不存在")
 
-    if video_speed is not None and not isinstance(video_speed, type(Query(None))):
-        p.strategy.video_speed = max(0.5, min(3.0, round(float(video_speed), 2)))
+    speed_val = _unwrap(video_speed, None)
+    if speed_val is not None:
+        try:
+            p.strategy.video_speed = max(0.5, min(3.0, round(float(speed_val), 2)))
+        except (ValueError, TypeError):
+            pass
 
     # 渲染合成前水印安全约束：若未填写水印文本或为旧硬编码，绝对不开启且清空文本
     wm_text = (p.strategy.watermark_text or "").strip()
