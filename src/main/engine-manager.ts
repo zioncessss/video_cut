@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, cpSync, statSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, cpSync, statSync, renameSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -83,6 +83,11 @@ export class EngineManager {
         }
       }
       console.log('[EngineManager] Storage migration completed successfully.');
+      try {
+        renameSync(srcDir, `${srcDir}_migrated`);
+      } catch (renameErr) {
+        console.warn('[EngineManager] Could not rename legacy storage dir:', renameErr);
+      }
     } catch (e) {
       console.warn('[EngineManager] Storage migration error:', e);
     }
