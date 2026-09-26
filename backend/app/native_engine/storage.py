@@ -181,7 +181,8 @@ class StorageService:
                     conv_tmp = dest_path.with_name(f"{dest_path.stem}_conv.mp4")
                     conv_cmd = [
                         "ffmpeg", "-y", "-i", str(dest_path),
-                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                        "-c:a", "aac", "-b:a", "320k", "-pix_fmt", "yuv420p",
                         "-movflags", "+faststart",
                         str(conv_tmp)
                     ]

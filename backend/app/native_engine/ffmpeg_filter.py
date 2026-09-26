@@ -266,35 +266,37 @@ class FFmpegFilterComposer:
         try:
             test_cmd = [
                 "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
-                "-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22",
+                "-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20",
                 "-f", "null", "-"
             ]
             res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if res.returncode == 0:
                 self._cached_encode_args = [
                     "-c:v", "h264_amf",
-                    "-quality", "speed",
+                    "-quality", "quality",
                     "-rc", "cqp",
-                    "-qp_i", "20",
-                    "-qp_p", "22",
+                    "-qp_i", "18",
+                    "-qp_p", "20",
                 ]
                 return list(self._cached_encode_args)
         except Exception:
             pass
 
-        # 2. 尝试 NVIDIA NVENC
+        # 2. 尝试 NVIDIA NVENC (开启空间/时间自适应量化AQ，彻底杜绝面部和暗部色块)
         try:
             test_cmd = [
                 "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20",
+                "-c:v", "h264_nvenc", "-preset", "p5", "-cq", "19", "-spatial-aq", "1", "-temporal-aq", "1",
                 "-f", "null", "-"
             ]
             res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if res.returncode == 0:
                 self._cached_encode_args = [
                     "-c:v", "h264_nvenc",
-                    "-preset", "p4",
-                    "-cq", "20",
+                    "-preset", "p5",
+                    "-cq", "19",
+                    "-spatial-aq", "1",
+                    "-temporal-aq", "1",
                 ]
                 return list(self._cached_encode_args)
         except Exception:
@@ -304,14 +306,15 @@ class FFmpegFilterComposer:
         try:
             test_cmd = [
                 "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
-                "-c:v", "h264_qsv", "-global_quality", "20",
+                "-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "18",
                 "-f", "null", "-"
             ]
             res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if res.returncode == 0:
                 self._cached_encode_args = [
                     "-c:v", "h264_qsv",
-                    "-global_quality", "20",
+                    "-preset", "medium",
+                    "-global_quality", "18",
                 ]
                 return list(self._cached_encode_args)
         except Exception:
@@ -771,7 +774,7 @@ class FFmpegFilterComposer:
                 *audio_maps,
                 *self.get_video_encode_args(),
                 "-c:a", "aac",
-                "-b:a", "192k",
+                "-b:a", "320k",
                 "-pix_fmt", "yuv420p",
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
@@ -832,7 +835,7 @@ class FFmpegFilterComposer:
                 *audio_maps,
                 *self.get_video_encode_args(),
                 "-c:a", "aac",
-                "-b:a", "192k",
+                "-b:a", "320k",
                 "-pix_fmt", "yuv420p",
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
@@ -1007,7 +1010,7 @@ class FFmpegFilterComposer:
             *audio_maps,
             *self.get_video_encode_args(),
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "320k",
             "-pix_fmt", "yuv420p",
             "-color_primaries", "bt709",
             "-color_trc", "bt709",

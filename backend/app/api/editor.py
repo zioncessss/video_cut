@@ -97,13 +97,13 @@ def extract_cover_frame(source_video_path: Path, output_cover_path: Path, timest
                 "-vf",
                 "zscale=t=linear:npl=100,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,eq=contrast=1.10:brightness=-0.02:saturation=1.12"
             ])
-        cmd.extend(["-frames:v", "1", "-q:v", "3", str(output_cover_path)])
+        cmd.extend(["-frames:v", "1", "-q:v", "2", str(output_cover_path)])
         c_proc = subprocess.run(cmd, capture_output=True, timeout=15)
         if c_proc.returncode != 0 or not output_cover_path.exists():
             # 滤镜失败时安全回退普通抽取
             subprocess.run([
                 "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(source_video_path),
-                "-frames:v", "1", "-q:v", "3", str(output_cover_path)
+                "-frames:v", "1", "-q:v", "2", str(output_cover_path)
             ], capture_output=True, timeout=10)
         return output_cover_path.exists()
     except Exception as ce:
@@ -1890,6 +1890,8 @@ async def render_project(
                 "-t", f"{cover_duration:.4f}",
                 "-vf", vf_args,
                 "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "18",
                 "-g", "1", "-bf", "0", "-tune", "stillimage",
                 "-pix_fmt", pix_fmt_name,
                 "-c:a", audio_codec,

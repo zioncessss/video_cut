@@ -1503,7 +1503,7 @@ def extract_candidate_frames(
                 "zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,"
                 "eq=contrast=1.10:brightness=-0.02:saturation=1.12"
             ])
-        cmd.extend(["-frames:v", "1", "-q:v", "3", str(out_file)])
+        cmd.extend(["-frames:v", "1", "-q:v", "2", str(out_file)])
 
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
 
@@ -1514,7 +1514,7 @@ def extract_candidate_frames(
                 "-ss", f"{ts:.3f}",
                 "-i", str(video_path),
                 "-frames:v", "1",
-                "-q:v", "3",
+                "-q:v", "2",
                 str(out_file)
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
 
