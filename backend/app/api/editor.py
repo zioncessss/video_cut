@@ -2361,9 +2361,20 @@ async def list_projects():
     projects = project_storage_service.list_all_projects()
     return [_enrich_project_export_meta(p) for p in projects]
 
-def _cleanup_project_files(p: CutProject):
-    """安全清理工程关联的磁盘生成文件及专属任务目录"""
+def _cleanup_project_files(p: CutProject, cleanup_material: bool = True):
+    """安全清理工程关联的磁盘生成文件及专属任务目录，并同步清理无其他引用的口播原片素材"""
     project_storage_service.cleanup_project_files(p)
+    if cleanup_material and p.talking_head_id:
+        from app.db.session import get_db_connection
+        from app.core.config import DB_PATH
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                cur = conn.execute("SELECT count(*) FROM projects WHERE talking_head_id = ? AND id != ?", (p.talking_head_id, p.id))
+                other_refs = cur.fetchone()[0]
+            if other_refs == 0:
+                storage_service.delete_material(p.talking_head_id)
+        except Exception as e:
+            print(f"[cleanup] 同步清理口播素材异常: {e}")
 
 class BatchDeleteProjectsRequest(BaseModel):
     project_ids: List[str]

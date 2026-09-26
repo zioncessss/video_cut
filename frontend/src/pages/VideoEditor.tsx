@@ -1860,7 +1860,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               </div>
 
               <div className="flex items-center space-x-2">
-                {projectFilterTab === 'unedited' && uneditedTalkingHeads.length > 0 && (
+                {uneditedTalkingHeads.length > 0 && (
                   <button
                     type="button"
                     onClick={handleCleanUneditedTalkingHeads}
