@@ -1005,11 +1005,25 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         <div className="grid grid-cols-2 gap-2 mb-3">
           {[
             {
+              id: 'cold_white',
+              name: '冷白暖亮',
+              recommended: true,
+              tag: '冷白通透 · 暖阳环境',
+              desc: '面部冷白去黄保边磨皮，背景温暖通透提亮，驱散室内暗沉',
+            },
+            {
               id: 'clean_natural',
               name: '自然通透',
-              recommended: true,
-              tag: '去黄通透 · 眼神光清澈',
-              desc: '面部暗沉驱散，皮肤质感自然白皙，适合日常手机口播',
+              recommended: false,
+              tag: '真实自然 · 柔润发丝',
+              desc: '微磨皮平滑，保持真实肤质纹理，适合日常手机口播',
+            },
+            {
+              id: 'teal_orange',
+              name: '电影青橙',
+              recommended: false,
+              tag: '院线大片 · 冷暖反差',
+              desc: '阴影泛冷青蓝，高光肤色温暖立体，国际院线大片质感',
             },
             {
               id: 'crisp_hd',
@@ -1026,6 +1040,13 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
               desc: '微升色温与饱和度，改善苍白疲惫或冷光泛青',
             },
             {
+              id: 'vintage_film',
+              name: '复古胶片',
+              recommended: false,
+              tag: '胶片质感 · 电影暗角',
+              desc: '模拟经典胶片温润色调与柔和暗角，富有叙事怀旧感',
+            },
+            {
               id: 'original',
               name: '原始原色',
               recommended: false,
@@ -1033,7 +1054,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
               desc: '保持原始画质与锐度，完全旁路不施加调色',
             },
           ].map(item => {
-            const currentPreset = strategy.filter_preset || 'clean_natural';
+            const currentPreset = strategy.filter_preset || 'cold_white';
             const active = currentPreset === item.id;
             return (
               <button
@@ -1092,20 +1113,6 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
         </div>
       </div>
 
-      {/* 保存方案按钮 */}
-      {onSave && (
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={saving}
-            className="w-full flex items-center justify-center space-x-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold rounded-xl shadow-xs transition-colors disabled:opacity-50"
-          >
-            <Check className="w-3.5 h-3.5" />
-            <span>{saving ? '正在保存...' : '保存剪辑方案'}</span>
-          </button>
-        </div>
-      )}
     </div>
   );
 };

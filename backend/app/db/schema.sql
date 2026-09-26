@@ -14,16 +14,19 @@ CREATE TABLE IF NOT EXISTS materials (
     fps REAL NOT NULL DEFAULT 30.0,
     content_hash TEXT DEFAULT NULL,
     file_size INTEGER DEFAULT 0,
+    plate_region TEXT DEFAULT NULL,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category);
 CREATE INDEX IF NOT EXISTS idx_materials_hash ON materials(content_hash);
+CREATE INDEX IF NOT EXISTS idx_materials_cat_region ON materials(category, plate_region);
 
 -- 剪辑工程元数据表
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     talking_head_id TEXT NOT NULL,
+    target_region TEXT DEFAULT NULL,
     aspect_ratio TEXT NOT NULL DEFAULT '9:16',
     status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'processing', 'completed', 'failed')),
     output_video_path TEXT,

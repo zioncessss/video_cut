@@ -1,10 +1,14 @@
 import subprocess
 import json
 import os
+import threading
+import random
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
 import re
+
+_asr_concurrency_lock = threading.BoundedSemaphore(2)
 INSEPARABLE_WORDS = {
     "咱们", "我们", "你们", "他们", "大家", "可以", "这种", "三种", "很多", "后期", "前期", "隐形", "消费", "之前", "之后",
     "一直", "答应", "体验", "下降", "上升", "后续", "套路", "承诺", "外地", "本地", "考试", "比较", "时间", "而且", "如果",
@@ -644,13 +648,40 @@ class ASRRunner:
             "stream": "false"
         }
 
-        with open(audio_path, "rb") as f:
-            files = {
-                "file": (audio_path.name, f, "audio/wav")
-            }
-            res = httpx.post(stt_endpoint, headers=headers, data=data, files=files, timeout=timeout)
-            res.raise_for_status()
-            resp_json = res.json()
+        import time
+        max_retries = 3
+        backoffs = [1.0, 2.5, 5.0]
+        resp_json = None
+        last_exc = None
+
+        with _asr_concurrency_lock:
+            for attempt in range(max_retries):
+                try:
+                    with open(audio_path, "rb") as f:
+                        files = {
+                            "file": (audio_path.name, f, "audio/wav")
+                        }
+                        res = httpx.post(stt_endpoint, headers=headers, data=data, files=files, timeout=timeout)
+                        res.raise_for_status()
+                        resp_json = res.json()
+                        break
+                except (httpx.HTTPError, OSError, ValueError, Exception) as e:
+                    last_exc = e
+                    # 4xx 客户端错误中除 429 外直接抛出，不进行无意义重试
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500 and e.response.status_code != 429:
+                        raise
+                    if attempt < max_retries - 1:
+                        sleep_sec = backoffs[attempt] + random.uniform(0.05, 0.25)
+                        print(f"[ASRRunner] MiniMax ASR 请求瞬时网络或解析异常 ({type(e).__name__}: {e})，将在 {sleep_sec:.2f}s 后进行第 {attempt + 2}/{max_retries} 次重试...")
+                        time.sleep(sleep_sec)
+                    else:
+                        print(f"[ASRRunner] MiniMax ASR 请求已达最大重试次数 ({max_retries} 次)，最终失败: {e}")
+                        raise
+
+        if resp_json is None:
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("MiniMax ASR 重试耗尽未获取有效响应")
 
         base_resp = resp_json.get("base_resp")
         if base_resp and base_resp.get("status_code", 0) != 0:

@@ -27,16 +27,22 @@ import {
   API_BASE,
   getMediaUrl,
   updateProjectSubtitles,
+  updateProjectTitle,
   uploadProjectCoverFile,
-  setProjectCover
+  setProjectCover,
+  checkBannedWords,
+  BannedWordsCheckResult,
+  CoverDesignConfig,
+  SuggestedCoverTitle,
+  deleteMaterial,
+  deleteProjectByMaterial
 } from '../services/api';
+import { ExportConfirmModal } from '../components/ExportConfirmModal';
+import { formatRegionBadge } from '../constants/regions';
 import {
   Sparkles,
-  Wand2,
   RefreshCw,
-  Cpu,
   CheckCircle2,
-  ShieldAlert,
   Sliders,
   ListOrdered,
   Database,
@@ -53,7 +59,9 @@ import {
   X,
   Upload,
   AlertTriangle,
-  Maximize2
+  Maximize2,
+  Trash2,
+  MapPin
 } from 'lucide-react';
 import { useDialog } from '../components/common/CustomDialog';
 
@@ -126,12 +134,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   initialSelectedTalkingHeadId,
   isActive = true,
 }) => {
-  const { showAlert, showToast } = useDialog();
+  const { showAlert, showToast, showConfirm } = useDialog();
   const [talkingHeads, setTalkingHeads] = useState<Material[]>([]);
   const [selectedThId, setSelectedThId] = useState<string>(initialSelectedTalkingHeadId || '');
   const [projectId, setProjectId] = useState<string>(initialProjectId || '');
+  const [projectTitle, setProjectTitle] = useState<string>('');
+  const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
+  const [tempTitle, setTempTitle] = useState<string>('');
+  const [targetRegion, setTargetRegion] = useState<string | null>(null);
   const [allProjects, setAllProjects] = useState<ProjectSummary[]>([]);
   const [showProjectPicker, setShowProjectPicker] = useState<boolean>(false);
+  const [projectFilterTab, setProjectFilterTab] = useState<'all' | 'edited' | 'unedited'>('all');
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
@@ -142,6 +155,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
   const [oneClickStage, setOneClickStage] = useState<string>('');
+  const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
+  const pollingProgressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [rendering, setRendering] = useState<boolean>(false);
   const [outputVideoUrl, setOutputVideoUrl] = useState<string>('');
   const [coverUrl, setCoverUrl] = useState<string>('');
@@ -158,8 +173,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   } | null>(null);
   const [copiedPath, setCopiedPath] = useState<boolean>(false);
   const [folderOpened, setFolderOpened] = useState<boolean>(false);
-  const [aiInstruction, setAiInstruction] = useState<string>('');
-  const [applyingInstruction, setApplyingInstruction] = useState<boolean>(false);
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
   const [activeEngine, setActiveEngine] = useState<string>('codex');
   const [activeModel, setActiveModel] = useState<string>('GLM-5.3-Flash');
@@ -174,7 +187,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   // 剪辑工作区 Tab 模式：'subtitles' (轨道字幕与空镜) vs 'strategy' (爱拍式策略工坊)
   const [activeTab, setActiveTab] = useState<'subtitles' | 'strategy'>('subtitles');
   const [strategy, setStrategy] = useState<EditingStrategy>(DEFAULT_STRATEGY);
-  const [savingStrategy, setSavingStrategy] = useState<boolean>(false);
 
   // 字幕与策略实时保存状态与成片变更检测
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
@@ -183,6 +195,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const latestSubtitlesRef = useRef<SubtitleItem[]>([]);
   const latestStrategyRef = useRef<EditingStrategy>(DEFAULT_STRATEGY);
   const saveStatusTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 011: 导出确认弹窗与违禁词预检状态
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [bannedWordsCheck, setBannedWordsCheck] = useState<BannedWordsCheckResult | null>(null);
+  const [isCheckingBannedWords, setIsCheckingBannedWords] = useState<boolean>(false);
+
+  // 012: 封面设计与 AI 爆款文案状态
+  const [coverConfig, setCoverConfig] = useState<CoverDesignConfig | null>(null);
+  const [suggestedCoverTitles, setSuggestedCoverTitles] = useState<SuggestedCoverTitle[]>([]);
 
   useEffect(() => {
     latestSubtitlesRef.current = subtitles;
@@ -194,15 +215,37 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   const loadedProjectIdRef = useRef<string | null>(initialProjectId || null);
   const loadedThIdRef = useRef<string | null>(initialSelectedTalkingHeadId || null);
+  const cutAbortControllerRef = useRef<AbortController | null>(null);
+  const loadAbortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      cutAbortControllerRef.current?.abort();
+      loadAbortControllerRef.current?.abort();
+      if (pollingProgressTimerRef.current) {
+        clearInterval(pollingProgressTimerRef.current);
+        pollingProgressTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const loadProjectById = async (pid: string) => {
     if (!pid) return;
+    if (loadAbortControllerRef.current) {
+      loadAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadAbortControllerRef.current = controller;
+
     loadedProjectIdRef.current = pid;
     setLoadingProject(true);
     try {
-      const proj = await fetchProjectById(pid);
+      const proj = await fetchProjectById(pid, controller.signal);
+      if (controller.signal.aborted) return;
       if (proj && proj.id) {
         setProjectId(proj.id);
+        setProjectTitle(proj.title || '');
+        setTargetRegion(proj.target_region || null);
         loadedProjectIdRef.current = proj.id;
         if (proj.talking_head_id) {
           setSelectedThId(proj.talking_head_id);
@@ -223,6 +266,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         } else {
           setCoverUrl('');
         }
+        if (proj.cover_config) setCoverConfig(proj.cover_config);
+        if (proj.suggested_cover_titles) setSuggestedCoverTitles(proj.suggested_cover_titles);
         if (proj.output_video_path) {
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
@@ -242,21 +287,35 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         setIsCachedProject(true);
         setAiFeedback(`已秒级载入工程 ${proj.title}（共 ${proj.subtitles?.length || 0} 句字幕，${proj.broll_replacements?.length || 0} 处分镜）`);
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (axios.isCancel(e) || e?.name === 'CanceledError' || controller.signal.aborted) {
+        return;
+      }
       console.error('载入指定工程失败:', e);
     } finally {
-      setLoadingProject(false);
+      if (!controller.signal.aborted) {
+        setLoadingProject(false);
+      }
     }
   };
 
   const loadProjectForMaterial = async (matId: string) => {
     if (!matId) return;
+    if (loadAbortControllerRef.current) {
+      loadAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadAbortControllerRef.current = controller;
+
     loadedThIdRef.current = matId;
     setLoadingProject(true);
     try {
-      const proj = await fetchProjectByMaterial(matId);
+      const proj = await fetchProjectByMaterial(matId, controller.signal);
+      if (controller.signal.aborted) return;
       if (proj && proj.id) {
         setProjectId(proj.id);
+        setProjectTitle(proj.title || '');
+        setTargetRegion(proj.target_region || null);
         loadedProjectIdRef.current = proj.id;
         if (onProjectLoaded) onProjectLoaded(proj.id);
         setSubtitles(proj.subtitles || []);
@@ -272,6 +331,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         } else {
           setCoverUrl('');
         }
+        if (proj.cover_config) setCoverConfig(proj.cover_config);
+        if (proj.suggested_cover_titles) setSuggestedCoverTitles(proj.suggested_cover_titles);
         if (proj.output_video_path) {
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
@@ -293,8 +354,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         return;
       }
     } catch (e: any) {
+      if (axios.isCancel(e) || e?.name === 'CanceledError' || controller.signal.aborted) {
+        return;
+      }
       // 404 说明未提取过或工程未建立
       setProjectId('');
+      setProjectTitle('');
+      setTargetRegion(null);
       loadedProjectIdRef.current = '';
       if (onProjectLoaded) onProjectLoaded('');
       setSubtitles([]);
@@ -306,7 +372,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setPreviewMode('interactive');
       setIsCachedProject(false);
     } finally {
-      setLoadingProject(false);
+      if (!controller.signal.aborted) {
+        setLoadingProject(false);
+      }
     }
   };
 
@@ -424,9 +492,45 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       });
       return;
     }
+    if (cutAbortControllerRef.current) {
+      cutAbortControllerRef.current.abort();
+    }
+    if (pollingProgressTimerRef.current) {
+      clearInterval(pollingProgressTimerRef.current);
+      pollingProgressTimerRef.current = null;
+    }
+    const controller = new AbortController();
+    cutAbortControllerRef.current = controller;
+
     setAnalyzing(true);
     setCorrectionsSummary(null);
-    setOneClickStage('正在抽取音频、ASR识别切分并调用AI纠偏...');
+    setOneClickStage('正在抽取高质量音频...');
+    setPipelineProgress({
+      project_id: selectedThId,
+      stage: 'audio_extracting',
+      percent: 15,
+      message: '正在抽取高质量音频...',
+    });
+
+    const pollTimer = setInterval(async () => {
+      try {
+        if (controller.signal.aborted) {
+          clearInterval(pollTimer);
+          return;
+        }
+        const prog = await fetchProjectProgress(selectedThId, { signal: controller.signal });
+        if (prog && prog.stage && !controller.signal.aborted) {
+          setPipelineProgress(prog);
+          if (prog.message) {
+            setOneClickStage(prog.message);
+          }
+        }
+      } catch (e) {
+        // 静默忽略轮询偶发异常
+      }
+    }, 800);
+    pollingProgressTimerRef.current = pollTimer;
+
     try {
       // 1. 语音提取 + 词级时间戳 + 黄金片段切分合并 + 大模型行业专词纠偏一体化完成（跳过耗时全量预压制）
       const res = await analyzeAndCutVideo(selectedThId, {
@@ -434,8 +538,12 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         autoBroll: true,
         forceRetranscribe: force,
         autoRender: false,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       setProjectId(res.id);
+      setProjectTitle(res.title || '');
+      setTargetRegion(res.target_region || null);
       loadedProjectIdRef.current = res.id;
       if (onProjectLoaded) {
         onProjectLoaded(res.id);
@@ -495,15 +603,26 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           setAiFeedback(`智能初剪就绪（秒级极速）！已生成爆款标题、大模型高光词与双层分镜。您可在此实时微调，确认后点击「⚡ 合成成片」出片。`);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (axios.isCancel(err) || err?.name === 'CanceledError' || controller.signal.aborted) {
+        return;
+      }
+      const errDetail = err?.response?.data?.detail || err?.message || '智能剪辑失败，请检查服务日志与网络连接';
       showAlert({
         title: '智能剪辑失败',
-        message: '智能剪辑失败，请确保后端服务正常运行',
+        message: errDetail,
         type: 'error'
       });
     } finally {
-      setAnalyzing(false);
-      setOneClickStage('');
+      if (!controller.signal.aborted) {
+        if (pollingProgressTimerRef.current) {
+          clearInterval(pollingProgressTimerRef.current);
+          pollingProgressTimerRef.current = null;
+        }
+        setAnalyzing(false);
+        setOneClickStage('');
+        setPipelineProgress(null);
+      }
     }
   };
 
@@ -523,6 +642,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (res && res.data) {
         if (res.data.subtitles) setSubtitles(res.data.subtitles);
         if (res.data.broll_replacements) setBrolls(res.data.broll_replacements);
+        if (res.data.project?.target_region) setTargetRegion(res.data.project.target_region);
         const costStr = res.data.latency_ms ? `，耗时 ${Math.round(res.data.latency_ms)}ms` : '';
         setAiFeedback(`智能分镜编排完成！已通过 ${res.data.engine_used} 匹配 ${res.data.broll_replacements?.length || 0} 个空镜分镜（约 65% 黄金覆盖率${costStr}）。`);
       }
@@ -646,7 +766,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
-  // 策略自动防抖保存 (600ms)，确保面板滑动或拖拽松开后 100% 固化到单一权威 SQLite 库
+  // 策略自动防抖保存 (600ms)，确保面板滑动或拖拽松开后 100% 自动固化到单一权威 SQLite 库
   const strategySaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const handleStrategyChange = (newStrategy: EditingStrategy) => {
     if (previewMode === 'rendered') {
@@ -656,14 +776,23 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     latestStrategyRef.current = newStrategy;
     setHasUnrenderedChanges(true);
     if (!projectId) return;
+    setSaveStatus('dirty');
     if (strategySaveTimeoutRef.current) {
       clearTimeout(strategySaveTimeoutRef.current);
     }
     strategySaveTimeoutRef.current = setTimeout(async () => {
       try {
+        setSaveStatus('saving');
         await updateProjectStrategy(projectId, sanitizeStrategy(newStrategy));
+        setSaveStatus('saved');
+        setLastSavedAt(Date.now());
+        if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+        saveStatusTimerRef.current = setTimeout(() => {
+          setSaveStatus('idle');
+        }, 3000);
       } catch (e) {
         console.error('Debounced strategy save failed', e);
+        setSaveStatus('error');
       }
     }, 600);
   };
@@ -680,9 +809,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     setHasUnrenderedChanges(true);
     if (projectId) {
       try {
+        setSaveStatus('saving');
         await updateProjectStrategy(projectId, sanitizeStrategy(committedStrategy));
+        setSaveStatus('saved');
+        setLastSavedAt(Date.now());
+        if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+        saveStatusTimerRef.current = setTimeout(() => {
+          setSaveStatus('idle');
+        }, 3000);
       } catch (e) {
         console.error('Immediate strategy save failed', e);
+        setSaveStatus('error');
       }
     }
   };
@@ -734,59 +871,39 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     };
   }, [projectId]);
 
-  const handleSaveStrategy = async () => {
-    if (!projectId) {
-      showAlert({
-        title: '提示',
-        message: '请先执行智能剪辑创建工程，再保存策略',
-        type: 'info'
-      });
-      return;
-    }
-    setSavingStrategy(true);
+  const handleOpenExportModal = async () => {
+    if (!projectId) return;
+    setIsExportModalOpen(true);
+    setIsCheckingBannedWords(true);
     try {
-      await updateProjectStrategy(projectId, sanitizeStrategy(strategy));
-      showToast('剪辑策略已保存', 'success');
-      setAiFeedback('剪辑策略已成功保存至当前工程！渲染时将以该样式导出。');
-    } catch (err) {
-      showToast('保存策略失败', 'error');
+      const checkRes = await checkBannedWords(projectId);
+      setBannedWordsCheck(checkRes);
+    } catch (e) {
+      console.error('Failed to check banned words', e);
     } finally {
-      setSavingStrategy(false);
+      setIsCheckingBannedWords(false);
     }
   };
 
-  const handleApplyInstruction = async () => {
-    if (!projectId || !aiInstruction.trim()) return;
-    setApplyingInstruction(true);
-    setAiFeedback(null);
-    try {
-      const res = await axios.post(`${API_BASE}/instruction/apply`, {
-        project_id: projectId,
-        instruction: aiInstruction
-      });
-      if (res.data.updated_subtitles && res.data.updated_subtitles.length > 0) {
-        setSubtitles(res.data.updated_subtitles);
-        latestSubtitlesRef.current = res.data.updated_subtitles;
-      }
-      setLastEngineUsed(res.data.harness_engine_used);
-      setAiFeedback(res.data.explanation);
-      setAiInstruction('');
-    } catch (err) {
-      showAlert({
-        title: '指令解析失败',
-        message: '指令解析失败，请检查大模型引擎与网络配置',
-        type: 'error'
-      });
-    } finally {
-      setApplyingInstruction(false);
-    }
+  // 重新合成：仅作为剪辑台调整字幕/策略/分镜时的日常预览压制，绝对不做违禁词处理，不弹窗打扰
+  const handleRecompose = () => {
+    handleExecuteRender(false);
   };
 
-  const handleRender = async () => {
+  const handleExecuteRender = async (
+    filterBannedWords: boolean = true,
+    newCoverConfig?: CoverDesignConfig,
+    exportDir?: string,
+    includeCover: boolean = true,
+    embedCoverFirstFrame: boolean = false
+  ) => {
     if (!projectId) return;
     setRendering(true);
     setAiFeedback(null);
     try {
+      if (newCoverConfig) {
+        setCoverConfig(newCoverConfig);
+      }
       // 1. 前置守卫：强制取消未完成防抖，链式同步落盘最新字幕与策略
       if (subtitleSaveTimeoutRef.current) {
         clearTimeout(subtitleSaveTimeoutRef.current);
@@ -811,9 +928,12 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
       // 2. 发起高质量复合渲染 (Lanczos 算法 + CRF 18 高清画质 + 原生 Emoji 横幅 + ASS 高亮字幕)
       const targetSpeed = Number((latestStrategyRef.current?.video_speed ?? strategy.video_speed) || 1.0);
-      const res = await renderProject(projectId, targetSpeed);
+      const res = await renderProject(projectId, targetSpeed, filterBannedWords, exportDir, includeCover, embedCoverFirstFrame);
       if (res.status === 'failed' || !res.output_video_path) {
         throw new Error('渲染引擎未生成有效成片，请检查后台日志或素材');
+      }
+      if (res.title) {
+        setProjectTitle(res.title);
       }
       const mediaUrl = getMediaUrl(res.output_video_path);
       const newTs = Date.now();
@@ -828,6 +948,12 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (res.cover_image_path) {
         setCoverUrl(getMediaUrl(res.cover_image_path.replace(/^\//, '')));
       }
+      if (res.cover_config) {
+        setCoverConfig(res.cover_config);
+      }
+      if (res.suggested_cover_titles) {
+        setSuggestedCoverTitles(res.suggested_cover_titles);
+      }
       if (res.compact_subtitles) {
         setCompactSubtitles(res.compact_subtitles);
       }
@@ -837,14 +963,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       if (res.subtitles) {
         setSubtitles(res.subtitles);
       }
-      // 若当前播放指针处于片头空白无字幕阶段（如 00:00），自动对齐至第一条成片字幕起始时间，确保用户直接看到最新字体成片效果
-      const firstActiveStart = res.compact_subtitles?.[0]?.start_time ?? subtitles[0]?.start_time ?? 0.2;
-      if (currentTime < firstActiveStart) {
-        setCurrentTime(firstActiveStart);
+      // 若当前导出了封面且压入了片头，播放指针归零使预览直接呈现最新封面；否则若处于片头空白无字幕阶段，对齐第一条字幕
+      if (includeCover && embedCoverFirstFrame) {
+        setCurrentTime(0);
+      } else {
+        const firstActiveStart = res.compact_subtitles?.[0]?.start_time ?? subtitles[0]?.start_time ?? 0.2;
+        if (currentTime < firstActiveStart) {
+          setCurrentTime(firstActiveStart);
+        }
       }
       setPreviewMode('rendered');
       setHasUnrenderedChanges(false);
-      setAiFeedback('🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。');
+      setIsExportModalOpen(false);
+      const exportFeedback = exportDir
+        ? `🎉 成片已导出并另存至目标目录：${exportDir}`
+        : filterBannedWords
+        ? '🎉 最终成片已完成合规清洗并导出成功！'
+        : '🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。';
+      setAiFeedback(exportFeedback);
     } catch (err: any) {
       showAlert({
         title: '渲染合成失败',
@@ -853,6 +989,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       });
     } finally {
       setRendering(false);
+    }
+  };
+
+  const handleSaveTitle = async (newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed || trimmed === projectTitle || !projectId) {
+      setIsEditingTitle(false);
+      return;
+    }
+    try {
+      await updateProjectTitle(projectId, trimmed);
+      setProjectTitle(trimmed);
+      fetchAllProjects().then(setAllProjects).catch(() => {});
+      showToast('视频标题已更新', 'success');
+    } catch (e: any) {
+      showAlert({ title: '修改标题失败', message: e?.message || '网络异常', type: 'error' });
+    } finally {
+      setIsEditingTitle(false);
     }
   };
 
@@ -879,15 +1033,141 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     if (exportInfo?.url) {
       const a = document.createElement('a');
       a.href = exportInfo.url;
-      a.download = exportInfo.filename || 'export.mp4';
+      const cleanTitle = (projectTitle || exportInfo.filename || '成片')
+        .replace(/[\\/*?:"<>|\r\n\t]+/g, '_')
+        .replace(/^[ ._]+|[ ._]+$/g, '')
+        .replace(/\.mp4$/i, '');
+      a.download = `${cleanTitle}.mp4`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     }
   };
 
-  const rawVideoUrl = selectedThId && talkingHeads.find(t => t.id === selectedThId)
-    ? getMediaUrl(talkingHeads.find(t => t.id === selectedThId)?.filepath || '')
+  const editedTalkingHeads = talkingHeads.filter(t => allProjects.some(p => p.talking_head_id === t.id));
+  const uneditedTalkingHeads = talkingHeads.filter(t => !allProjects.some(p => p.talking_head_id === t.id));
+  const filteredTalkingHeads =
+    projectFilterTab === 'edited'
+      ? editedTalkingHeads
+      : projectFilterTab === 'unedited'
+        ? uneditedTalkingHeads
+        : talkingHeads;
+
+  const handleDeleteTalkingHead = async (material: Material, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const matchedProj = allProjects.find(p => p.talking_head_id === material.id);
+    const titleText = matchedProj?.title || material.filename;
+
+    const confirmed = await showConfirm({
+      title: '确认删除视频与工程',
+      message: `确定要彻底删除「${titleText}」吗？相关工程配置与素材文件将从磁盘彻底删除，此操作不可撤销。`,
+      isDestructive: true,
+      confirmText: '彻底删除'
+    });
+    if (!confirmed) return;
+
+    try {
+      if (matchedProj) {
+        await deleteProjectByMaterial(material.id);
+      }
+      await deleteMaterial(material.id);
+
+      setTalkingHeads(prev => prev.filter(m => m.id !== material.id));
+      setAllProjects(prev => prev.filter(p => p.talking_head_id !== material.id));
+      showToast('视频工程及素材已删除');
+
+      if (material.id === selectedThId) {
+        const remaining = talkingHeads.filter(m => m.id !== material.id);
+        if (remaining.length > 0) {
+          const nextMat = remaining[0];
+          setSelectedThId(nextMat.id);
+          loadedThIdRef.current = nextMat.id;
+          onTalkingHeadChanged?.(nextMat.id);
+          const nextProj = allProjects.find(p => p.talking_head_id === nextMat.id);
+          if (nextProj) {
+            loadProjectById(nextProj.id);
+          } else {
+            loadProjectForMaterial(nextMat.id);
+          }
+        } else {
+          setSelectedThId('');
+          setProjectId('');
+          setProjectTitle('');
+          setSubtitles([]);
+          setCompactSubtitles([]);
+          setBrolls([]);
+          setPruneSpans([]);
+        }
+      }
+    } catch (err: any) {
+      console.error('删除视频素材失败:', err);
+      showAlert({
+        title: '删除失败',
+        message: err?.response?.data?.detail || '删除视频素材失败，请稍后重试。',
+        type: 'error'
+      });
+    }
+  };
+
+  const handleCleanUneditedTalkingHeads = async () => {
+    const unedited = talkingHeads.filter(t => !allProjects.some(p => p.talking_head_id === t.id));
+    if (unedited.length === 0) return;
+
+    const confirmed = await showConfirm({
+      title: '清理所有待剪辑素材',
+      message: `检测到 ${unedited.length} 个未初剪、无工程的口播素材。确定要将它们全部从本地磁盘彻底清理吗？`,
+      isDestructive: true,
+      confirmText: '一键清理'
+    });
+    if (!confirmed) return;
+
+    try {
+      let successCount = 0;
+      for (const item of unedited) {
+        try {
+          await deleteMaterial(item.id);
+          successCount++;
+        } catch (e) {
+          console.error(`清理素材 ${item.id} 失败:`, e);
+        }
+      }
+      const uneditedIds = new Set(unedited.map(m => m.id));
+      setTalkingHeads(prev => prev.filter(m => !uneditedIds.has(m.id)));
+      showToast(`已成功清理 ${successCount} 个待剪辑素材`);
+
+      if (uneditedIds.has(selectedThId)) {
+        const remaining = talkingHeads.filter(m => !uneditedIds.has(m.id));
+        if (remaining.length > 0) {
+          const nextMat = remaining[0];
+          setSelectedThId(nextMat.id);
+          loadedThIdRef.current = nextMat.id;
+          onTalkingHeadChanged?.(nextMat.id);
+          const nextProj = allProjects.find(p => p.talking_head_id === nextMat.id);
+          if (nextProj) {
+            loadProjectById(nextProj.id);
+          } else {
+            loadProjectForMaterial(nextMat.id);
+          }
+        } else {
+          setSelectedThId('');
+          setProjectId('');
+          setProjectTitle('');
+          setSubtitles([]);
+          setCompactSubtitles([]);
+          setBrolls([]);
+          setPruneSpans([]);
+        }
+      }
+    } catch (err: any) {
+      showAlert({ title: '清理失败', message: '清理过程中出现异常。', type: 'error' });
+    }
+  };
+
+  const currentMaterial = talkingHeads.find(t => t.id === selectedThId);
+  const displayTitle = projectTitle || currentMaterial?.filename || '选择视频工程';
+
+  const rawVideoUrl = selectedThId && currentMaterial
+    ? getMediaUrl(currentMaterial.filepath || '')
     : '';
 
   const currentPreviewUrl = (previewMode === 'rendered' && outputVideoUrl)
@@ -896,7 +1176,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
   return (
     <div className="flex flex-col h-full max-h-full max-w-7xl mx-auto p-3 overflow-hidden">
-      {/* 顶部操作条：口播素材选择、引擎状态徽章、智能剪辑触发 */}
+      {/* 顶部操作条：口播素材选择、智能剪辑触发 */}
       <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200/80 rounded-xl p-2.5 shadow-xs mb-2.5 gap-2 flex-shrink-0">
         <div className="flex items-center space-x-2">
           {/* 隐藏文件输入框用于快速上传口播视频 */}
@@ -908,27 +1188,85 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             onChange={handleUploadTalkingHead}
           />
 
-          {/* 视频工程卡片选择按钮（点击展开排列好的视频卡片） */}
-          {/* 视频工程卡片选择按钮 */}
-          <button
-            type="button"
-            onClick={() => {
-              fetchAllProjects().then(setAllProjects).catch(() => {});
-              setShowProjectPicker(true);
-            }}
-            className="flex items-center space-x-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-1.5 text-xs text-gray-800 transition-all cursor-pointer shadow-xs"
-          >
-            <Film className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />
-            <span className="font-semibold max-w-[160px] truncate">
-              {talkingHeads.find(t => t.id === selectedThId)?.filename || '选择视频工程'}
-            </span>
-            {selectedThId && (
-              <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
-                ({talkingHeads.find(t => t.id === selectedThId)?.duration?.toFixed(1)}s)
+          {/* 视频工程卡片选择按钮（展示真实视频标题） */}
+          <div className="flex items-center space-x-1">
+            <button
+              type="button"
+              onClick={() => {
+                fetchAllProjects().then(setAllProjects).catch(() => {});
+                setShowProjectPicker(true);
+              }}
+              title={displayTitle}
+              className="flex items-center space-x-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-1.5 text-xs text-gray-800 transition-all cursor-pointer shadow-xs max-w-[280px]"
+            >
+              <Film className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />
+              <span className="font-semibold truncate">
+                {displayTitle}
               </span>
+              {selectedThId && (
+                <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
+                  ({talkingHeads.find(t => t.id === selectedThId)?.duration?.toFixed(1)}s)
+                </span>
+              )}
+              <ChevronDown className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+            </button>
+            {projectId && !isEditingTitle && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTempTitle(projectTitle || displayTitle);
+                  setIsEditingTitle(true);
+                }}
+                className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
+                title="修改视频标题"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
             )}
-            <ChevronDown className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-          </button>
+            {isEditingTitle && (
+              <div className="flex items-center space-x-1 bg-white border border-indigo-300 rounded-xl px-2 py-1 shadow-xs">
+                <input
+                  type="text"
+                  value={tempTitle}
+                  autoFocus
+                  onChange={(e) => setTempTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveTitle(tempTitle);
+                    if (e.key === 'Escape') setIsEditingTitle(false);
+                  }}
+                  className="text-xs px-1 py-0.5 border-b border-indigo-400 outline-none w-44 text-gray-800 font-medium"
+                  placeholder="输入视频标题"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleSaveTitle(tempTitle)}
+                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer"
+                  title="保存标题"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTitle(false)}
+                  className="p-1 text-gray-400 hover:bg-gray-100 rounded cursor-pointer"
+                  title="取消"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 目标城市车牌属地徽章（AI 自动识别，同城防穿帮） */}
+          {targetRegion && (
+            <span
+              className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs whitespace-nowrap cursor-default"
+              title={`AI 智能识别城市车牌: ${formatRegionBadge(targetRegion)}（严格同城分镜，0 跨市穿帮）`}
+            >
+              <MapPin className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+              <span>{formatRegionBadge(targetRegion)}</span>
+            </span>
+          )}
 
           {/* 剪辑工作台单独上传口播视频直接开剪按钮 */}
           <button
@@ -963,24 +1301,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           </div>
         </div>
 
-        {/* 引擎状态与智能剪辑按钮 */}
+        {/* 智能剪辑与出片按钮区 */}
         <div className="flex items-center space-x-2.5">
-          {/* 活跃 Harness 状态徽章 */}
-          <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-[11px] font-mono">
-            <span className="text-gray-400 font-sans">Harness:</span>
-            {lastEngineUsed?.includes('fallback') ? (
-              <span className="text-amber-600 font-semibold flex items-center">
-                <ShieldAlert className="w-3 h-3 mr-1" />
-                Embedded
-              </span>
-            ) : (
-              <span className="text-emerald-700 font-medium flex items-center">
-                <CheckCircle2 className="w-3 h-3 mr-1 text-emerald-600" />
-                {activeEngine.toUpperCase()}
-                {activeModel ? ` (${activeModel})` : ''}
-              </span>
-            )}
-          </div>
 
           {/* 智能剪辑主按钮 */}
           {loadingProject ? (
@@ -1001,20 +1323,164 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               </button>
 
               {projectId && (
-                <button
-                  onClick={handleRender}
-                  disabled={rendering || analyzing}
-                  className="flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
-                  title="调用 FFmpeg 复合压制生成高清成片"
-                >
-                  {rendering ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5 text-emerald-200" />}
-                  <span>{rendering ? '正在合成...' : (outputVideoUrl ? `⚡ 重新合成 (${Number(strategy.video_speed || 1.0).toFixed(2)}x)` : '⚡ 合成成片')}</span>
-                </button>
+                <>
+                  <button
+                    onClick={handleRecompose}
+                    disabled={rendering || analyzing}
+                    className="flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+                    title="调用 FFmpeg 复合压制生成高清成片预览（不做违禁词处理）"
+                  >
+                    {rendering ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5 text-emerald-200" />}
+                    <span>{rendering ? '正在合成...' : (outputVideoUrl ? `⚡ 重新合成 (${Number(strategy.video_speed || 1.0).toFixed(2)}x)` : '⚡ 合成成片')}</span>
+                  </button>
+
+                  {/* 导出倍速自选控件：支持键入任意数值 (如 1.08, 1.15) */}
+                  <div
+                    className="flex items-center space-x-1 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-2 py-1 text-xs transition-colors"
+                    title="自定义成片压制导出倍速（支持键入任意数值，步长 0.01）"
+                  >
+                    <span className="text-gray-500 font-medium whitespace-nowrap text-[11px]">倍速:</span>
+                    <div className="flex items-center bg-white border border-gray-200 rounded-lg px-1.5 py-0.5 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500/20 shadow-2xs">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.5"
+                        max="2.5"
+                        value={strategy.video_speed ?? 1.0}
+                        onChange={e => {
+                          const val = parseFloat(e.target.value);
+                          const nextSpeed = isNaN(val) ? 1.0 : Math.max(0.5, Math.min(2.5, Math.round(val * 100) / 100));
+                          handleStrategyChange({ ...strategy, video_speed: nextSpeed });
+                        }}
+                        className="w-10 text-center text-xs font-mono font-bold text-indigo-700 outline-none bg-transparent"
+                        title="键入任意倍率（如 1.08、1.12、1.15、1.25）"
+                      />
+                      <span className="text-gray-400 text-[10px] font-mono">x</span>
+                    </div>
+                    {/* 快捷芯片 */}
+                    <div className="hidden lg:flex items-center space-x-0.5 border-l border-gray-200/80 pl-1">
+                      {[1.0, 1.15, 1.25].map(v => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => handleStrategyChange({ ...strategy, video_speed: v })}
+                          className={`px-1 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                            Math.abs((strategy.video_speed || 1.0) - v) < 0.005
+                              ? 'text-indigo-700 font-bold bg-indigo-50'
+                              : 'text-gray-400 hover:text-gray-700'
+                          }`}
+                        >
+                          {v}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 导出成片主按钮（放在顶部！） */}
+                  <button
+                    onClick={handleOpenExportModal}
+                    disabled={rendering || !projectId}
+                    className="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-xl transition-all shadow-xs disabled:opacity-50 flex items-center space-x-1.5 whitespace-nowrap cursor-pointer"
+                    title="选择导出目录、配置爆款封面与清洗违禁词并导出成片"
+                  >
+                    {rendering ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Film className="w-3.5 h-3.5" />
+                    )}
+                    <span>{rendering ? '压制导出中...' : '🎬 导出成片'}</span>
+                  </button>
+                </>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {/* 智能初剪长任务 4 阶段进度条指示组件 */}
+      {analyzing && (() => {
+        const currentPercent = pipelineProgress?.percent ?? 15;
+        const currentMessage = pipelineProgress?.message || oneClickStage || '正在抽取高质量音频...';
+        const steps = [
+          { step: 1, label: '抽取音频', targetPercent: 15, matchStages: ['audio_extracting'] },
+          { step: 2, label: '语音转写', targetPercent: 45, matchStages: ['asr_transcribing'] },
+          { step: 3, label: 'AI专词纠偏', targetPercent: 70, matchStages: ['llm_correcting'] },
+          { step: 4, label: '双层分镜', targetPercent: 90, matchStages: ['scene_deciding', 'broll_matching', 'video_composing'] },
+        ];
+
+        return (
+          <div className="mb-4 bg-gradient-to-r from-indigo-50/90 via-sky-50/80 to-indigo-50/90 border border-indigo-200/80 rounded-2xl p-4 shadow-sm animate-in fade-in duration-300">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                  <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-semibold text-gray-900">智能初剪与纠偏进行中</span>
+                    <span className="text-[11px] font-mono font-medium px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                      {currentPercent}%
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-600 mt-0.5">{currentMessage}</p>
+                </div>
+              </div>
+              <div className="text-[11px] font-mono text-gray-400">
+                AI Harness Pipeline
+              </div>
+            </div>
+
+            {/* 动态推进进度条 */}
+            <div className="w-full bg-indigo-100/70 rounded-full h-2 mb-3.5 overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-indigo-600 via-sky-500 to-indigo-600 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(100, Math.max(8, currentPercent))}%` }}
+              />
+            </div>
+
+            {/* 四阶段指示节点 */}
+            <div className="grid grid-cols-4 gap-2">
+              {steps.map((st) => {
+                const isDone = currentPercent > st.targetPercent || currentPercent === 100;
+                const isCurrent =
+                  !isDone &&
+                  (pipelineProgress?.stage
+                    ? st.matchStages.includes(pipelineProgress.stage)
+                    : currentPercent >= st.targetPercent - 20);
+
+                return (
+                  <div
+                    key={st.step}
+                    className={`flex items-center space-x-2 px-2.5 py-1.5 rounded-xl border transition-all text-xs ${
+                      isDone
+                        ? 'bg-white/80 border-emerald-200 text-emerald-800'
+                        : isCurrent
+                        ? 'bg-white border-indigo-300 text-indigo-900 shadow-xs ring-1 ring-indigo-200'
+                        : 'bg-white/40 border-gray-200/60 text-gray-400'
+                    }`}
+                  >
+                    <div
+                      className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                        isDone
+                          ? 'bg-emerald-500 text-white'
+                          : isCurrent
+                          ? 'bg-indigo-600 text-white animate-pulse'
+                          : 'bg-gray-200 text-gray-500'
+                      }`}
+                    >
+                      {isDone ? '✓' : st.step}
+                    </div>
+                    <div className="min-w-0 flex-1 truncate">
+                      <span className="font-medium text-[11px] truncate block">{st.label}</span>
+                    </div>
+                    <span className="text-[10px] font-mono opacity-60 shrink-0">{st.targetPercent}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 智能纠错结果明细提示（仅当真正存在错字修正时展示，杜绝无意义自嗨提示） */}
       {correctionsSummary && correctionsSummary.filter(c => c.original_text && c.corrected_text && c.original_text.trim() !== c.corrected_text.trim()).length > 0 && (() => {
@@ -1176,7 +1642,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                   实时预览
                 </button>
                 <button
-                  onClick={handleRender}
+                  onClick={handleRecompose}
                   disabled={rendering}
                   className="px-2.5 py-0.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 shadow-xs disabled:opacity-50 cursor-pointer"
                 >
@@ -1259,8 +1725,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               <StrategyStudio
                 strategy={strategy}
                 onChange={handleStrategyChange}
-                onSave={handleSaveStrategy}
-                saving={savingStrategy}
                 pruneSpans={pruneSpans}
               />
             )}
@@ -1347,106 +1811,66 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         </div>
       )}
 
-      {/* 底部浮动交互条：AI Prompt 指令输入框 + 生成按钮 + 硬件监控 */}
-      <div className="mt-1.5 bg-white border border-gray-200/80 rounded-xl p-2 shadow-xs flex items-center space-x-2 flex-shrink-0">
-        <div className="flex-1 min-w-0 flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-1.5 focus-within:ring-1 focus-within:ring-indigo-500">
-          {applyingInstruction ? (
-            <RefreshCw className="w-4 h-4 text-indigo-600 animate-spin flex-shrink-0" />
-          ) : (
-            <Wand2 className="w-4 h-4 text-indigo-600 flex-shrink-0" />
-          )}
-          <input
-            type="text"
-            value={aiInstruction}
-            onChange={e => setAiInstruction(e.target.value)}
-            placeholder="输入微调指令 (例如: 润色第1句文案，第2句换成空镜)"
-            className="flex-1 bg-transparent text-xs text-gray-800 outline-none min-w-0"
-            onKeyDown={e => e.key === 'Enter' && handleApplyInstruction()}
-          />
-          <button
-            onClick={handleApplyInstruction}
-            disabled={applyingInstruction || !aiInstruction.trim()}
-            className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-3 py-1 rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap flex-shrink-0 cursor-pointer"
-          >
-            {applyingInstruction ? '应用中...' : '发送'}
-          </button>
-
-        </div>
-
-        {/* 导出倍速自选控件：支持键入任意自定义浮点数 (如 1.08, 1.12, 1.15) */}
-        <div
-          className="flex items-center space-x-1.5 bg-gray-50/90 hover:bg-gray-100/90 border border-gray-200/90 rounded-xl px-2.5 py-1 text-xs transition-colors flex-shrink-0"
-          title="自定义成片压制导出倍速（支持键入任意数值，步长 0.01）"
-        >
-          <span className="text-gray-500 font-medium whitespace-nowrap text-[11px]">导出倍速:</span>
-          <div className="flex items-center bg-white border border-gray-200 rounded-lg px-1.5 py-0.5 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500/20 shadow-2xs">
-            <input
-              type="number"
-              step="0.01"
-              min="0.5"
-              max="2.5"
-              value={strategy.video_speed ?? 1.0}
-              onChange={e => {
-                const val = parseFloat(e.target.value);
-                const nextSpeed = isNaN(val) ? 1.0 : Math.max(0.5, Math.min(2.5, Math.round(val * 100) / 100));
-                handleStrategyChange({ ...strategy, video_speed: nextSpeed });
-              }}
-              className="w-11 text-center text-xs font-mono font-bold text-indigo-700 outline-none bg-transparent"
-              title="键入任意倍率（如 1.08、1.12、1.15、1.25）"
-            />
-            <span className="text-gray-400 text-[11px] font-mono">x</span>
-          </div>
-          {/* 常用微型快捷芯片，可直接一键填入，也可继续手打任意数字 */}
-          <div className="hidden sm:flex items-center space-x-0.5 border-l border-gray-200/80 pl-1">
-            {[1.0, 1.1, 1.15, 1.25].map(v => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => handleStrategyChange({ ...strategy, video_speed: v })}
-                className={`px-1 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-                  Math.abs((strategy.video_speed || 1.0) - v) < 0.005
-                    ? 'text-indigo-700 font-bold bg-indigo-50'
-                    : 'text-gray-400 hover:text-gray-700'
-                }`}
-              >
-                {v}x
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <button
-          onClick={handleRender}
-          disabled={rendering || !projectId}
-          className="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-xs disabled:opacity-50 flex items-center space-x-1.5 whitespace-nowrap flex-shrink-0 cursor-pointer"
-        >
-          {rendering ? (
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Film className="w-3.5 h-3.5" />
-          )}
-          <span>{rendering ? '压制合成中...' : `导出成片 (${Number(strategy.video_speed || 1.0).toFixed(2)}x)`}</span>
-        </button>
-
-        {hardwareInfo && (
-          <div className="hidden lg:flex items-center space-x-1.5 border-l border-gray-200 pl-3 text-xs text-gray-500 font-mono whitespace-nowrap flex-shrink-0">
-            <Cpu className="w-3.5 h-3.5 text-emerald-600" />
-            <span>负载 {hardwareInfo.cpu_usage_percent || hardwareInfo.cpu_percent || 15}%</span>
-          </div>
-        )}
-      </div>
-
       {/* 视频工程卡片网格选择抽屉/弹窗 */}
       {showProjectPicker && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[80vh] shadow-2xl border border-gray-200 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
-              <div className="flex items-center space-x-2">
-                <Film className="w-4 h-4 text-indigo-600" />
-                <h3 className="text-sm font-bold text-gray-900">选择视频工程</h3>
-                <span className="text-xs text-gray-400 font-mono">({talkingHeads.length} 个视频)</span>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 flex-wrap gap-2">
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-2">
+                  <Film className="w-4 h-4 text-indigo-600" />
+                  <h3 className="text-sm font-bold text-gray-900">选择视频工程</h3>
+                </div>
+                {/* 过滤 Tab 切换 */}
+                <div className="flex items-center bg-gray-100 p-0.5 rounded-lg text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => setProjectFilterTab('all')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      projectFilterTab === 'all'
+                        ? 'bg-white text-gray-900 shadow-xs'
+                        : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    全部 ({talkingHeads.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProjectFilterTab('edited')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      projectFilterTab === 'edited'
+                        ? 'bg-white text-blue-600 shadow-xs'
+                        : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    已剪辑 ({editedTalkingHeads.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProjectFilterTab('unedited')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      projectFilterTab === 'unedited'
+                        ? 'bg-white text-amber-600 shadow-xs'
+                        : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    待剪辑 ({uneditedTalkingHeads.length})
+                  </button>
+                </div>
               </div>
+
               <div className="flex items-center space-x-2">
+                {projectFilterTab === 'unedited' && uneditedTalkingHeads.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleCleanUneditedTalkingHeads}
+                    className="flex items-center space-x-1 px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-lg font-medium cursor-pointer transition-colors"
+                    title="一键清理所有未初剪的口播素材"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>清理待剪辑 ({uneditedTalkingHeads.length})</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1469,16 +1893,21 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             </div>
 
             <div className="p-4 overflow-y-auto flex-1">
-              {talkingHeads.length === 0 ? (
+              {filteredTalkingHeads.length === 0 ? (
                 <div className="py-12 text-center text-xs text-gray-400">
-                  暂无口播视频，点击右上角「上传新口播」添加
+                  {projectFilterTab === 'edited'
+                    ? '暂无已剪辑工程，可在全部或待剪辑中选择视频进行智能剪辑'
+                    : projectFilterTab === 'unedited'
+                    ? '没有待剪辑的视频素材'
+                    : '暂无口播视频，点击右上角「上传新口播」添加'}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {talkingHeads.map(t => {
+                  {filteredTalkingHeads.map(t => {
                     const isSelected = t.id === selectedThId;
                     const matchedProj = allProjects.find(p => p.talking_head_id === t.id);
                     const coverUrl = matchedProj?.cover_image_path ? getMediaUrl(matchedProj.cover_image_path) : '';
+                    const cardTitle = matchedProj?.title || t.filename;
                     return (
                       <div
                         key={t.id}
@@ -1505,7 +1934,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                           }
                           setShowProjectPicker(false);
                         }}
-                        className={`border rounded-xl p-2.5 transition-all cursor-pointer flex flex-col justify-between ${
+                        className={`group relative border rounded-xl p-2.5 transition-all cursor-pointer flex flex-col justify-between ${
                           isSelected
                             ? 'border-blue-500 bg-blue-50/40 ring-2 ring-blue-500/20'
                             : 'border-gray-200 hover:border-blue-300 bg-white hover:bg-gray-50'
@@ -1513,21 +1942,46 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
                       >
                         <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden mb-2 relative flex items-center justify-center">
                           {coverUrl ? (
-                            <img src={coverUrl} alt={t.filename} className="w-full h-full object-cover" />
+                            <img src={coverUrl} alt={cardTitle} className="w-full h-full object-cover" />
                           ) : (
                             <Film className="w-6 h-6 text-gray-600" />
                           )}
                           <span className="absolute bottom-1 right-1 text-[10px] px-1 py-0.5 rounded bg-black/70 text-white font-mono">
                             {t.duration ? `${t.duration.toFixed(1)}s` : ''}
                           </span>
+                          {/* 删除按钮 */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteTalkingHead(t, e)}
+                            title="删除此视频及工程"
+                            className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/60 hover:bg-red-600 text-white transition-all opacity-80 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer shadow-sm z-10"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                         <div className="min-w-0">
-                          <p className="text-xs font-semibold text-gray-800 truncate" title={t.filename}>
-                            {t.filename}
+                          <p className="text-xs font-semibold text-gray-800 truncate" title={cardTitle}>
+                            {cardTitle}
                           </p>
                           <div className="flex items-center justify-between text-[10px] text-gray-400 mt-1">
-                            <span>{matchedProj ? (matchedProj.status === 'completed' ? '已合成成片' : '已初剪') : '待剪辑'}</span>
-                            {isSelected && <span className="text-blue-600 font-bold">当前工程</span>}
+                            <span className="truncate mr-1 text-gray-400 font-mono" title={t.filename}>{t.filename}</span>
+                            <div className="flex items-center space-x-1 flex-shrink-0">
+                              {matchedProj?.target_region && (
+                                <span className="inline-flex items-center space-x-0.5 px-1 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+                                  <MapPin className="w-2.5 h-2.5 text-emerald-600" />
+                                  <span>{formatRegionBadge(matchedProj.target_region)}</span>
+                                </span>
+                              )}
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                                matchedProj
+                                  ? matchedProj.status === 'completed'
+                                    ? 'bg-green-50 text-green-700'
+                                    : 'bg-blue-50 text-blue-700'
+                                  : 'bg-gray-100 text-gray-500'
+                              }`}>
+                                {matchedProj ? (matchedProj.status === 'completed' ? '已合成成片' : '已初剪') : '待剪辑'}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1539,6 +1993,27 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           </div>
         </div>
       )}
+      {/* 011 & 012: 导出成片确认、视频封面设计与违禁词预检弹窗 */}
+      <ExportConfirmModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        onConfirm={(filterBanned, newCoverCfg, exportDir, incCover, embCover) =>
+          handleExecuteRender(filterBanned, newCoverCfg, exportDir, incCover ?? true, embCover ?? true)
+        }
+        bannedWordsCheck={bannedWordsCheck}
+        isChecking={isCheckingBannedWords}
+        isRendering={rendering}
+        videoSpeed={Number((latestStrategyRef.current?.video_speed ?? strategy.video_speed) || 1.0)}
+        projectId={projectId}
+        initialCoverConfig={coverConfig || undefined}
+        suggestedTitles={suggestedCoverTitles}
+        currentVideoTime={currentTime}
+        embedCoverAsFirstFrame={strategy.embed_cover_as_first_frame ?? true}
+        onToggleEmbedFirstFrame={(val) => {
+          setStrategy((prev) => ({ ...prev, embed_cover_as_first_frame: val }));
+        }}
+        projectTitle={projectTitle || displayTitle}
+      />
     </div>
   );
 };

@@ -210,6 +210,32 @@ def _default_db_path() -> Path:
     from app.core.config import DB_PATH
     return DB_PATH
 
+
+def merge_legacy_appdata_db(current_db_path: Optional[Path] = None) -> None:
+    """自动将历史 AppData 数据库中未收录的 materials, projects, batch_jobs 增量合入当前数据库"""
+    import os
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    legacy_db = Path(appdata) / "videocut" / "storage" / "videocut.db"
+    cur_db = current_db_path or _default_db_path()
+    if not legacy_db.exists() or legacy_db.resolve() == cur_db.resolve():
+        return
+    try:
+        conn = sqlite3.connect(str(cur_db), timeout=10.0)
+        legacy_db_str = str(legacy_db.resolve()).replace("'", "''")
+        conn.execute(f"ATTACH DATABASE '{legacy_db_str}' AS legacy_db")
+        for table in ["materials", "projects", "batch_jobs"]:
+            try:
+                conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM legacy_db.{table}")
+            except Exception:
+                pass
+        conn.commit()
+        conn.execute("DETACH DATABASE legacy_db")
+        conn.close()
+    except Exception as e:
+        print(f"[Migrator] 增量合并 AppData 数据库异常: {e}")
+
 def migrate_legacy_data(db_path: Optional[Path] = None):
     """平滑升级：将旧版 materials_meta.json、projects/*.json 与 settings.json 迁移至 SQLite"""
     init_db(db_path)
@@ -232,6 +258,12 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
     except Exception as e:
         print(f"[Migrator][Schema] 移除级联异常: {e}")
 
+    # 自动合并历史 AppData 数据库中未收录的素材、工程与批次记录
+    try:
+        merge_legacy_appdata_db(db_path)
+    except Exception as e:
+        print(f"[Migrator] AppData 数据库增量合并异常: {e}")
+
     # 自动自愈磁盘自包含任务工程与 JSON
     try:
         from app.native_engine.project_storage import project_storage_service
@@ -243,8 +275,25 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
     proj_repo = ProjectRepository(db_path)
     settings_repo = SettingsRepository(db_path)
 
+    # 4. 归档已迁移的 JSON 源文件到 storage/legacy/（零丢失：只移动不删除）
+    def _archive_to_legacy(src: Path):
+        try:
+            LEGACY_DIR.mkdir(parents=True, exist_ok=True)
+            dest = LEGACY_DIR / src.name
+            if dest.exists():
+                dest = LEGACY_DIR / f"{src.stem}_{int(time.time())}{src.suffix}"
+            shutil.move(str(src), str(dest))
+        except Exception as e:
+            print(f"[Migrator] 归档 {src.name} 失败（保留原文件）: {e}")
+
     # 0. 检查是否已完成过历史数据迁移，避免重复执行与已删除素材死灰复燃
     if settings_repo.get("legacy_data_migrated") == "1":
+        if META_FILE.exists():
+            _archive_to_legacy(META_FILE)
+            print("[Migrator] materials_meta.json 已归档至 storage/legacy/")
+        if PROJECTS_DIR.exists():
+            for p_file in PROJECTS_DIR.glob("*.json"):
+                _archive_to_legacy(p_file)
         return
 
     # 1. 迁移素材元数据（medical 分类同步映射为 experience，兼容新 CHECK 约束）
@@ -290,17 +339,6 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
                         settings_repo.set(k, str(v))
         except Exception as e:
             print(f"[Migrator] 迁移 settings.json 异常: {e}")
-
-    # 4. 归档已迁移的 JSON 源文件到 storage/legacy/（零丢失：只移动不删除）
-    def _archive_to_legacy(src: Path):
-        try:
-            LEGACY_DIR.mkdir(parents=True, exist_ok=True)
-            dest = LEGACY_DIR / src.name
-            if dest.exists():
-                dest = LEGACY_DIR / f"{src.stem}_{int(time.time())}{src.suffix}"
-            shutil.move(str(src), str(dest))
-        except Exception as e:
-            print(f"[Migrator] 归档 {src.name} 失败（保留原文件）: {e}")
 
     if META_FILE.exists():
         _archive_to_legacy(META_FILE)

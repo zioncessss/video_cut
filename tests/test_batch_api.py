@@ -72,6 +72,13 @@ def test_batch_flow_with_mocked_pipeline(tmp_path, monkeypatch):
     assert items[m_bad.id]["status"] == "failed"
     assert "ASR 真实失败" in items[m_bad.id]["error"], "失败项必须携带真实错误详情"
 
-    # 持久化：任务落库可查询
+    # 持久化：任务落库可查询；completed_count 只计真实成功项，失败项单列 failed_count
+    # （旧语义把失败项混入 completed_count，导致失败批次被展示成“已完成 5/5”）
     persisted = client.get(f"/api/v1/batch/jobs/{job_id}").json()["data"]
-    assert persisted["completed_count"] == 2
+    assert persisted["completed_count"] == 1
+    assert persisted["failed_count"] == 1
+
+    listed = client.get("/api/v1/batch/jobs").json()["data"]
+    summary = next(j for j in listed if j["job_id"] == job_id)
+    assert summary["completed_count"] == 1
+    assert summary["failed_count"] == 1

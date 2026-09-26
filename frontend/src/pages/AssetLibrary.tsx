@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchMaterials, uploadMaterial, importLocalMaterial, deleteMaterial, cleanupMaterials, Material, API_BASE } from '../services/api';
+import { fetchMaterials, uploadMaterial, importLocalMaterial, updateMaterialRegion, deleteMaterial, cleanupMaterials, Material, getMediaUrl } from '../services/api';
+import { ZHEJIANG_REGIONS, DEFAULT_REGION, formatRegionBadge } from '../constants/regions';
 import { useDialog } from '../components/common/CustomDialog';
 import { Upload, Film, MapPin, Activity, Award, Trash2, Clock, CheckCircle2, AlertCircle, FolderPlus, Play, Pause, Volume2, VolumeX, X, ExternalLink, Sparkles } from 'lucide-react';
 
@@ -8,14 +9,6 @@ const CATEGORIES = [
   { key: 'experience', label: '体验空镜', desc: '报名咨询、体检拍照、试学体验、拿证记录', icon: Activity, color: 'text-amber-600 bg-amber-50' },
   { key: 'lesson', label: '教学学车空镜', desc: '倒车入库、侧方停车、科目二/三实操练车', icon: Award, color: 'text-indigo-600 bg-indigo-50' },
 ];
-
-const getMediaUrl = (filepath: string) => {
-  if (!filepath) return '';
-  if (filepath.startsWith('http://') || filepath.startsWith('https://')) return filepath;
-  const cleanPath = filepath.replace(/^[/\\]+/, '');
-  const baseUrl = API_BASE.replace(/\/api\/v1\/?$/, '');
-  return `${baseUrl}/${cleanPath}`;
-};
 
 interface AssetLibraryProps {
   onSelectForEditor?: (materialId: string) => void;
@@ -32,6 +25,10 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [uploadProgressText, setUploadProgressText] = useState<string>('');
   const [previewMaterial, setPreviewMaterial] = useState<Material | null>(null);
+  const [selectedRegion, setSelectedRegion] = useState<string>(
+    () => localStorage.getItem('videocut_upload_region') || DEFAULT_REGION
+  );
+  const [filterRegion, setFilterRegion] = useState<string>('');
 
   // 素材预览弹窗专属播放器状态与 Ref
   const modalVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -155,11 +152,11 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
     };
   }, []);
 
-  const loadData = async (cat: string) => {
+  const loadData = async (cat: string, reg?: string) => {
     setLoading(true);
     setLoadError('');
     try {
-      const data = await fetchMaterials(cat);
+      const data = await fetchMaterials(cat, reg || undefined);
       setMaterials(data);
     } catch (err: any) {
       // 请求失败必须清空残留列表并明示错误：严禁展示上一分类的数据造成"共用库"假象
@@ -177,8 +174,18 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
 
   useEffect(() => {
     setMaterials([]);
-    loadData(activeTab);
-  }, [activeTab]);
+    loadData(activeTab, (activeTab === 'venue' || activeTab === 'lesson') ? filterRegion : undefined);
+  }, [activeTab, filterRegion]);
+
+  const handleUpdateRegion = async (materialId: string, newRegion: string) => {
+    try {
+      await updateMaterialRegion(materialId, newRegion);
+      setMaterials(prev => prev.map(m => m.id === materialId ? { ...m, plate_region: newRegion } : m));
+      showToast(`已将所属地区修改为「${formatRegionBadge(newRegion)}」`);
+    } catch (err) {
+      showAlert({ title: '修改失败', message: '修改所属地区失败，请检查后端服务状态。', type: 'error' });
+    }
+  };
 
   const handleNativeSelectFiles = async () => {
     if (window.electronAPI?.showOpenDialog) {
@@ -192,17 +199,22 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
       });
       if (!res.canceled && res.filePaths.length > 0) {
         setUploading(true);
+        const regionToTag = (activeTab === 'venue' || activeTab === 'lesson') ? selectedRegion : undefined;
         try {
           for (let i = 0; i < res.filePaths.length; i++) {
             const p = res.filePaths[i];
             const name = p.split(/[/\\]/).pop() || p;
             setUploadProgressText(`正在导入 (${i + 1}/${res.filePaths.length}): ${name}...`);
-            await importLocalMaterial(activeTab, p);
+            await importLocalMaterial(activeTab, p, regionToTag);
           }
-          await loadData(activeTab);
+          await loadData(activeTab, filterRegion);
           showToast(`成功导入 ${res.filePaths.length} 个本地素材`);
-        } catch (err) {
-          showAlert({ title: '本地导入失败', message: '本地导入失败，请检查文件是否存在且有读取权限。', type: 'error' });
+        } catch (err: any) {
+          const detail = err?.response?.data?.detail;
+          const msg = typeof detail === 'string'
+            ? detail
+            : (err?.message ? `本地导入失败: ${err.message}` : '本地导入失败，请检查文件是否存在且有读取权限。');
+          showAlert({ title: '本地导入失败', message: msg, type: 'error' });
         } finally {
           setUploading(false);
           setUploadProgressText('');
@@ -216,6 +228,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
   const uploadFileList = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
     setUploading(true);
+    const regionToTag = (activeTab === 'venue' || activeTab === 'lesson') ? selectedRegion : undefined;
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -223,16 +236,20 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
         const nativePath = (file as any).path;
         if (nativePath && window.electronAPI) {
           setUploadProgressText(`正在极速导入 (${i + 1}/${files.length}): ${file.name}...`);
-          await importLocalMaterial(activeTab, nativePath);
+          await importLocalMaterial(activeTab, nativePath, regionToTag);
         } else {
           setUploadProgressText(`正在上传 (${i + 1}/${files.length}): ${file.name}...`);
-          await uploadMaterial(activeTab, file);
+          await uploadMaterial(activeTab, file, regionToTag);
         }
       }
-      await loadData(activeTab);
+      await loadData(activeTab, filterRegion);
       showToast(`成功上传 ${files.length} 个素材`);
-    } catch (err) {
-      showAlert({ title: '上传失败', message: '素材上传失败，请确保后端服务正常运行。', type: 'error' });
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : (err?.message ? `素材上传失败: ${err.message}` : '素材上传失败，请确保后端服务正常运行。');
+      showAlert({ title: '上传失败', message: msg, type: 'error' });
     } finally {
       setUploading(false);
       setUploadProgressText('');
@@ -417,6 +434,24 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
               : `拖拽视频至此处，或点击下方按钮选择文件`}
           </span>
 
+          {(activeTab === 'venue' || activeTab === 'lesson') && (
+            <div className="flex items-center gap-2 mb-3 bg-blue-50/70 border border-blue-200/80 px-3.5 py-1.5 rounded-xl shadow-xs">
+              <span className="text-xs text-blue-900 font-medium whitespace-nowrap">所属车牌/城市:</span>
+              <select
+                value={selectedRegion}
+                onChange={(e) => {
+                  setSelectedRegion(e.target.value);
+                  localStorage.setItem('videocut_upload_region', e.target.value);
+                }}
+                className="text-xs font-semibold text-blue-700 bg-white px-2 py-1 rounded-md border border-blue-200 outline-none cursor-pointer hover:border-blue-400"
+              >
+                {ZHEJIANG_REGIONS.map(r => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="flex items-center space-x-3 mb-2">
             <button
               type="button"
@@ -452,6 +487,33 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
             <span>{cleaning ? '正在深度整理...' : '查重与整理素材'}</span>
           </button>
         </div>
+
+        {(activeTab === 'venue' || activeTab === 'lesson') && (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
+            <span className="text-xs text-gray-400 whitespace-nowrap mr-1 font-medium">地区筛选:</span>
+            <button
+              type="button"
+              onClick={() => setFilterRegion('')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
+                !filterRegion ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              全部地市
+            </button>
+            {ZHEJIANG_REGIONS.map(r => (
+              <button
+                key={r.code}
+                type="button"
+                onClick={() => setFilterRegion(filterRegion === r.code ? '' : r.code)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition cursor-pointer ${
+                  filterRegion === r.code ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {loading ? (
           <div className="py-12 text-center text-gray-400 text-sm">加载中...</div>
@@ -534,9 +596,27 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
 
                 {/* 底部详情与显式播放入口 */}
                 <div className="p-3.5 flex flex-col justify-between flex-1 bg-white">
-                  <p className="text-xs font-semibold text-gray-800 truncate" title={m.filename}>
-                    {m.filename}
-                  </p>
+                  <div className="flex items-center justify-between gap-1.5">
+                    <p className="text-xs font-semibold text-gray-800 truncate flex-1" title={m.filename}>
+                      {m.filename}
+                    </p>
+                    {(m.category === 'venue' || m.category === 'lesson' || m.plate_region) && (
+                      <div className="relative inline-flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={m.plate_region || ''}
+                          onChange={(e) => handleUpdateRegion(m.id, e.target.value)}
+                          className="text-[11px] font-semibold pl-2 pr-4 py-0.5 rounded-md border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 cursor-pointer outline-none appearance-none"
+                          title="点击切换所属城市"
+                        >
+                          <option value="" disabled>未标注地区</option>
+                          {ZHEJIANG_REGIONS.map(r => (
+                            <option key={r.code} value={r.code}>{r.label}</option>
+                          ))}
+                        </select>
+                        <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-sky-600 pointer-events-none">▼</span>
+                      </div>
+                    )}
+                  </div>
                   <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100">
                     <span className="text-[11px] text-gray-400 font-mono">
                       {m.width}x{m.height} · {m.fps} FPS

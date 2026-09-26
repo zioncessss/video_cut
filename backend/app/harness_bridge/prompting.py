@@ -69,6 +69,11 @@ def build_scene_decision_prompt(subtitles: List[Dict[str, Any]]) -> str:
     loc = glossary.get("location") or {}
     background_hint = str(loc.get("prompt_hint", "")).strip() or "（词库未配置背景信息）"
 
+    # 012: 学车特点库（封面底部钩子标题的唯一事实源，storage/glossary.json cover_hooks.hooks，编辑即生效）
+    hooks_raw = glossary.get("cover_hooks") or {}
+    hooks_list = [str(h).strip() for h in (hooks_raw.get("hooks") if isinstance(hooks_raw, dict) else None) or [] if str(h).strip()]
+    hooks_hint = "、".join(hooks_list[:20]) if hooks_list else "（词库未配置 cover_hooks.hooks）"
+
     # 精简输入字幕字段，极速传输
     clean_subs = [
         {
@@ -81,10 +86,11 @@ def build_scene_decision_prompt(subtitles: List[Dict[str, Any]]) -> str:
     ]
 
     return (
-        "你是驾校口播短视频的智能剪辑导演。口播视频原声与字幕全程保留，你的任务有三个：\n"
+        "你是驾校口播短视频的智能剪辑导演。口播视频原声与字幕全程保留，你的任务有四个：\n"
         "1. 【提炼爆款短视频标题 (video_title)】：通读全篇口播与地域重点，提炼一个 10~18 字以内直击学员痛点/焦点的短视频爆款标题（如'杭州驾校迎来大改革！学车一口价全包手把手教学'，通俗吸睛、杜绝虚假）；\n"
-        "2. 【智能空镜切入指示 (broll_cues)】：识别与以下三类场景【强相关】的语段，并输出建议切入空镜的区间清单；\n"
-        "3. 【大模型自主语义高光词提取 (highlights)】：请充分发挥大模型的地理常识与商业语义理解能力，为每句自主提取 1~2 个最关键的高价值词（宁缺毋滥，无重点句子对应空数组 []）：\n"
+        "2. 【提炼爆款封面标题组 (suggested_cover_titles)】：封面为双标题结构——上方 location_tag 地域大字（从口播提取同城地名+'学车'，如'杭州学车'、'临平学车'、'武义学车'，精准到区县，排版时不挡人脸）；下方 main_title 钩子大字（4~10 字，优先从【学车特点库】选用，并结合口播字幕中【明确出现】的数字/价格/承诺改写：如口播明确说'2980'可写'2980明码标价'，明确说'收费透明'可写'费用全透明'；口播中没有的数字与承诺严禁编造）；sub_title 小补充标签 3~6字；rationale 一句话推荐理由；style_hint 推荐模板 sticker_double_stroke | split_contrast_bar | rainbow_arc_header | bottom_fog_vignette | angled_impact_stamp | clean_editorial；\n"
+        "3. 【智能空镜切入指示 (broll_cues)】：识别与以下三类场景【强相关】的语段，并输出建议切入空镜的区间清单；\n"
+        "4. 【大模型自主语义高光词提取 (highlights)】：请充分发挥大模型的地理常识与商业语义理解能力，为每句自主提取 1~2 个最关键的高价值词（宁缺毋滥，无重点句子对应空数组 []）：\n"
         "   - 【地名/区域/校区 (category: 'location')】：充分发挥你的中国地理知识库，自主识别任何省/市/区/县/街道/地标（如'安吉'、'富阳'、'诸暨'、'义乌'、'桐庐'、'德清'、'余杭'、'西湖'等任意区县名，依靠地理常识自主提取，切勿局限于少数大城市！）；\n"
         "   - 【费用/保障/痛点 (category: 'price')】：具体金额、各类费用项（补训费、燃油费、模拟费、学费等）、收费承诺（一口价、全包、透明收费、无隐形消费等）。【排比句高度对称】：连续提及费用时同类项必须全部高亮，严禁前后遗漏！\n"
         "   - 【考点/技能/承诺 (category: 'exam')】：科目二、倒库、一把过、手把手教学等。\n\n"
@@ -93,6 +99,12 @@ def build_scene_decision_prompt(subtitles: List[Dict[str, Any]]) -> str:
         "2. venue: 场地空镜（提到训练场、考场、校区、门店、五万平、周边实景环境等）\n"
         "3. experience: 体验空镜（提到报名咨询、体检、拍照、拿证等学员流程）\n\n"
         f"【地域背景】：{background_hint}\n\n"
+        f"【学车特点库（main_title 优先从中选用并结合口播实际细节改写）】：{hooks_hint}\n\n"
+        "【封面双标题真实爆款实例（同城驾校高转化账号风格，仅供风格参考；地名必须换成本工程口播中实际提取的地名，数字必须来自口播原文）】：\n"
+        "  - 杭州学车 × 2980明码标价 × 先试后报名\n"
+        "  - 萧山学车 × 费用全透明 × 来看\n"
+        "  - 临平学车 × 教练全程带你飞 × 赶紧看\n"
+        "  - 余杭学车 × 每天都能来练车 × 超安心\n\n"
         "【三大严禁切镜红线（绝对禁止输出切镜区间）】：\n"
         "1. 开场前 1.8 秒口播真人亮相（主播出镜建立信任），前 1.8 秒内绝对不要切镜；\n"
         "2. 价格手势句：比划报价话术（如「这个数」「这个价」「这么多」）绝不切镜，手势本身是内容；\n"
@@ -103,6 +115,10 @@ def build_scene_decision_prompt(subtitles: List[Dict[str, Any]]) -> str:
         "- 严格只返回纯 JSON，没有任何 Markdown 标记或额外解释，格式如下：\n"
         "{\n"
         '  "video_title": "杭州驾校迎来大改革：学车一口价全包手把手教学",\n'
+        '  "suggested_cover_titles": [\n'
+        '    {"location_tag": "杭州学车", "main_title": "2980明码标价", "sub_title": "先试后报名", "rationale": "价格直击+试学承诺，特点库结合口播实际报价改写", "style_hint": "sticker_double_stroke"},\n'
+        '    {"location_tag": "金东学车", "main_title": "费用全透明", "sub_title": "避坑课", "rationale": "区县精准定向+透明消费", "style_hint": "split_contrast_bar"}\n'
+        '  ],\n'
         '  "broll_cues": [\n'
         '    {"start_time": 18.5, "end_time": 23.2, "category": "venue", "visual_intent": "低价套路引出驾校实景门面"}\n'
         '  ],\n'

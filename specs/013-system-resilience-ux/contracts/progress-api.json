@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PipelineProgressResponse",
+  "description": "剪辑任务实时处理阶段与进度查询接口契约",
+  "type": "object",
+  "properties": {
+    "project_id": { "type": "string" },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "audio_extracting",
+        "asr_transcribing",
+        "llm_correcting",
+        "scene_deciding",
+        "broll_matching",
+        "video_composing",
+        "completed",
+        "failed"
+      ]
+    },
+    "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "message": { "type": "string" },
+    "updated_at": { "type": "number" }
+  },
+  "required": ["project_id", "stage", "percent", "message", "updated_at"]
+}

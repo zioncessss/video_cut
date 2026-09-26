@@ -6,6 +6,8 @@ directories:
   output: dist
   buildResources: resources
 
+publish: null
+
 files:
   - out/**/*
   - "!resources/**/*"
@@ -31,6 +33,7 @@ win:
   icon: resources/icon.ico
 
 nsis:
+  include: resources/installer.nsh
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
@@ -39,6 +42,7 @@ nsis:
   shortcutName: VideoCut 极速剪辑
   artifactName: ${productName}-Setup-${version}.${ext}
   uninstallDisplayName: ${productName} 卸载
+  deleteAppDataOnUninstall: false
 
 mac:
   target:

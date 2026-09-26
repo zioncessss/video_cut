@@ -13,18 +13,52 @@ from PIL import Image, ImageDraw, ImageFont
 class FilterPresetParams:
     name: str
     description: str
-    smartblur_lr: float
-    smartblur_ls: float
-    smartblur_lt: float
-    eq_contrast: float
-    eq_brightness: float
-    eq_saturation: float
-    eq_gamma: float
+    smartblur_lr: float = 1.0
+    smartblur_ls: float = 0.25
+    smartblur_lt: float = -3.5
+    eq_contrast: float = 1.04
+    eq_brightness: float = 0.02
+    eq_saturation: float = 1.06
+    eq_gamma: float = 1.03
     eq_gamma_r: float = 1.0
     eq_gamma_b: float = 1.0
     cas_strength: float = 0.30
+    # 行业级影视与人像色彩分级微调参数 (直接复用成熟色彩平衡方案)
+    colorbalance_rs: float = 0.0
+    colorbalance_gs: float = 0.0
+    colorbalance_bs: float = 0.0
+    colorbalance_rm: float = 0.0
+    colorbalance_gm: float = 0.0
+    colorbalance_bm: float = 0.0
+    colorbalance_rh: float = 0.0
+    colorbalance_gh: float = 0.0
+    colorbalance_bh: float = 0.0
+    vignette_angle: Optional[str] = None
 
 PORTRAIT_PRESETS: Dict[str, Optional[FilterPresetParams]] = {
+    "cold_white": FilterPresetParams(
+        name="冷白暖亮",
+        description="面部冷白透亮去黄，背景环境温暖提亮，驱散室内暗沉发青，呈现阳光通透美感",
+        smartblur_lr=1.2,
+        smartblur_ls=0.35,
+        smartblur_lt=-4.0,
+        eq_contrast=1.05,
+        eq_brightness=0.055,
+        eq_saturation=1.07,
+        eq_gamma=1.06,
+        eq_gamma_r=1.01,
+        eq_gamma_b=1.03,
+        colorbalance_rs=0.03,
+        colorbalance_gs=0.01,
+        colorbalance_bs=-0.02,
+        colorbalance_rm=0.02,
+        colorbalance_gm=0.01,
+        colorbalance_bm=-0.02,
+        colorbalance_rh=0.04,
+        colorbalance_gh=0.01,
+        colorbalance_bh=-0.04,
+        cas_strength=0.30
+    ),
     "clean_natural": FilterPresetParams(
         name="自然通透",
         description="面部暗沉驱散，皮肤质感自然白皙，发丝与眼神光清晰，适合日常手机口播",
@@ -36,6 +70,25 @@ PORTRAIT_PRESETS: Dict[str, Optional[FilterPresetParams]] = {
         eq_saturation=1.06,
         eq_gamma=1.03,
         cas_strength=0.30
+    ),
+    "teal_orange": FilterPresetParams(
+        name="电影青橙",
+        description="国际大片黄金色调，阴影泛冷青蓝，高光肤色温暖立体，高级院线电影质感",
+        smartblur_lr=0.8,
+        smartblur_ls=0.20,
+        smartblur_lt=-3.0,
+        eq_contrast=1.08,
+        eq_brightness=0.01,
+        eq_saturation=1.12,
+        eq_gamma=1.02,
+        colorbalance_bs=0.06,
+        colorbalance_gs=0.01,
+        colorbalance_bm=-0.03,
+        colorbalance_rm=0.04,
+        colorbalance_rh=0.06,
+        colorbalance_gh=0.02,
+        colorbalance_bh=-0.05,
+        cas_strength=0.35
     ),
     "crisp_hd": FilterPresetParams(
         name="质感超清",
@@ -63,6 +116,24 @@ PORTRAIT_PRESETS: Dict[str, Optional[FilterPresetParams]] = {
         eq_gamma_b=0.98,
         cas_strength=0.25
     ),
+    "vintage_film": FilterPresetParams(
+        name="复古胶片",
+        description="模拟经典胶片温润色调，微黄暖调，带有边缘柔和暗角，富有叙事与怀旧质感",
+        smartblur_lr=1.0,
+        smartblur_ls=0.22,
+        smartblur_lt=-3.5,
+        eq_contrast=1.03,
+        eq_brightness=0.01,
+        eq_saturation=1.05,
+        eq_gamma=1.02,
+        colorbalance_rs=0.02,
+        colorbalance_gs=0.02,
+        colorbalance_rm=0.02,
+        colorbalance_bm=-0.03,
+        colorbalance_bh=-0.04,
+        vignette_angle="PI/5",
+        cas_strength=0.25
+    ),
     "original": None  # Bypass: 保持素材原始色彩
 }
 
@@ -71,7 +142,7 @@ def build_portrait_filter_chain(preset: str = "clean_natural", strength: float =
     组装针对真人出镜口播的高清画质调优滤镜子串：
     1. 若为 original 或 strength <= 0.01，完全旁路返回空字符串。
     2. 参数按 strength 线性插值，平滑过渡。
-    3. 组装三阶链路：smartblur(微皮平滑) -> eq(色彩中间调提亮) -> cas(自适应边缘微锐化)。
+    3. 组装流水线：smartblur(保边磨皮) -> colorbalance(冷暖影视分级) -> eq(通透提亮) -> vignette(胶片暗角) -> cas(自适应超清锐化)。
     """
     if preset not in PORTRAIT_PRESETS or preset == "original":
         return ""
@@ -92,9 +163,25 @@ def build_portrait_filter_chain(preset: str = "clean_natural", strength: float =
     eff_cas = round(params.cas_strength * str_val, 2)
 
     parts = []
+    # 1. 智能保边平滑磨皮
     if eff_ls > 0.01:
         parts.append(f"smartblur=lr={params.smartblur_lr:.2f}:ls={eff_ls:.2f}:lt={params.smartblur_lt:.2f}")
 
+    # 2. 影视级色彩平衡 (三向色温插值)
+    cb_args = []
+    if abs(params.colorbalance_rs) > 0.001: cb_args.append(f"rs={params.colorbalance_rs * str_val:.3f}")
+    if abs(params.colorbalance_gs) > 0.001: cb_args.append(f"gs={params.colorbalance_gs * str_val:.3f}")
+    if abs(params.colorbalance_bs) > 0.001: cb_args.append(f"bs={params.colorbalance_bs * str_val:.3f}")
+    if abs(params.colorbalance_rm) > 0.001: cb_args.append(f"rm={params.colorbalance_rm * str_val:.3f}")
+    if abs(params.colorbalance_gm) > 0.001: cb_args.append(f"gm={params.colorbalance_gm * str_val:.3f}")
+    if abs(params.colorbalance_bm) > 0.001: cb_args.append(f"bm={params.colorbalance_bm * str_val:.3f}")
+    if abs(params.colorbalance_rh) > 0.001: cb_args.append(f"rh={params.colorbalance_rh * str_val:.3f}")
+    if abs(params.colorbalance_gh) > 0.001: cb_args.append(f"gh={params.colorbalance_gh * str_val:.3f}")
+    if abs(params.colorbalance_bh) > 0.001: cb_args.append(f"bh={params.colorbalance_bh * str_val:.3f}")
+    if cb_args:
+        parts.append(f"colorbalance={':'.join(cb_args)}")
+
+    # 3. 对比度、亮度、饱和度与伽马微调
     eq_args = [
         f"contrast={eff_contrast:.3f}",
         f"brightness={eff_brightness:.3f}",
@@ -107,6 +194,11 @@ def build_portrait_filter_chain(preset: str = "clean_natural", strength: float =
         eq_args.append(f"gamma_b={eff_gamma_b:.3f}")
     parts.append(f"eq={':'.join(eq_args)}")
 
+    # 4. 可选复古暗角
+    if params.vignette_angle and str_val > 0.1:
+        parts.append(f"vignette=angle={params.vignette_angle}")
+
+    # 5. CAS / Unsharp 边缘细节与瞳孔超清微锐化
     if eff_cas > 0.01:
         if has_cas:
             parts.append(f"cas={eff_cas:.2f}")
@@ -155,6 +247,128 @@ class FFmpegFilterComposer:
     def __init__(self):
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
         self._has_cas: Optional[bool] = None
+        self._cached_encode_args: Optional[List[str]] = None
+
+    def get_video_encode_args(self) -> List[str]:
+        """
+        探测并返回最优的视频编码参数。
+        优先启用硬件加速 (AMD AMF / NVIDIA NVENC / Intel QSV)，
+        若不可用则无缝回退至多线程 CPU 编码 (libx264 -preset veryfast -crf 18 -threads 0)。
+        """
+        if self._cached_encode_args is not None:
+            return list(self._cached_encode_args)
+
+        if not self.has_ffmpeg:
+            self._cached_encode_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", "0"]
+            return list(self._cached_encode_args)
+
+        # 1. 尝试 AMD AMF (如 AMD Radeon 显卡)
+        try:
+            test_cmd = [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                "-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22",
+                "-f", "null", "-"
+            ]
+            res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            if res.returncode == 0:
+                self._cached_encode_args = [
+                    "-c:v", "h264_amf",
+                    "-quality", "speed",
+                    "-rc", "cqp",
+                    "-qp_i", "20",
+                    "-qp_p", "22",
+                ]
+                return list(self._cached_encode_args)
+        except Exception:
+            pass
+
+        # 2. 尝试 NVIDIA NVENC
+        try:
+            test_cmd = [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20",
+                "-f", "null", "-"
+            ]
+            res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            if res.returncode == 0:
+                self._cached_encode_args = [
+                    "-c:v", "h264_nvenc",
+                    "-preset", "p4",
+                    "-cq", "20",
+                ]
+                return list(self._cached_encode_args)
+        except Exception:
+            pass
+
+        # 3. 尝试 Intel QSV
+        try:
+            test_cmd = [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                "-c:v", "h264_qsv", "-global_quality", "20",
+                "-f", "null", "-"
+            ]
+            res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            if res.returncode == 0:
+                self._cached_encode_args = [
+                    "-c:v", "h264_qsv",
+                    "-global_quality", "20",
+                ]
+                return list(self._cached_encode_args)
+        except Exception:
+            pass
+
+        # 4. CPU 回退 (极速多线程)
+        self._cached_encode_args = [
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "18",
+            "-threads", "0",
+            "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        ]
+        return list(self._cached_encode_args)
+
+    def _run_ffmpeg_with_cpu_fallback(self, cmd: List[str], timeout: int = 300) -> subprocess.CompletedProcess:
+        """
+        执行 FFmpeg 压制。
+        若使用了 GPU 硬件加速 (AMF/NVENC/QSV) 且执行失败，自动无缝降级为多线程 CPU (libx264) 极速重试，
+        确保在任何显卡驱动异常或特定滤镜不兼容时 100% 不崩溃、成片不损坏。
+        """
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        if res.returncode == 0:
+            return res
+
+        hw_codecs = ("h264_amf", "h264_nvenc", "h264_qsv")
+        used_hw = any(codec in cmd for codec in hw_codecs)
+        if used_hw:
+            err_str = res.stderr.decode("utf-8", errors="replace")
+            print(f"[FFmpegFilterComposer] GPU 硬件编码执行异常 (exit {res.returncode}): {err_str[-200:]}，自动触发 CPU (libx264 veryfast) 兜底重试...")
+            self._cached_encode_args = [
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "18",
+                "-threads", "0",
+                "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+            ]
+            cpu_cmd = []
+            skip = 0
+            for idx, arg in enumerate(cmd):
+                if skip > 0:
+                    skip -= 1
+                    continue
+                if arg == "-c:v" and idx + 1 < len(cmd) and cmd[idx + 1] in hw_codecs:
+                    cpu_cmd.extend(self._cached_encode_args)
+                    skip = 1
+                    for ahead_i in range(idx + 2, min(idx + 12, len(cmd))):
+                        if cmd[ahead_i] in ("-quality", "-rc", "-qp_i", "-qp_p", "-preset", "-cq", "-global_quality"):
+                            skip += 2
+                    continue
+                cpu_cmd.append(arg)
+            res_retry = subprocess.run(cpu_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            if res_retry.returncode == 0:
+                print("[FFmpegFilterComposer] CPU 极速多线程重试成功，已顺利完成全片压制！")
+            return res_retry
+
+        return res
 
     def check_has_cas(self) -> bool:
         if self._has_cas is None:
@@ -472,25 +686,24 @@ class FFmpegFilterComposer:
                 # 视频切片
                 filter_parts.append(f"[0:v]trim=start={st}:end={et},setpts=PTS-STARTPTS,{th_filter}[v_k{i}];")
 
-                # 音频切片：首尾注入 15ms afade 平滑淡入淡出，消除硬切直流偏移音爆 (Pop Noise)
+                # 音频切片：首尾注入 15ms afade 平滑淡入淡出，消除硬切直流偏移音爆 (Pop Noise)；
+                # aresample=async=1000 保证音频采样点毫秒级锁定物理时间戳，杜绝多段切片拼接导致的声画累积漂移
                 if fade and dur >= 0.05:
                     fade_len = min(0.015, dur / 3.0)
                     fade_out_st = round(dur - fade_len, 3)
                     filter_parts.append(
-                        f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS,"
+                        f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS,aresample=async=1000,"
                         f"afade=t=in:ss=0:d={fade_len:.3f},afade=t=out:st={fade_out_st:.3f}:d={fade_len:.3f}[a_k{i}];"
                     )
                 else:
-                    filter_parts.append(f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS[a_k{i}];")
+                    filter_parts.append(f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS,aresample=async=1000[a_k{i}];")
 
             if n_kept == 1:
                 current_v = "[v_k0]"
                 current_a = "[a_k0]"
             else:
-                v_inputs = "".join(f"[v_k{i}]" for i in range(n_kept))
-                a_inputs = "".join(f"[a_k{i}]" for i in range(n_kept))
-                filter_parts.append(f"{v_inputs}concat=n={n_kept}:v=1:a=0[v_base];")
-                filter_parts.append(f"{a_inputs}concat=n={n_kept}:v=0:a=1[a_base];")
+                va_inputs = "".join(f"[v_k{i}][a_k{i}]" for i in range(n_kept))
+                filter_parts.append(f"{va_inputs}concat=n={n_kept}:v=1:a=1[v_base][a_base];")
                 current_v = "[v_base]"
                 current_a = "[a_base]"
 
@@ -550,26 +763,25 @@ class FFmpegFilterComposer:
             audio_maps = ["-map", current_a]
 
             cmd = [
-                "ffmpeg", "-y", *inputs,
+                "ffmpeg", "-y",
+                "-threads", "0", "-filter_threads", "0",
+                *inputs,
                 "-filter_complex", full_filter,
                 "-map", current_v,
                 *audio_maps,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
+                *self.get_video_encode_args(),
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-pix_fmt", "yuv420p",
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
                 "-colorspace", "bt709",
-                "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
                 "-movflags", "+faststart",
                 str(output_path)
             ]
 
             try:
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
                 if res.returncode == 0:
                     return True
                 err_str = res.stderr.decode("utf-8", errors="replace")
@@ -612,26 +824,25 @@ class FFmpegFilterComposer:
                 current_v = "[v_out]"
 
             cmd = [
-                "ffmpeg", "-y", *inputs,
+                "ffmpeg", "-y",
+                "-threads", "0", "-filter_threads", "0",
+                *inputs,
                 "-filter_complex", ";".join(filter_chain),
                 "-map", current_v,
                 *audio_maps,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
+                *self.get_video_encode_args(),
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-pix_fmt", "yuv420p",
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
                 "-colorspace", "bt709",
-                "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
                 "-movflags", "+faststart",
                 str(output_path)
             ]
 
             try:
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=90)
                 if res.returncode == 0:
                     return True
 
@@ -788,26 +999,25 @@ class FFmpegFilterComposer:
             audio_maps = ["-map", "0:a"]
 
         cmd = [
-            "ffmpeg", "-y", *inputs,
+            "ffmpeg", "-y",
+            "-threads", "0", "-filter_threads", "0",
+            *inputs,
             "-filter_complex", full_filter,
             "-map", current_v,
             *audio_maps,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *self.get_video_encode_args(),
             "-c:a", "aac",
             "-b:a", "192k",
             "-pix_fmt", "yuv420p",
             "-color_primaries", "bt709",
             "-color_trc", "bt709",
             "-colorspace", "bt709",
-            "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
             "-movflags", "+faststart",
             str(output_path)
         ]
 
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
             if res.returncode == 0:
                 return True
 

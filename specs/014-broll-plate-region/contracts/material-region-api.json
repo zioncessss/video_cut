@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Material Region API Contract",
+  "description": "API contract for material upload, import, and in-place region update",
+  "endpoints": [
+    {
+      "path": "/api/v1/materials/upload",
+      "method": "POST",
+      "consumes": "multipart/form-data",
+      "parameters": {
+        "category": {
+          "type": "string",
+          "enum": ["venue", "lesson", "experience", "talking_head"],
+          "required": true
+        },
+        "file": {
+          "type": "binary",
+          "required": true
+        },
+        "plate_region": {
+          "type": "string",
+          "description": "Standard Zhejiang plate region code, e.g. '浙E·湖州'",
+          "required": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "category": { "type": "string" },
+          "filename": { "type": "string" },
+          "filepath": { "type": "string" },
+          "plate_region": { "type": "string", "nullable": true }
+        }
+      }
+    },
+    {
+      "path": "/api/v1/materials/import-local",
+      "method": "POST",
+      "consumes": "application/json",
+      "body": {
+        "type": "object",
+        "required": ["category", "file_path"],
+        "properties": {
+          "category": { "type": "string" },
+          "file_path": { "type": "string" },
+          "plate_region": { "type": "string", "nullable": true }
+        }
+      }
+    },
+    {
+      "path": "/api/v1/materials/{material_id}/region",
+      "method": "PATCH",
+      "consumes": "application/json",
+      "description": "In-place update of material plate_region tag without re-uploading",
+      "parameters": {
+        "material_id": { "type": "string", "required": true }
+      },
+      "body": {
+        "type": "object",
+        "required": ["plate_region"],
+        "properties": {
+          "plate_region": { "type": "string", "description": "e.g. '浙A·杭州'" }
+        }
+      },
+      "response": {
+        "status": 200,
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "plate_region": { "type": "string" }
+        }
+      }
+    },
+    {
+      "path": "/api/v1/regions/zhejiang",
+      "method": "GET",
+      "description": "Fetch standard list of 11 Zhejiang cities with plate prefixes and districts",
+      "response": {
+        "status": 200,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "code": { "type": "string", "example": "浙E·湖州" },
+            "plate_prefix": { "type": "string", "example": "浙E" },
+            "city_name": { "type": "string", "example": "湖州" },
+            "districts": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  ]
+}

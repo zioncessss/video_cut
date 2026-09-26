@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) { $VenvPython = "python" }
+$exeName = "videocut-engine.exe"
 
 Write-Host "[1/4] Ensuring PyInstaller is available..."
 $VenvBin = Split-Path -Parent $VenvPython
@@ -15,6 +16,7 @@ if (-not (Test-Path $PyInstExe)) { throw "PyInstaller unavailable (tried: uv pip
 Write-Host "[2/4] Packing backend with PyInstaller (collect faster-whisper/ctranslate2)..."
 $WorkPath = Join-Path $Root "build_engine"
 $DistPath = Join-Path $WorkPath "dist"
+$SchemaSrc = Join-Path $Root "backend\app\db\schema.sql"
 & $VenvPython -m PyInstaller `
   --noconfirm --clean `
   --name videocut-engine `
@@ -27,6 +29,7 @@ $DistPath = Join-Path $WorkPath "dist"
   --hidden-import uvicorn.protocols.http.auto `
   --hidden-import uvicorn.protocols.websockets.auto `
   --hidden-import uvicorn.lifespan.on `
+  --add-data "$SchemaSrc`;app/db" `
   (Join-Path $Root "backend\engine_main.py") `
   --distpath $DistPath --workpath (Join-Path $WorkPath "work") --specpath $WorkPath
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
@@ -40,7 +43,7 @@ if (-not (Test-Path (Join-Path $AppDir $exeName))) { throw "Build output not fou
 if (Test-Path $TargetDir) { Remove-Item $TargetDir -Recurse -Force }
 Copy-Item $AppDir $TargetDir -Recurse -Force
 
-Write-Host "[4/4] Copying FFmpeg into resources/engine/bin (if found on PATH)..."
+Write-Host "[4/4] Copying FFmpeg & Seeding default storage..."
 $BinDir = Join-Path $EngineDir "bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $ffmpegSrc = (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue).Source
@@ -48,5 +51,14 @@ if ($ffmpegSrc) { Copy-Item $ffmpegSrc (Join-Path $BinDir "ffmpeg.exe") -Force; 
 else { Write-Host "  [WARN] ffmpeg.exe not found on PATH; put it into resources/engine/bin manually" }
 $ffprobeSrc = (Get-Command ffprobe.exe -ErrorAction SilentlyContinue).Source
 if ($ffprobeSrc) { Copy-Item $ffprobeSrc (Join-Path $BinDir "ffprobe.exe") -Force }
+
+$DefStorageDir = Join-Path $Root "resources\default_storage"
+New-Item -ItemType Directory -Force -Path $DefStorageDir | Out-Null
+if (Test-Path (Join-Path $Root "storage\glossary.json")) {
+    Copy-Item (Join-Path $Root "storage\glossary.json") (Join-Path $DefStorageDir "glossary.json") -Force
+}
+if (Test-Path (Join-Path $Root "storage\banned_words.json")) {
+    Copy-Item (Join-Path $Root "storage\banned_words.json") (Join-Path $DefStorageDir "banned_words.json") -Force
+}
 
 Write-Host "Done: $TargetDir\$exeName"

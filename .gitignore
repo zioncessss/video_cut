@@ -77,3 +77,11 @@ resources/engine/
 
 # Mimosa 安全扫描工具本地状态
 .mimosa/
+
+# Local Scratch and Test Artifacts
+scratch/
+test_concat.txt
+storage/*.jpg
+storage/frames_scan/
+storage/test_video_frames/
+backend/storage/

@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Scene Decision Region & Anti-Leak Contract",
+  "description": "Contract for ASR geographic deduction and strict anti-leak b-roll allocation",
+  "asr_region_deduction": {
+    "input": {
+      "type": "array",
+      "items": {
+        "id": { "type": "string" },
+        "corrected_text": { "type": "string" }
+      }
+    },
+    "output": {
+      "target_region": {
+        "type": "string",
+        "description": "Deduced Zhejiang region code, e.g. '浙E·湖州'",
+        "example": "浙E·湖州"
+      },
+      "confidence": {
+        "type": "number",
+        "description": "Detection score / confidence",
+        "example": 18
+      },
+      "matched_keywords": {
+        "type": "array",
+        "items": { "type": "string" },
+        "example": ["湖州", "长兴", "考场"]
+      }
+    }
+  },
+  "broll_allocation_rules": {
+    "candidate_filter": "material.category == requested_cat AND material.plate_region == target_region",
+    "scarcity_behavior": {
+      "sufficient": "Pick without consecutive repetition",
+      "scarce": "Loop local city materials with different time offsets",
+      "empty": "Set broll_category=null and retain talking-head video. STRICTLY PROHIBIT cross-city injection."
+    }
+  }
+}

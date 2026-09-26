@@ -54,6 +54,8 @@ def test_saving_multiple_projects_for_same_material():
     assert project_storage_service.get_by_project_id("proj-ver-2") is not None
 
 def test_self_healing_from_task_manifest(tmp_path):
+    storage = StorageService()
+    mat = storage.save_material(MaterialCategory.TALKING_HEAD, "th_heal_test.mp4", b"dummy_th_heal_bytes_123")
     task_dir = TASKS_DIR / "20260999_999999_test_heal_task"
     task_dir.mkdir(parents=True, exist_ok=True)
     
@@ -79,7 +81,7 @@ def test_self_healing_from_task_manifest(tmp_path):
         "title": "自动自愈成片",
         "aspect_ratio": "9:16",
         "status": "completed",
-        "talking_head_id": "th-dummy-heal-id",
+        "talking_head_id": mat.id,
         "task_dir": str(task_dir.relative_to(STORAGE_DIR.parent)).replace("\\", "/"),
         "output_video_path": str(vid_file.relative_to(STORAGE_DIR.parent)).replace("\\", "/"),
         "cover_image_path": None,

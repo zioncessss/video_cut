@@ -10,8 +10,11 @@ import {
   deleteProject,
   batchDeleteProjects,
   renderProject,
+  cancelBatchJob,
+  retryFailedBatchJob,
   ProjectSummary
 } from '../services/api';
+import { formatRegionBadge } from '../constants/regions';
 import { useDialog } from '../components/common/CustomDialog';
 import {
   Cpu,
@@ -31,7 +34,12 @@ import {
   CheckSquare,
   Square,
   Check,
-  Zap
+  Zap,
+  AlertTriangle,
+  RotateCcw,
+  MapPin,
+  ChevronRight,
+  ChevronsUpDown
 } from 'lucide-react';
 
 interface BatchCutProps {
@@ -43,6 +51,8 @@ const ITEM_STATUS_META: Record<string, { label: string; cls: string }> = {
   running: { label: '剪辑中', cls: 'bg-indigo-50 text-indigo-600 animate-pulse' },
   completed: { label: '已完成', cls: 'bg-emerald-50 text-emerald-600' },
   failed: { label: '失败', cls: 'bg-red-50 text-red-600' },
+  canceled: { label: '已取消', cls: 'bg-gray-100 text-gray-400' },
+  interrupted: { label: '已中断', cls: 'bg-amber-50 text-amber-600' },
 };
 
 export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
@@ -59,6 +69,13 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
+  const [uploadingState, setUploadingState] = useState<{
+    totalFiles: number;
+    totalBytes: number;
+    loadedBytes: number;
+    percent: number;
+    filenames: string[];
+  } | null>(null);
 
   // 弹窗成片预览播放
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
@@ -66,12 +83,37 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
   // 封面容错与卡片独立渲染态
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+  const [imageLoaded, setImageLoaded] = useState<Record<string, boolean>>({});
+  const [imageRetryCounts, setImageRetryCounts] = useState<Record<string, number>>({});
+  const [imageRetryTimestamps, setImageRetryTimestamps] = useState<Record<string, number>>({});
   const [renderingProjectIds, setRenderingProjectIds] = useState<Record<string, boolean>>({});
+  // 批次卡片折叠/展开状态字典 (job_id -> boolean)
+  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
+
+  const toggleJobExpanded = (jobId: string, defaultExpanded: boolean = true) => {
+    setExpandedJobs(prev => {
+      const current = prev[jobId] !== undefined ? prev[jobId] : defaultExpanded;
+      return { ...prev, [jobId]: !current };
+    });
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jobDetailsCacheRef = useRef<Record<string, any>>({});
   const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef<boolean>(true);
+
+  const handleImageError = (projId: string) => {
+    const currentRetries = imageRetryCounts[projId] || 0;
+    if (currentRetries < 3) {
+      setTimeout(() => {
+        if (!isMountedRef.current) return;
+        setImageRetryCounts(prev => ({ ...prev, [projId]: currentRetries + 1 }));
+        setImageRetryTimestamps(prev => ({ ...prev, [projId]: Date.now() }));
+      }, 1500);
+    } else {
+      setImageErrors(prev => ({ ...prev, [projId]: true }));
+    }
+  };
 
   const handleRenderProject = async (projId: string) => {
     setRenderingProjectIds(prev => ({ ...prev, [projId]: true }));
@@ -94,24 +136,42 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
     if (forceRefreshDetails) {
       jobDetailsCacheRef.current = {};
+      setImageErrors({});
+      setImageRetryCounts({});
+      setImageRetryTimestamps({});
     }
 
     try {
       const [resJobs, projs] = await Promise.all([
-        axios.get(`${API_BASE}/batch/jobs`).catch(() => ({ data: { data: [] } })),
-        fetchAllProjects().catch(() => [])
+        axios.get(`${API_BASE}/batch/jobs`).catch((err) => {
+          console.warn('[BatchCut] 拉取混剪批次失败 (可能正在密集编码):', err?.message);
+          return null;
+        }),
+        fetchAllProjects().catch((err) => {
+          console.warn('[BatchCut] 拉取工程画廊失败 (可能正在密集编码):', err?.message);
+          return null;
+        })
       ]);
 
       if (!isMountedRef.current) return;
 
-      const list = resJobs.data?.data || [];
-      setJobs(list);
-      setProjects(projs);
+      if (resJobs?.data?.data && Array.isArray(resJobs.data.data)) {
+        setJobs(resJobs.data.data);
+      }
+      if (projs && Array.isArray(projs)) {
+        setProjects(projs);
+      }
 
-      // 仅拉取未完成或尚未缓存最终详情的批次
-      const needFetch = list.slice(0, 10).filter((j: any) => {
+      const list = (resJobs?.data?.data && Array.isArray(resJobs.data.data))
+        ? resJobs.data.data
+        : (jobs || []);
+
+      // 仅拉取未完成或尚未缓存最终详情的批次（全量检测活跃批次，修复 slice(0, 10) 截断缺陷）
+      const terminalStatuses = ['finished', 'canceled', 'interrupted'];
+      const needFetch = list.filter((j: any) => {
         const cached = jobDetailsCacheRef.current[j.job_id];
-        return !cached || j.status !== 'finished' || cached.status !== 'finished';
+        const isTerminal = terminalStatuses.includes(j.status);
+        return !cached || !isTerminal || !terminalStatuses.includes(cached.status);
       });
 
       if (needFetch.length > 0) {
@@ -131,7 +191,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
       setJobDetails({ ...jobDetailsCacheRef.current });
 
       // 动态自适应轮询间隔：存在进行中任务时 3s 高频刷新，空闲无任务时拉长至 10s
-      const hasRunning = list.some((j: any) => j.status !== 'finished');
+      const hasRunning = list.some((j: any) => !terminalStatuses.includes(j.status));
       const nextInterval = hasRunning ? 3000 : 10000;
       pollingTimerRef.current = setTimeout(() => {
         loadData();
@@ -185,14 +245,46 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
   const handleStartBatchCut = async () => {
     if (selectedFiles.length === 0) return;
+    const filesToUpload = [...selectedFiles];
+    const totalBytes = filesToUpload.reduce((sum, f) => sum + f.size, 0);
+
+    // 1. 0 毫秒即时转场：立即关闭确认弹窗并无缝切到混剪队列，彻底消除假死卡顿
+    setShowUploadModal(false);
+    setSelectedFiles([]);
+    setActiveTab('queue');
+
+    // 2. 挂载队列顶部的素材极速上传进度卡片
+    setUploadingState({
+      totalFiles: filesToUpload.length,
+      totalBytes,
+      loadedBytes: 0,
+      percent: 0,
+      filenames: filesToUpload.map(f => f.name)
+    });
+
     setSubmitting(true);
     try {
-      await uploadAndBatchCut(selectedFiles, batchAspectRatio, undefined, 1.0);
-      setSelectedFiles([]);
-      setShowUploadModal(false);
-      setActiveTab('queue');
-      await loadData();
+      await uploadAndBatchCut(
+        filesToUpload,
+        batchAspectRatio,
+        undefined,
+        1.0,
+        (pe: any) => {
+          const loaded = pe.loaded || 0;
+          const total = pe.total || totalBytes || 1;
+          const pct = Math.min(99, Math.round((loaded / total) * 100));
+          setUploadingState(prev => prev ? {
+            ...prev,
+            loadedBytes: loaded,
+            percent: pct
+          } : null);
+        }
+      );
+      // 3. 上传完成，平滑移除上传进度条并强制刷新最新任务列表
+      setUploadingState(null);
+      await loadData(true);
     } catch (err: any) {
+      setUploadingState(null);
       showAlert({ title: '启动批量剪辑失败', message: err?.response?.data?.detail || err.message, type: 'error' });
     } finally {
       setSubmitting(false);
@@ -292,7 +384,36 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
     return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
   };
 
-  const runningJobs = jobs.filter(j => j.status !== 'finished');
+  const [cancelingJobIds, setCancelingJobIds] = useState<Record<string, boolean>>({});
+  const [retryingJobIds, setRetryingJobIds] = useState<Record<string, boolean>>({});
+
+  const handleCancelJob = async (jobId: string) => {
+    setCancelingJobIds(prev => ({ ...prev, [jobId]: true }));
+    try {
+      await cancelBatchJob(jobId);
+      showGlobalToast('已取消批量剪辑任务', 'info');
+      await loadData(true);
+    } catch (err: any) {
+      showAlert({ title: '取消批次失败', message: err?.response?.data?.detail || err.message, type: 'error' });
+    } finally {
+      setCancelingJobIds(prev => ({ ...prev, [jobId]: false }));
+    }
+  };
+
+  const handleRetryFailed = async (jobId: string) => {
+    setRetryingJobIds(prev => ({ ...prev, [jobId]: true }));
+    try {
+      const res = await retryFailedBatchJob(jobId);
+      showGlobalToast(`已将 ${res.retrying_count || '部分'} 个失败条目重新提交混剪`, 'success');
+      await loadData(true);
+    } catch (err: any) {
+      showAlert({ title: '重试失败项失败', message: err?.response?.data?.detail || err.message, type: 'error' });
+    } finally {
+      setRetryingJobIds(prev => ({ ...prev, [jobId]: false }));
+    }
+  };
+
+  const runningJobs = jobs.filter(j => j.status === 'running' || j.status === 'queued');
 
   return (
     <div
@@ -506,7 +627,12 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                 const coverUrl = proj.cover_image_path ? getMediaUrl(proj.cover_image_path) : '';
                 const isCompleted = proj.status === 'completed';
                 const isSelected = selectedProjectIds.has(proj.id);
-                const hasValidCover = Boolean(coverUrl && !imageErrors[proj.id]);
+                const isVertical = proj.aspect_ratio !== '16:9';
+                const aspectClass = isVertical ? 'aspect-[3/4]' : 'aspect-video';
+                const retryTs = imageRetryTimestamps[proj.id];
+                const fullCoverUrl = coverUrl ? (retryTs ? `${coverUrl}?t=${retryTs}` : coverUrl) : '';
+                const isLoaded = !!imageLoaded[proj.id];
+                const isErrored = !!imageErrors[proj.id];
 
                 return (
                   <div
@@ -519,33 +645,46 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                     }`}
                   >
                     {/* 封面与 Hover 播放 */}
-                    <div className="relative aspect-video bg-gray-900 flex items-center justify-center overflow-hidden">
-                      {hasValidCover ? (
-                        <img
-                          src={coverUrl}
-                          alt={proj.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          onError={() => {
-                            setImageErrors(prev => ({ ...prev, [proj.id]: true }));
-                          }}
-                        />
+                    <div
+                      onClick={hasOutput && !batchMode ? () => {
+                        setPreviewVideoUrl(videoUrl);
+                        setPreviewVideoTitle(proj.title);
+                      } : undefined}
+                      className={`relative ${aspectClass} bg-slate-900 flex items-center justify-center overflow-hidden ${hasOutput && !batchMode ? 'cursor-pointer' : ''}`}
+                    >
+                      {fullCoverUrl && !isErrored ? (
+                        <>
+                          <img
+                            src={fullCoverUrl}
+                            alt={proj.title}
+                            className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-300 ${isLoaded ? 'opacity-100' : 'opacity-0'}`}
+                            onLoad={() => setImageLoaded(prev => ({ ...prev, [proj.id]: true }))}
+                            onError={() => handleImageError(proj.id)}
+                          />
+                          {!isLoaded && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 text-slate-400 select-none">
+                              <div className="w-7 h-7 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin mb-2" />
+                              <span className="text-[11px] font-medium text-slate-400">载入封面中...</span>
+                            </div>
+                          )}
+                        </>
                       ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-850 to-slate-900 text-slate-400 p-3 text-center select-none">
-                          <div className="w-8 h-8 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-1.5 shadow-inner">
-                            <Film className="w-4 h-4 text-indigo-400/80" />
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-indigo-950/60 to-slate-900 text-slate-300 p-3 text-center select-none">
+                          <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center mb-1.5 shadow-md">
+                            <Film className="w-4 h-4 text-indigo-400" />
                           </div>
-                          <span className="text-[11px] font-medium text-slate-300 line-clamp-1 max-w-[90%]">{proj.title}</span>
-                          <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-                            {isCompleted ? '已就绪' : '草稿 · 待压制'} · {proj.aspect_ratio || '9:16'}
+                          <span className="text-[11px] font-semibold text-white line-clamp-1 max-w-[90%]">{proj.title}</span>
+                          <span className="text-[10px] text-indigo-300 font-mono mt-0.5">
+                            {isCompleted ? '成片已完成 · 点击直接播放' : proj.status === 'processing' ? '正在智能合成中...' : '初剪草稿'}
                           </span>
                         </div>
                       )}
 
                       {/* 批量多选 Checkbox / 状态徽章 */}
-                      <div className="absolute top-2 left-2 flex items-center space-x-1.5 z-10">
+                      <div className="absolute top-2 left-2 flex items-center space-x-1.5 z-10 pointer-events-none">
                         {batchMode && (
                           <div
-                            className={`w-5 h-5 rounded flex items-center justify-center transition-all ${
+                            className={`w-5 h-5 rounded flex items-center justify-center transition-all pointer-events-auto ${
                               isSelected
                                 ? 'bg-red-600 text-white shadow-xs'
                                 : 'bg-black/60 text-white/70 hover:bg-black/80'
@@ -558,14 +697,33 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                             )}
                           </div>
                         )}
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shadow-2xs ${
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium shadow-2xs flex items-center space-x-1 ${
                           isCompleted
                             ? 'bg-emerald-600 text-white'
                             : proj.status === 'processing'
                             ? 'bg-indigo-600 text-white animate-pulse'
+                            : proj.status === 'failed'
+                            ? 'bg-red-600 text-white'
                             : 'bg-gray-800/80 text-gray-200'
                         }`}>
-                          {isCompleted ? '已就绪' : proj.status === 'processing' ? '压制中' : '草稿'}
+                          {isCompleted ? (
+                            <>
+                              <Check className="w-2.5 h-2.5 inline mr-0.5" />
+                              <span>已完成</span>
+                            </>
+                          ) : proj.status === 'processing' ? (
+                            <>
+                              <Zap className="w-2.5 h-2.5 inline mr-0.5 animate-bounce" />
+                              <span>压制中</span>
+                            </>
+                          ) : proj.status === 'failed' ? (
+                            <>
+                              <AlertTriangle className="w-2.5 h-2.5 inline mr-0.5" />
+                              <span>失败</span>
+                            </>
+                          ) : (
+                            <span>草稿</span>
+                          )}
                         </span>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white font-mono">
                           {proj.aspect_ratio || '9:16'}
@@ -589,25 +747,21 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
                       {/* 文件体积 */}
                       {proj.output_file_size_mb ? (
-                        <div className="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white font-mono">
+                        <div className="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white font-mono pointer-events-none">
                           {proj.output_file_size_mb} MB
                         </div>
                       ) : null}
 
                       {/* 悬停播放遮罩 */}
                       {hasOutput && !batchMode && (
-                        <button
-                          onClick={() => {
-                            setPreviewVideoUrl(videoUrl);
-                            setPreviewVideoTitle(proj.title);
-                          }}
-                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white cursor-pointer"
+                        <div
+                          className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white"
                           title="点击预览播放"
                         >
-                          <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center text-white hover:scale-110 transition-transform">
-                            <Play className="w-4 h-4 fill-current ml-0.5" />
+                          <div className="w-11 h-11 rounded-full bg-white/25 backdrop-blur-md border border-white/30 flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform">
+                            <Play className="w-5 h-5 fill-current ml-0.5 text-white" />
                           </div>
-                        </button>
+                        </div>
                       )}
                     </div>
 
@@ -617,11 +771,19 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                         <h3 className="text-xs font-bold text-gray-900 truncate" title={proj.title}>
                           {proj.title}
                         </h3>
-                        <div className="flex items-center space-x-2 text-[10px] text-gray-400 mt-1 font-mono">
-                          <Clock className="w-3 h-3 text-gray-400" />
-                          <span>{formatDate(proj.updated_at || proj.created_at)}</span>
+                        <div className="flex items-center flex-wrap gap-1.5 text-[10px] text-gray-400 mt-1 font-mono">
+                          <div className="flex items-center space-x-1">
+                            <Clock className="w-3 h-3 text-gray-400" />
+                            <span>{formatDate(proj.updated_at || proj.created_at)}</span>
+                          </div>
                           {proj.subtitles && (
                             <span>· {proj.subtitles.length}句</span>
+                          )}
+                          {proj.target_region && (
+                            <span className="inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-sans font-medium">
+                              <MapPin className="w-2.5 h-2.5 text-emerald-600" />
+                              <span>{formatRegionBadge(proj.target_region)}</span>
+                            </span>
                           )}
                         </div>
                       </div>
@@ -696,6 +858,34 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
       {/* 3. 混剪队列视图 (Queue Mode) */}
       {activeTab === 'queue' && (
         <div className="space-y-4">
+          {/* 0. 素材极速上传中进度卡片 (秒级即时转场保障) */}
+          {uploadingState && (
+            <div className="bg-white border border-indigo-200/80 rounded-2xl p-4 shadow-xs space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center space-x-2">
+                  <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping" />
+                  <span className="font-bold text-gray-800">正在上传素材并压入混剪队列...</span>
+                  <span className="font-mono text-indigo-600 font-semibold">({uploadingState.totalFiles} 个视频)</span>
+                </div>
+                <div className="flex items-center space-x-2 font-mono text-xs">
+                  <span className="text-gray-500">
+                    {(uploadingState.loadedBytes / (1024 * 1024)).toFixed(1)} MB / {(uploadingState.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                  </span>
+                  <span className="font-bold text-indigo-600">{uploadingState.percent}%</span>
+                </div>
+              </div>
+              <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-indigo-600 h-full transition-all duration-200 rounded-full"
+                  style={{ width: `${uploadingState.percent}%` }}
+                />
+              </div>
+              <div className="text-[11px] text-gray-400 truncate">
+                {uploadingState.filenames.join(' · ')}
+              </div>
+            </div>
+          )}
+
           {/* 运行中任务 */}
           {runningJobs.length > 0 && (
             <div className="bg-white border border-indigo-100 rounded-2xl p-4 shadow-xs space-y-3">
@@ -705,15 +895,41 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               </div>
 
               {runningJobs.map(j => {
-                const pct = j.total_count > 0 ? Math.round((j.completed_count / j.total_count) * 100) : 0;
+                const finished = j.completed_count + (j.failed_count || 0);
+                const pct = j.total_count > 0 ? Math.round((finished / j.total_count) * 100) : 0;
                 const detail = jobDetails[j.job_id];
+                const isExpanded = expandedJobs[j.job_id] !== undefined ? expandedJobs[j.job_id] : true;
                 return (
-                  <div key={j.job_id} className="bg-indigo-50/40 rounded-xl p-3 border border-indigo-100/60">
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="font-mono text-gray-600">批次: {j.job_id.substring(0, 8)}...</span>
-                      <span className="font-semibold text-indigo-600">
-                        {j.completed_count} / {j.total_count} ({pct}%)
-                      </span>
+                  <div key={j.job_id} className="bg-indigo-50/40 rounded-xl p-3 border border-indigo-100/60 transition-all">
+                    <div
+                      onClick={() => toggleJobExpanded(j.job_id, true)}
+                      className="flex items-center justify-between text-xs mb-1.5 cursor-pointer select-none group/hdr hover:opacity-90 transition-opacity"
+                    >
+                      <div className="flex items-center space-x-1.5">
+                        <ChevronRight className={`w-3.5 h-3.5 text-indigo-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                        <span className="font-mono text-gray-700 font-medium">批次: {j.job_id.substring(0, 8)}...</span>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-semibold text-indigo-600">
+                          {finished} / {j.total_count} ({pct}%)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCancelJob(j.job_id);
+                          }}
+                          disabled={cancelingJobIds[j.job_id]}
+                          className="flex items-center space-x-1 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:text-red-700 bg-white hover:bg-red-50 border border-red-200 rounded-md transition-colors cursor-pointer disabled:opacity-50 shadow-2xs"
+                          title="取消此批次后续排队与正在进行的任务"
+                        >
+                          <X className="w-3 h-3" />
+                          <span>{cancelingJobIds[j.job_id] ? '取消中...' : '取消批次'}</span>
+                        </button>
+                        <span className="text-[10px] text-indigo-500 font-mono ml-1">
+                          {isExpanded ? '收起' : `展开 (${j.total_count}项)`}
+                        </span>
+                      </div>
                     </div>
                     <div className="w-full bg-gray-200/80 h-1.5 rounded-full overflow-hidden">
                       <div
@@ -722,20 +938,45 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                       />
                     </div>
 
-                    {detail?.items && (
-                      <div className="mt-2.5 space-y-1">
+                    {isExpanded && detail?.items && (
+                      <div className="mt-2.5 space-y-1.5">
                         {detail.items.map((it: any, idx: number) => {
                           const meta = ITEM_STATUS_META[it.status] || ITEM_STATUS_META.queued;
                           return (
-                            <div key={idx} className="flex items-center justify-between text-[11px] bg-white px-2.5 py-1 rounded border border-gray-100 shadow-2xs">
-                              <div className="flex items-center space-x-2 truncate">
-                                <span className="font-mono text-gray-400">#{idx + 1}</span>
-                                <span className="text-gray-700 font-medium truncate">
-                                  {it.project_title || it.material_filename || it.material_id}
-                                </span>
-                                <span className={`px-1.5 py-0.2 rounded text-[10px] ${meta.cls}`}>{meta.label}</span>
+                            <div key={idx} className="bg-white p-2 rounded-lg border border-gray-100 shadow-2xs space-y-1">
+                              <div className="flex items-center justify-between text-[11px]">
+                                <div className="flex items-center space-x-2 truncate">
+                                  <span className="font-mono text-gray-400">#{idx + 1}</span>
+                                  <span className="text-gray-700 font-medium truncate">
+                                    {it.project_title || it.material_filename || it.material_id}
+                                  </span>
+                                  <span className={`px-1.5 py-0.2 rounded text-[10px] ${meta.cls}`}>{meta.label}</span>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                  {it.status === 'running' && it.stage_message && (
+                                    <span className="text-[10px] text-indigo-600 font-medium animate-pulse">
+                                      {it.stage_message}
+                                    </span>
+                                  )}
+                                  <span className="text-gray-400 font-mono text-[10px]">{it.progress || 0}%</span>
+                                </div>
                               </div>
-                              <span className="text-gray-400 font-mono text-[10px]">{it.progress || 0}%</span>
+                              {/* 动态进度条 */}
+                              {it.status === 'running' && (
+                                <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                                  <div
+                                    className="bg-indigo-500 h-full transition-all duration-300 rounded-full"
+                                    style={{ width: `${Math.max(5, it.progress || 0)}%` }}
+                                  />
+                                </div>
+                              )}
+                              {/* 失败真实原因透出 */}
+                              {it.status === 'failed' && it.error && (
+                                <div className="text-[10px] text-red-600 bg-red-50/90 px-2 py-0.5 rounded border border-red-100 flex items-center space-x-1" title={it.error}>
+                                  <AlertTriangle className="w-3 h-3 flex-shrink-0 text-red-500" />
+                                  <span className="truncate">{it.error}</span>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -747,63 +988,174 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
             </div>
           )}
 
-          {/* 历史任务记录 */}
-          <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-xs space-y-3">
-            <h3 className="text-xs font-bold text-gray-800">
-              历史混剪批次 ({jobs.length} 批)
-            </h3>
+          {/* 历史任务记录（过滤进行中任务，彻底杜绝上下重复混乱） */}
+          {(() => {
+            const historicalJobs = jobs.filter(j => j.status !== 'running' && j.status !== 'queued');
+            return (
+              <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-gray-800">
+                    历史混剪批次 ({historicalJobs.length} 批)
+                  </h3>
+                  {historicalJobs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const anyExpanded = historicalJobs.some(j => !!expandedJobs[j.job_id]);
+                        const nextVal = !anyExpanded;
+                        setExpandedJobs(prev => {
+                          const next = { ...prev };
+                          historicalJobs.forEach(j => {
+                            next[j.job_id] = nextVal;
+                          });
+                          return next;
+                        });
+                      }}
+                      className="flex items-center space-x-1 px-2.5 py-1 text-[11px] text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50/80 rounded-lg transition-colors cursor-pointer font-medium"
+                      title="一键展开或折叠所有历史批次"
+                    >
+                      <ChevronsUpDown className="w-3.5 h-3.5" />
+                      <span>
+                        {historicalJobs.some(j => !!expandedJobs[j.job_id])
+                          ? '全部收起'
+                          : '全部展开'}
+                      </span>
+                    </button>
+                  )}
+                </div>
 
-            {jobs.length === 0 ? (
-              <div className="py-10 text-center text-xs text-gray-400">暂无混剪任务记录</div>
-            ) : (
-              <div className="space-y-2.5">
-                {jobs.map(j => {
+                {historicalJobs.length === 0 ? (
+                  <div className="py-10 text-center text-xs text-gray-400">暂无已结束的混剪任务记录</div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {historicalJobs.map((j) => {
                   const detail = jobDetails[j.job_id];
                   const isDone = j.status === 'finished';
+                  const failedCount = j.failed_count || 0;
+                  const doneCount = j.completed_count;
+                  const incompleteCount = Math.max(0, j.total_count - doneCount);
+                  const isExpanded = !!expandedJobs[j.job_id];
                   return (
-                    <div key={j.job_id} className="bg-gray-50/60 rounded-xl p-3 border border-gray-200/60 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-2">
+                    <div key={j.job_id} className="bg-gray-50/60 rounded-xl p-3 border border-gray-200/60 space-y-2 transition-all">
+                      <div
+                        onClick={() => toggleJobExpanded(j.job_id, false)}
+                        className="flex items-center justify-between text-xs cursor-pointer select-none group/header hover:bg-gray-100/70 -m-1.5 p-1.5 rounded-lg transition-colors"
+                      >
+                        <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                          <div className={`transition-colors flex items-center ${isExpanded ? 'text-indigo-600' : 'text-gray-400 group-hover/header:text-indigo-600'}`}>
+                            <ChevronRight className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                          </div>
                           <span className="font-mono font-medium text-gray-700">批次: {j.job_id.substring(0, 8)}...</span>
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                            isDone ? 'bg-emerald-50 text-emerald-600 border border-emerald-200/60' : 'bg-indigo-50 text-indigo-600'
-                          }`}>
-                            {isDone ? `已完成 ${j.completed_count}/${j.total_count}` : `处理中 ${j.completed_count}/${j.total_count}`}
-                          </span>
-                          <span className="text-[10px] text-gray-400 font-mono">并发: {j.concurrency}</span>
+                          {/* 默认缩起状态下只显批次与基本状态，展开时才显示数量与并发详情 */}
+                          {isExpanded ? (
+                            <>
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                                isDone ? 'bg-emerald-50 text-emerald-600 border border-emerald-200/60' :
+                                j.status === 'canceled' ? 'bg-gray-100 text-gray-600 border border-gray-200' :
+                                j.status === 'interrupted' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                                'bg-indigo-50 text-indigo-600'
+                              }`}>
+                                {isDone ? `已完成 ${doneCount}/${j.total_count}` :
+                                 j.status === 'canceled' ? `已取消 ${doneCount}/${j.total_count}` :
+                                 j.status === 'interrupted' ? `已中断 ${doneCount}/${j.total_count}` :
+                                 `处理中 ${doneCount}/${j.total_count}`}
+                              </span>
+                              {failedCount > 0 ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-50 text-red-600 border border-red-200/60">
+                                  失败 {failedCount}
+                                </span>
+                              ) : incompleteCount > 0 && isDone ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-600 border border-amber-200/60">
+                                  未完成 {incompleteCount}
+                                </span>
+                              ) : null}
+                              {incompleteCount > 0 && j.status !== 'running' && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRetryFailed(j.job_id);
+                                  }}
+                                  disabled={retryingJobIds[j.job_id]}
+                                  className="flex items-center space-x-1 text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 transition-colors cursor-pointer disabled:opacity-50"
+                                  title="重新将该批次中未完成或失败的视频条目加入剪辑队列"
+                                >
+                                  <RotateCcw className={`w-2.5 h-2.5 ${retryingJobIds[j.job_id] ? 'animate-spin' : ''}`} />
+                                  <span>{retryingJobIds[j.job_id] ? '提交中...' : '重试未完成项'}</span>
+                                </button>
+                              )}
+                              <span className="text-[10px] text-gray-400 font-mono">并发: {j.concurrency}</span>
+                            </>
+                          ) : (
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                              isDone ? 'bg-emerald-50 text-emerald-600 border border-emerald-200/60' :
+                              j.status === 'canceled' ? 'bg-gray-100 text-gray-600 border border-gray-200' :
+                              j.status === 'interrupted' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                              'bg-indigo-50 text-indigo-600'
+                            }`}>
+                              {isDone ? '已完成' :
+                               j.status === 'canceled' ? '已取消' :
+                               j.status === 'interrupted' ? '已中断' :
+                               '处理中'}
+                            </span>
+                          )}
                         </div>
-                        {j.created_at && (
-                          <span className="text-[11px] text-gray-400 font-mono">
-                            {formatDate(j.created_at)}
+                        <div className="flex items-center space-x-2 text-gray-400 font-mono text-[11px] flex-shrink-0">
+                          {j.created_at && (
+                            <span>{formatDate(j.created_at)}</span>
+                          )}
+                          <span className={`text-[10px] font-sans transition-colors ml-1 ${isExpanded ? 'text-indigo-600 font-medium' : 'text-gray-400 group-hover/header:text-indigo-600'}`}>
+                            {isExpanded ? '收起' : '展开'}
                           </span>
-                        )}
+                        </div>
                       </div>
 
-                      {detail?.items && (
-                        <div className="space-y-1 pt-1">
+                      {isExpanded && detail?.items && (
+                        <div className="space-y-1.5 pt-1.5 border-t border-gray-100">
                           {detail.items.map((it: any, idx: number) => {
-                            const meta = ITEM_STATUS_META[it.status] || ITEM_STATUS_META.completed;
+                            const meta = ITEM_STATUS_META[it.status] || ITEM_STATUS_META.queued;
                             return (
-                              <div key={idx} className="flex items-center justify-between text-[11px] bg-white px-3 py-1.5 rounded-lg border border-gray-100 shadow-2xs">
-                                <div className="flex items-center space-x-2 truncate">
-                                  <span className="font-mono text-gray-400">#{idx + 1}</span>
-                                  <span className="text-gray-700 font-medium truncate max-w-xs sm:max-w-md">
-                                    {it.project_title || it.material_filename || it.material_id}
-                                  </span>
-                                  <span className={`px-1.5 py-0.2 rounded text-[10px] ${meta.cls}`}>{meta.label}</span>
+                              <div key={idx} className="bg-white p-2.5 rounded-lg border border-gray-100 shadow-2xs space-y-1">
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <div className="flex items-center space-x-2 truncate">
+                                    <span className="font-mono text-gray-400">#{idx + 1}</span>
+                                    <span className="text-gray-700 font-medium truncate max-w-xs sm:max-w-md">
+                                      {it.project_title || it.material_filename || it.material_id}
+                                    </span>
+                                    <span className={`px-1.5 py-0.2 rounded text-[10px] ${meta.cls}`}>{meta.label}</span>
+                                  </div>
+                                  <div className="flex items-center space-x-3 text-gray-400 font-mono flex-shrink-0">
+                                    {it.status === 'running' && (
+                                      <span className="text-indigo-600 font-medium text-[10px]">{it.progress || 0}%</span>
+                                    )}
+                                    {it.project_id && onNavigateToEditor && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onNavigateToEditor(it.project_id, it.material_id)}
+                                        className="text-indigo-600 hover:text-indigo-700 flex items-center space-x-1 cursor-pointer"
+                                      >
+                                        <span>工作台</span>
+                                        <ExternalLink className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
-                                <div className="flex items-center space-x-3 text-gray-400 font-mono flex-shrink-0">
-                                  {it.project_id && onNavigateToEditor && (
-                                    <button
-                                      type="button"
-                                      onClick={() => onNavigateToEditor(it.project_id, it.material_id)}
-                                      className="text-indigo-600 hover:text-indigo-700 flex items-center space-x-1 cursor-pointer"
-                                    >
-                                      <span>工作台</span>
-                                      <ExternalLink className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                </div>
+                                {/* 进度条 */}
+                                {it.status === 'running' && (
+                                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                                    <div
+                                      className="bg-indigo-500 h-full transition-all duration-300 rounded-full"
+                                      style={{ width: `${Math.max(5, it.progress || 0)}%` }}
+                                    />
+                                  </div>
+                                )}
+                                {/* 失败详情透出 */}
+                                {it.status === 'failed' && it.error && (
+                                  <div className="text-[10px] text-red-600 bg-red-50/90 px-2 py-0.5 rounded border border-red-100 flex items-center space-x-1" title={it.error}>
+                                    <AlertTriangle className="w-3 h-3 flex-shrink-0 text-red-500" />
+                                    <span className="truncate">{it.error}</span>
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -815,6 +1167,8 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               </div>
             )}
           </div>
+            );
+          })()}
         </div>
       )}
 

@@ -37,6 +37,12 @@ async def root():
 @app.on_event("startup")
 def on_startup():
     try:
+        from app.db.session import init_db
+        init_db()
+    except Exception as e:
+        print(f"[Main] SQLite init_db on startup warning: {e}")
+
+    try:
         from app.db.migrator import migrate_legacy_data
         migrate_legacy_data()
     except Exception as e:
@@ -49,6 +55,15 @@ def on_startup():
             print(f"[Main] 素材库自愈清理完成: 清理垃圾/孤儿文件 {clean_res['removed_files_count']} 个，合并重复素材 {clean_res['merged_materials_count']} 组，释放空间 {clean_res['freed_mb']} MB")
     except Exception as e:
         print(f"[Main] 素材库自愈清理警告: {e}")
+
+    try:
+        from app.db.repository import BatchJobRepository
+        repo = BatchJobRepository()
+        cleaned_jobs = repo.cleanup_zombie_running_jobs()
+        if cleaned_jobs > 0:
+            print(f"[Main] 启动自愈: 已将 {cleaned_jobs} 个意外中断的僵尸批剪作业标记为 interrupted")
+    except Exception as e:
+        print(f"[Main] 批处理自愈巡检警告: {e}")
 
 @app.get("/api/health")
 @app.get("/api/v1/health")
@@ -67,7 +82,7 @@ def mount_routers():
         app.include_router(editor_router, prefix="/api/v1/projects", tags=["Projects"])
         app.include_router(editor_router, prefix="/api/v1/editor", tags=["Editor"])
     except Exception as e:
-        pass
+        print(f"Error mounting editor router: {e}")
 
     try:
         from app.api.instruction import router as instruction_router

@@ -5,7 +5,7 @@ import uuid
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
-from app.core.config import PROJECTS_DIR, TASKS_DIR, STORAGE_DIR
+from app.core.config import PROJECTS_DIR, TASKS_DIR, STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR
 from app.models.entities import CutProject, CutProjectStatus, SubtitleSegment, EditingStrategy, HighlightWord
 from app.native_engine.keyword_matcher import build_highlight_words
 from app.db.repository import ProjectRepository
@@ -117,6 +117,16 @@ class ProjectStorageService:
 
     def _heal_from_disk(self):
         """从磁盘自包含任务目录 (storage/tasks) 与历史工程 JSON (storage/projects) 自动自愈恢复未入库工程"""
+        # 查询所有合法存在的素材 ID，强校验素材存在性
+        valid_mat_ids = set()
+        try:
+            from app.db.session import get_db_connection
+            with get_db_connection(self.repo.db_path) as conn:
+                cur = conn.execute("SELECT id FROM materials")
+                valid_mat_ids = {r[0] for r in cur.fetchall()}
+        except Exception as e:
+            print(f"[_heal_from_disk] 查询合法 materials 集合异常: {e}")
+
         # 1. 扫描 TASKS_DIR 自包含任务目录（成片画廊核心来源）
         if TASKS_DIR.exists():
             for task_dir in TASKS_DIR.iterdir():
@@ -130,6 +140,13 @@ class ProjectStorageService:
                         mdata = json.load(f)
                     pid = mdata.get("project_id") or mdata.get("id")
                     if not pid or pid in self._cache_by_proj_id:
+                        continue
+
+                    # 强校验：talking_head_id 必须存在于 materials 表，否则就地销毁残余目录禁止入库
+                    th_id = mdata.get("talking_head_id")
+                    if not th_id or th_id not in valid_mat_ids:
+                        print(f"[_heal_from_disk] 发现孤儿任务目录（素材 {th_id} 不存在于 materials 表），就地销毁: {task_dir}")
+                        shutil.rmtree(task_dir, ignore_errors=True)
                         continue
 
                     # 仅自愈真实压制完成的工程（视频文件 > 10KB，杜绝测试空文件入库）
@@ -309,11 +326,50 @@ class ProjectStorageService:
 
         return project
 
+    def cleanup_project_files(self, p: CutProject):
+        """安全清理工程关联的磁盘生成文件及专属任务目录，彻底杜绝孤儿文件与幽灵复活"""
+        # 1. 清理专属任务目录（包含 output_*.mp4, cover.jpg, subtitles.ass, project_manifest.json 等）
+        if p.task_dir:
+            try:
+                td = (STORAGE_DIR.parent / p.task_dir).resolve()
+                if td.exists() and td.is_dir() and TASKS_DIR.resolve() in td.parents:
+                    shutil.rmtree(td, ignore_errors=True)
+            except Exception as e:
+                print(f"[ProjectStorageService] 清理任务目录失败 {p.task_dir}: {e}")
+
+        # 2. 如果 output_video_path 位于历史 outputs 目录下，单独清理
+        if p.output_video_path:
+            try:
+                vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
+                if vp.exists() and vp.is_file() and (OUTPUTS_DIR.resolve() in vp.parents or TASKS_DIR.resolve() in vp.parents):
+                    vp.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"[ProjectStorageService] 清理成片视频文件失败 {p.output_video_path}: {e}")
+
+        # 3. 如果 cover 位于历史 covers 目录下，单独清理
+        if p.cover_image_path:
+            try:
+                cp = (STORAGE_DIR.parent / p.cover_image_path).resolve()
+                if cp.exists() and cp.is_file() and COVERS_DIR.resolve() in cp.parents:
+                    cp.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"[ProjectStorageService] 清理封面文件失败 {p.cover_image_path}: {e}")
+
+        # 4. 清理残留历史/影子 JSON，杜绝幽灵复活
+        try:
+            self._remove_shadow_json(p.id, p.talking_head_id)
+        except Exception as e:
+            print(f"[ProjectStorageService] 清理影子 JSON 失败: {e}")
+
     def delete_project_by_material(self, talking_head_id: str, only_draft: bool = True) -> bool:
         """按口播素材 ID 删除草稿工程与缓存（保护已完成成片成果）"""
         p = self.get_by_material_id(talking_head_id)
         if p and p.status == CutProjectStatus.COMPLETED and only_draft:
             return False
+
+        # 删除数据库前显式调用 cleanup_project_files 彻底删除任务目录与清单文件
+        if p:
+            self.cleanup_project_files(p)
 
         proj_id = p.id if p else None
         db_deleted = False
@@ -334,9 +390,12 @@ class ProjectStorageService:
 
         return db_deleted or (p is not None)
 
-    def delete_project(self, project_id: str) -> bool:
+    def delete_project(self, project_id: str, delete_files: bool = True) -> bool:
         """按工程 ID 精确删除指定工程、物理关联文件与缓存"""
         p = self.get_by_project_id(project_id)
+        if p and delete_files:
+            self.cleanup_project_files(p)
+
         self._cache_by_proj_id.pop(project_id, None)
         if p and p.talking_head_id and self._cache_by_th_id.get(p.talking_head_id) == p:
             self._cache_by_th_id.pop(p.talking_head_id, None)

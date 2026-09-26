@@ -1,6 +1,7 @@
 from enum import Enum
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Literal
+from pydantic import BaseModel, Field, field_validator
+import re
 import uuid
 import time
 
@@ -50,6 +51,7 @@ class Material(BaseModel):
     fps: float = 30.0
     content_hash: Optional[str] = None
     file_size: Optional[int] = None
+    plate_region: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
 
 class PruneReason(str, Enum):
@@ -152,8 +154,17 @@ class EditingStrategy(BaseModel):
     retake_similarity_min: float = 0.60
 
     # 010: 真实人物口播画质调优与滤镜预设
-    filter_preset: str = "clean_natural"  # clean_natural (自然通透·推荐), crisp_hd (质感超清), warm_radiant (元气暖肤), original (原色无滤镜)
+    filter_preset: str = "clean_natural"  # cold_white (冷白美肤), clean_natural (自然通透), teal_orange (电影青橙), crisp_hd (质感超清), warm_radiant (元气暖肤), vintage_film (复古胶片), original (原色无滤镜)
     filter_strength: float = 1.0          # 滤镜强度 0.0 ~ 1.0 (默认 1.0，0.0 为完全无额外调色)
+
+    # 011: 抖音合规与违禁词脱敏配置
+    banned_words_enabled: bool = True
+    banned_words_mode: str = "glyph"      # glyph (形似拆字), redact (删除), pinyin (拼音缩写)
+
+    # 012: 封面导出配置
+    embed_cover_as_first_frame: bool = True  # 导出时是否将封面压入成片第一帧 (仅首帧 1 帧 ~0.033s，直接开播无停顿)
+    cover_duration: float = 0.04             # 封面首帧压入时长 (秒)，默认为 1 帧 (~0.04s)
+
 
 class BrollCueItem(BaseModel):
     """大模型稀疏分镜切入指示项"""
@@ -165,6 +176,83 @@ class BrollCueItem(BaseModel):
 class BrollCueResponse(BaseModel):
     """分镜决策顶层响应对象"""
     broll_cues: List[BrollCueItem] = Field(default_factory=list)
+
+class CoverTextZoneStyle(BaseModel):
+    """R3: 分区文本样式覆盖（zone key ∈ location|main|sub）。
+
+    所有字段可选/中性值 = 完全跟随模板与调色盘默认；
+    渲染取色三级优先级：分区覆盖 → 模板默认 → 调色盘。
+    scale/offset_y 由实体层双向 clamp 后持久化；颜色必须 #RRGGBB，非法 422。
+    """
+    text_color: Optional[str] = None    # 文字填充色覆盖（候选色板：调色盘 main/sub/accent + 纯白 + 纯黑）
+    stroke_color: Optional[str] = None  # 文字描边色覆盖（显式设置时，即使元素默认无描边也会补绘描边层）
+    scale: float = 1.0                  # 字号缩放，clamp [0.6, 1.4]
+    offset_x: float = 0.0               # 横向偏移（画布宽度占比，正值右移），clamp [-0.20, 0.20]
+    offset_y: float = 0.0               # 纵向偏移（画布高度占比，正值下移），clamp [-0.12, 0.12]
+
+    @field_validator("text_color", "stroke_color")
+    @classmethod
+    def _validate_hex_color(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
+            raise ValueError("颜色必须为 #RRGGBB 格式（如 #2E7CD6）")
+        return v
+
+    @field_validator("scale")
+    @classmethod
+    def _clamp_scale(cls, v: float) -> float:
+        return round(min(1.4, max(0.6, float(v))), 4)
+
+    @field_validator("offset_x")
+    @classmethod
+    def _clamp_offset_x(cls, v: float) -> float:
+        return round(min(0.20, max(-0.20, float(v))), 4)
+
+    @field_validator("offset_y")
+    @classmethod
+    def _clamp_offset_y(cls, v: float) -> float:
+        return round(min(0.12, max(-0.12, float(v))), 4)
+
+
+# 分区合法 key（非法 key 在实体层 422）
+COVER_ZONE_KEYS = Literal["location", "main", "sub"]
+
+
+class CoverDesignConfig(BaseModel):
+    """012: 视频封面设计配置实体（6 大实战模板升级版）"""
+    source: str = "video_frame"              # video_frame (截帧) | custom_upload (外部图片)
+    frame_timestamp: float = 0.0            # 截帧时间点（秒）
+    custom_image_path: Optional[str] = None # 自定义上传图片的磁盘物理相对路径
+    # 6 大实战模板 + 3 个旧值向后兼容：sticker_double_stroke | split_contrast_bar |
+    # rainbow_arc_header | bottom_fog_vignette | angled_impact_stamp | clean_editorial |
+    # (legacy) gold_bold | color_badge | dual_contrast
+    template_id: str = "sticker_double_stroke"
+    location_tag: str = ""                  # 核心地域词（如 武义学车 / 杭州学车 / 金东学车），封面第一视觉锚点
+    main_title: str = ""                    # 封面主标题（4~10字吸睛大字）
+    sub_title: str = ""                     # 封面副标题 / 胶囊标签（4~12字）
+    # 4 套高转化调色盘：classic_blue | authority_red | sunset_orange | frost_burgundy
+    # （旧值 neon_cyber/hot_pink_gold/yellow_black 等自动映射兼容渲染）
+    color_theme: str = "classic_blue"
+    # 4 大字系：heavy_gothic (超重黑体) | brush_kai (书法行楷) | handwriting_tilt (倾斜手写) | editorial_serif (质感标宋)
+    font_family: str = "heavy_gothic"
+    aspect_mode: str = "blur_padding"       # blur_padding (高斯模糊背景填充) | center_crop (居中裁切)
+    show_safe_zone: bool = False            # 是否在编辑预览态开启安全区辅助线
+    # R3: 分区文本样式覆盖；缺省 key/字段 = 完全跟随模板与调色盘默认
+    zone_styles: Dict[COVER_ZONE_KEYS, CoverTextZoneStyle] = Field(default_factory=dict)
+    # 015: 人像超清与美颜增强配置
+    enable_portrait_enhancement: bool = True # 是否开启人像清晰美颜处理
+    beauty_mode: str = "natural"            # natural (自然白皙) | hd_clear (超清质感) | delicate (元气红润) | off (关闭)
+    beauty_strength: float = 0.70           # 磨皮美白强度 [0.0, 1.0]
+    clarity_strength: float = 0.50          # 人物清晰锐化强度 [0.0, 1.0]
+    # 贴纸涂鸦自由拖拽偏移（x, y 相对画布宽高的偏移比例 [-0.6, 0.6]）
+    doodle_offsets: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+class SuggestedCoverTitle(BaseModel):
+    """012: AI 伴随生成的爆款封面文案（含同城地域锚点）"""
+    location_tag: str = ""                  # 提取到的地域地名（如 武义学车 / 金东学车）
+    main_title: str
+    sub_title: str = ""
+    rationale: str = ""                     # 爆款推荐理由
+    style_hint: str = "sticker_double_stroke"
 
 class CutProjectStatus(str, Enum):
     DRAFT = "draft"
@@ -193,7 +281,11 @@ class CutProject(BaseModel):
     task_dir: Optional[str] = None  # 005-US11: 独立工程文件夹目录（日期+时间）
     cover_image_path: Optional[str] = None
     cover_source: Optional[str] = None  # frame | upload | ai（ai 为规划中占位）
+    cover_config: Optional[CoverDesignConfig] = None  # 012: 完整封面设计参数
+    suggested_cover_titles: List[SuggestedCoverTitle] = Field(default_factory=list)  # 012: AI 伴随生成的封面标题建议
+    target_region: Optional[str] = None  # 014: 目标城市车牌代码，如 "浙E·湖州"
     last_engine_used: Optional[str] = None
+
     correction_latency_ms: Optional[float] = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
@@ -211,11 +303,13 @@ class BatchJobStatus(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
     FINISHED = "finished"
+    CANCELED = "canceled"
+    INTERRUPTED = "interrupted"
 
 class BatchJobItem(BaseModel):
     material_id: str
     project_id: Optional[str] = None
-    status: str = "queued"  # queued | running | completed | failed
+    status: str = "queued"  # queued | running | completed | failed | canceled
     error: Optional[str] = None
     progress: int = 0
     task_dir: Optional[str] = None

@@ -73,11 +73,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 在系统资源管理器/访达中打开文件或目录
   ipcMain.handle('shell:open-path', async (_event, fullPath: string) => {
     try {
-      // 后端返回的是相对工程根的路径（如 storage/materials/...），相对路径一律先解析为绝对路径
-      const basePath = app.isPackaged ? resolve(process.resourcesPath, '..') : resolve(__dirname, '../../');
-      const target = isAbsolute(fullPath)
-        ? fullPath
-        : resolve(basePath, fullPath);
+      const storageDir = EngineManager.getStorageDir();
+      const storageParent = storageDir ? resolve(storageDir, '..') : (app.isPackaged ? resolve(app.getPath('userData')) : resolve(__dirname, '../../'));
+      let target = fullPath;
+      if (!isAbsolute(fullPath)) {
+        if (fullPath.startsWith('storage')) {
+          target = resolve(storageParent, fullPath);
+        } else if (storageDir) {
+          target = resolve(storageDir, fullPath);
+        } else {
+          target = resolve(storageParent, fullPath);
+        }
+      }
       const err = await shell.openPath(target);
       return { success: !err, message: err };
     } catch (e: any) {

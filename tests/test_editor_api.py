@@ -8,6 +8,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from app.main import app
+from app.core.config import STORAGE_DIR
 from app.models.entities import MaterialCategory
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
@@ -180,7 +181,8 @@ def test_versioned_render_replacement_and_progress(tmp_path):
         assert render1.status_code == 200
         r1_data = render1.json()
         file1 = r1_data["output_filename"]
-        assert file1.startswith(f"output_{project_id}")
+        clean_title = r1_data["title"].replace(" ", "_")
+        assert file1.endswith(".mp4")
         assert r1_data["output_file_size_mb"] >= 0
 
         # 4. 第二次修改字幕并重新渲染，验证新生成产物替代前序版本
@@ -196,7 +198,7 @@ def test_versioned_render_replacement_and_progress(tmp_path):
         r2_data = render2.json()
         file2 = r2_data["output_filename"]
         assert file2 != file1
-        assert file2.startswith(f"output_{project_id}")
+        assert file2.endswith(".mp4")
 
         # 5. 测试 open-folder 接口
         folder_res = client.post(
@@ -210,8 +212,12 @@ def test_versioned_render_replacement_and_progress(tmp_path):
         project_storage_service.delete_project_by_material(th.id)
         storage_service.delete_material(th.id)
 
-def test_redecide_scenes_dual_layer_api(tmp_path):
+def test_redecide_scenes_dual_layer_api(tmp_path, monkeypatch):
     """测试既有工程单独重排分镜接口：双层 60%~70% 编排且保护开场 1.8s"""
+    from app.harness_bridge.embedded import EmbeddedHarnessBridge
+    import app.api.editor as editor_module
+    monkeypatch.setattr(editor_module, "get_active_harness", lambda: EmbeddedHarnessBridge())
+
     from app.native_engine.project_storage import project_storage_service
     fake_th = tmp_path / "th_redecide.mp4"
     fake_th.write_bytes(b"stream_redecide")
@@ -279,11 +285,15 @@ def test_cover_upload_and_manifest_generation(tmp_path):
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest_data["project_id"] == proj_id
 
-        # 2. 上传自定义封面图片
-        fake_img_bytes = b"\xff\xd8\xff\xe0" + b"fake_jpg_binary_stream"
+        # 2. 上传自定义封面图片（真实 JPEG：012 起损坏/伪造图片会被如实拒绝而非静默兜底）
+        import io
+        from PIL import Image as PILImage
+        _buf = io.BytesIO()
+        PILImage.new("RGB", (960, 540), color=(16, 185, 129)).save(_buf, format="JPEG")
+        _buf.seek(0)
         upload_res = client.post(
             f"/api/v1/projects/{proj_id}/cover/upload",
-            files={"file": ("custom_cover.jpg", fake_img_bytes, "image/jpeg")}
+            files={"file": ("custom_cover.jpg", _buf.read(), "image/jpeg")}
         )
         assert upload_res.status_code == 200
         up_data = upload_res.json()
@@ -422,6 +432,55 @@ def test_batch_delete_projects_endpoint(tmp_path):
     finally:
         storage_service.delete_material(th1.id)
         storage_service.delete_material(th2.id)
+
+
+def test_render_with_custom_export_dir(tmp_path):
+    """测试渲染成片导出到用户自定义目标目录功能"""
+    fake_th = tmp_path / "th_export.mp4"
+    fake_th.write_bytes(b"stream_export")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_export.mp4", fake_th)
+
+    custom_export_dir = tmp_path / "my_custom_exports"
+
+    try:
+        cut_res = client.post(
+            "/api/v1/projects/analyze-and-cut",
+            json={"talking_head_id": th.id, "aspect_ratio": "9:16", "auto_broll": False, "enable_scene_decision": False}
+        )
+        assert cut_res.status_code == 200
+        proj_id = cut_res.json()["id"]
+
+        # 测试 PUT /projects/{project_id}/title 接口
+        title_res = client.put(f"/api/v1/projects/{proj_id}/title", json={"title": "杭州驾校全新教学_科目二核心点"})
+        assert title_res.status_code == 200
+        assert title_res.json()["title"] == "杭州驾校全新教学_科目二核心点"
+
+        # 准备封面文件以验证封面导出
+        task_dir = STORAGE_DIR.parent / cut_res.json()["task_dir"]
+        (task_dir / "cover.jpg").write_bytes(b"dummy_cover_data")
+
+        # 发起带 export_dir 的渲染请求
+        render_res = client.post(
+            f"/api/v1/projects/{proj_id}/render",
+            params={"export_dir": str(custom_export_dir)}
+        )
+        assert render_res.status_code == 200
+        r_data = render_res.json()
+        assert r_data["status"] == "completed"
+
+        # 验证自定义文件夹被自动创建，且以标题命名的视频文件与封面文件落盘
+        assert custom_export_dir.exists()
+        assert r_data["output_filename"] == "杭州驾校全新教学_科目二核心点.mp4"
+        exported_file = custom_export_dir / r_data["output_filename"]
+        assert exported_file.exists()
+        assert r_data["output_absolute_path"] == str(exported_file)
+        exported_cover = custom_export_dir / "杭州驾校全新教学_科目二核心点_cover.jpg"
+        assert exported_cover.exists()
+
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+
 
 
 

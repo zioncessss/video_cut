@@ -101,7 +101,7 @@ class StorageService:
             hasher.update(source_path_or_bytes)
         return hasher.hexdigest(), total_size
 
-    def save_material(self, category: MaterialCategory, filename: str, source_path_or_bytes) -> Material:
+    def save_material(self, category: MaterialCategory, filename: str, source_path_or_bytes, plate_region: Optional[str] = None) -> Material:
         target_dir = CATEGORY_DIRS[category.value]
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,7 +113,10 @@ class StorageService:
             full_cand_path = (STORAGE_DIR.parent / cand.filepath).resolve()
             if full_cand_path.exists() and full_cand_path.stat().st_size > 0:
                 if cand.category == category:
-                    # 同分类完全一致：直接复用返回现有素材，完全跳过写盘与重复入库
+                    # 同分类完全一致：若传入了新的 plate_region 则更新属性
+                    if plate_region and cand.plate_region != plate_region:
+                        cand.plate_region = plate_region
+                        self.repo.update_plate_region(cand.id, plate_region)
                     self._cache[cand.id] = cand
                     return cand
                 else:
@@ -127,7 +130,8 @@ class StorageService:
                         height=cand.height,
                         fps=cand.fps,
                         content_hash=content_hash,
-                        file_size=file_size
+                        file_size=file_size,
+                        plate_region=plate_region
                     )
                     self._cache[material.id] = material
                     self.repo.save(material)
@@ -143,6 +147,9 @@ class StorageService:
                 cand_hash, _ = self.compute_file_hash(full_cand_path)
                 cand.content_hash = cand_hash
                 cand.file_size = file_size
+                if plate_region and cand.plate_region != plate_region:
+                    cand.plate_region = plate_region
+                    self.repo.update_plate_region(cand.id, plate_region)
                 self.repo.save(cand)
                 if cand_hash == content_hash:
                     self._cache[cand.id] = cand
@@ -197,7 +204,8 @@ class StorageService:
             height=metadata["height"],
             fps=metadata["fps"],
             content_hash=content_hash,
-            file_size=file_size
+            file_size=file_size,
+            plate_region=plate_region
         )
         self._cache[material.id] = material
         # 真实执行铁律：入库失败必须如实报错
@@ -209,6 +217,12 @@ class StorageService:
         self._save_meta()
         return material
 
+    def update_material_region(self, material_id: str, plate_region: Optional[str]) -> bool:
+        ok = self.repo.update_plate_region(material_id, plate_region)
+        if ok and material_id in self._cache:
+            self._cache[material_id].plate_region = plate_region
+        return ok
+
     def get_material(self, material_id: str) -> Optional[Material]:
         db_mat = self.repo.get_by_id(material_id)
         if db_mat:
@@ -216,9 +230,9 @@ class StorageService:
             return db_mat
         return self._cache.get(material_id)
 
-    def list_materials(self, category: Optional[MaterialCategory] = None) -> List[Material]:
+    def list_materials(self, category: Optional[MaterialCategory] = None, plate_region: Optional[str] = None) -> List[Material]:
         try:
-            db_list = self.repo.list_all(category)
+            db_list = self.repo.list_all(category, plate_region)
             if db_list:
                 for m in db_list:
                     self._cache[m.id] = m
@@ -226,9 +240,12 @@ class StorageService:
         except Exception:
             pass
 
+        items = list(self._cache.values())
         if category:
-            return [m for m in self._cache.values() if m.category == category]
-        return list(self._cache.values())
+            items = [m for m in items if m.category == category]
+        if plate_region:
+            items = [m for m in items if m.plate_region == plate_region]
+        return items
 
     def delete_material(self, material_id: str) -> bool:
         m = self.get_material(material_id)
@@ -260,6 +277,36 @@ class StorageService:
             project_storage_service.delete_project_by_material(material_id)
         except Exception as e:
             print(f"[StorageService] 级联删除工程异常: {e}")
+
+        # 级联保护：若被删素材为空镜素材，联动将存量工程的 subtitles.broll_material_id 与对应 broll_replacements 进行解绑置空保护
+        try:
+            from app.native_engine.project_storage import project_storage_service
+            all_projects = project_storage_service.list_all_projects()
+            for p in all_projects:
+                p_modified = False
+                for s in p.subtitles:
+                    if s.broll_material_id == material_id:
+                        s.broll_material_id = None
+                        p_modified = True
+                    if s.scene_decision and s.scene_decision.material_id == material_id:
+                        s.scene_decision.material_id = None
+                        p_modified = True
+                for s in (p.compact_subtitles or []):
+                    if s.broll_material_id == material_id:
+                        s.broll_material_id = None
+                        p_modified = True
+                    if s.scene_decision and s.scene_decision.material_id == material_id:
+                        s.scene_decision.material_id = None
+                        p_modified = True
+                if p.broll_replacements:
+                    orig_len = len(p.broll_replacements)
+                    p.broll_replacements = [r for r in p.broll_replacements if r.material_id != material_id]
+                    if len(p.broll_replacements) != orig_len:
+                        p_modified = True
+                if p_modified:
+                    project_storage_service.save_project(p)
+        except Exception as e:
+            print(f"[StorageService] 解绑空镜素材引用异常: {e}")
 
         return deleted or (m is not None)
 

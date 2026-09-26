@@ -47,16 +47,16 @@ def test_compose_with_kept_spans_and_anti_pop(tmp_path, monkeypatch):
     filter_idx = captured_cmd.index("-filter_complex")
     fc = captured_cmd[filter_idx + 1]
 
-    # 验证音频切片与 15ms afade 防爆音注入
+    # 验证音频切片与 15ms afade 防爆音注入及 aresample 防音画漂移
     assert "afade=t=in:ss=0:d=0.015" in fc
     assert "afade=t=out:st=3.285:d=0.015" in fc
     assert "afade=t=out:st=5.185:d=0.015" in fc
+    assert "aresample=async=1000" in fc
 
-    # 验证视频切片与拼接
+    # 验证视频切片与音视频联合无损拼接
     assert "[0:v]trim=start=0.2:end=3.5" in fc
     assert "[0:v]trim=start=4.8:end=10.0" in fc
-    assert "concat=n=2:v=1:a=0[v_base]" in fc
-    assert "concat=n=2:v=0:a=1[a_base]" in fc
+    assert "concat=n=2:v=1:a=1[v_base][a_base]" in fc
 
 def test_compose_kept_spans_with_broll_overlay(tmp_path, monkeypatch):
     """验证在粗剪紧凑时间轴上，B-roll 通过 overlay 滤镜无缝对齐"""

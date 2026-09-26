@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 from app.native_engine.keyword_matcher import extract_rule_highlight_words, build_highlight_words
 from app.native_engine.subtitle_styler import generate_ass_file
-from app.models.entities import CutProject, CutProjectStatus, SubtitleSegment, EditingStrategy, HighlightWord
+from app.models.entities import CutProject, CutProjectStatus, SubtitleSegment, EditingStrategy, HighlightWord, MaterialCategory
 from app.native_engine.project_storage import ProjectStorageService
 from app.api.editor import update_subtitles, UpdateSubtitlesRequest
 
@@ -79,15 +79,19 @@ def test_heal_from_disk_restores_highlight_words(tmp_path, monkeypatch):
     dummy_mp4 = task_dir / "output.mp4"
     dummy_mp4.write_bytes(b"x" * (20 * 1024))  # 20KB > 10KB 门槛
 
-    manifest_data = {
-        "project_id": "test-heal-pid",
-        "title": "测试自愈高亮工程",
-        "talking_head_id": "test-th-id",
-        "output_video_path": str(dummy_mp4)
-    }
-    (task_dir / "project_manifest.json").write_text(json.dumps(manifest_data, ensure_ascii=False), encoding="utf-8")
+    from app.native_engine.storage import storage_service
+    th_mat = storage_service.save_material(MaterialCategory.TALKING_HEAD, "heal_th.mp4", b"dummy_mp4_bytes")
 
-    srt_content = """1
+    try:
+        manifest_data = {
+            "project_id": "test-heal-pid",
+            "title": "测试自愈高亮工程",
+            "talking_head_id": th_mat.id,
+            "output_video_path": str(dummy_mp4)
+        }
+        (task_dir / "project_manifest.json").write_text(json.dumps(manifest_data, ensure_ascii=False), encoding="utf-8")
+
+        srt_content = """1
 00:00:00,000 --> 00:00:02,000
 在杭州考一个驾照要多少钱
 
@@ -95,21 +99,23 @@ def test_heal_from_disk_restores_highlight_words(tmp_path, monkeypatch):
 00:00:02,000 --> 00:00:04,000
 可以滴滴我一下
 """
-    (task_dir / "subtitles.srt").write_text(srt_content, encoding="utf-8")
+        (task_dir / "subtitles.srt").write_text(srt_content, encoding="utf-8")
 
-    import app.native_engine.project_storage as ps_mod
-    monkeypatch.setattr(ps_mod, "TASKS_DIR", tasks_dir)
+        import app.native_engine.project_storage as ps_mod
+        monkeypatch.setattr(ps_mod, "TASKS_DIR", tasks_dir)
 
-    service = ProjectStorageService(storage_dir=tmp_path / "projects")
-    proj = service.get_by_project_id("test-heal-pid")
+        service = ProjectStorageService(storage_dir=tmp_path / "projects")
+        proj = service.get_by_project_id("test-heal-pid")
 
-    assert proj is not None
-    assert len(proj.subtitles) == 2
-    for s in proj.subtitles:
-        assert s.highlight_words is not None
-        assert len(s.highlight_words) > 0, f"Subtitle '{s.corrected_text}' should have restored highlight words"
-        assert s.matched_keywords is not None
-        assert len(s.matched_keywords) > 0
+        assert proj is not None
+        assert len(proj.subtitles) == 2
+        for s in proj.subtitles:
+            assert s.highlight_words is not None
+            assert len(s.highlight_words) > 0, f"Subtitle '{s.corrected_text}' should have restored highlight words"
+            assert s.matched_keywords is not None
+            assert len(s.matched_keywords) > 0
+    finally:
+        storage_service.delete_material(th_mat.id)
 
 
 @pytest.mark.asyncio

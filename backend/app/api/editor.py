@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import re
@@ -10,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections, load_glossary
 import time
 from app.models.entities import (
     CutProject,
@@ -25,6 +26,10 @@ from app.models.entities import (
     PipelineProgress,
     PruneSpan,
     PruneReason,
+    CoverDesignConfig,
+    SuggestedCoverTitle,
+    CoverTextZoneStyle,
+    COVER_ZONE_KEYS,
 )
 from app.native_engine.storage import storage_service
 from app.native_engine.project_storage import project_storage_service
@@ -35,20 +40,72 @@ from app.native_engine.ffmpeg_filter import composer
 from app.native_engine.subtitle_styler import generate_srt_file, generate_ass_file
 from app.harness_bridge.factory import get_active_harness
 from app.harness_bridge.base import HarnessCorrectionRequest
+from app.core.compliance_sanitizer import compliance_sanitizer
+from app.core.cover_generator import (
+    COVER_PALETTES,
+    COVER_TEMPLATES_CATALOG,
+    adapt_image_aspect_ratio,
+    render_cover_image,
+    extract_candidate_frames,
+)
+from PIL import Image
+from app.core.plate_regions import deduce_target_region
+
+def _filter_broll_by_region(mats: List[Any], target_reg: Optional[str]) -> List[Any]:
+    """严格同城空镜候选池过滤（0 跨市穿帮防线）"""
+    if not target_reg:
+        # 未指定目标城市时，仅允许使用无车牌标签的通用素材
+        return [m for m in mats if not getattr(m, 'plate_region', None)]
+    # 已明确目标城市（如 浙A·杭州）：仅允许使用 100% 严格匹配该城市的同城空镜
+    # 若该城市暂无场地或教学空镜，宁缺毋滥返回空列表，绝对不混用未标注或异地素材，保留口播真人画面
+    return [m for m in mats if getattr(m, 'plate_region', None) == target_reg]
+
+def sanitize_filename(name: str, fallback: str = "成片", max_length: int = 80) -> str:
+    """清洗 Windows / Linux 文件名非法字符与控制符，保证写盘安全"""
+    if not name:
+        return fallback
+    clean = re.sub(r'[\\/*?:"<>|\r\n\t]+', '_', str(name))
+    clean = clean.strip(" ._")
+    if not clean:
+        return fallback
+    return clean[:max_length]
 
 router = APIRouter()
 
 def extract_cover_frame(source_video_path: Path, output_cover_path: Path, timestamp: float = 0.5) -> bool:
-    """从指定视频文件中快速截取高质量静止帧作为封面（耗时通常 <50ms）"""
+    """从指定视频文件中快速截取高质量静止帧作为封面（支持 HDR 色调映射）"""
     if not source_video_path.exists():
         return False
     try:
         import subprocess
-        c_proc = subprocess.run([
-            "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(source_video_path),
-            "-frames:v", "1", "-q:v", "3", str(output_cover_path)
-        ], capture_output=True, timeout=10)
-        return c_proc.returncode == 0 and output_cover_path.exists()
+        # 探测是否为 HDR (iPhone HLG / BT.2020 / HDR10)
+        is_hdr = False
+        try:
+            probe = subprocess.run([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=color_space,color_primaries,color_transfer,pix_fmt",
+                "-of", "default=noprint_wrappers=1", str(source_video_path)
+            ], capture_output=True, text=True, timeout=5)
+            out = (probe.stdout or "").lower()
+            is_hdr = any(t in out for t in ("arib-std-b67", "smpte2084", "bt2020", "dovi"))
+        except Exception:
+            pass
+
+        cmd = ["ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(source_video_path)]
+        if is_hdr:
+            cmd.extend([
+                "-vf",
+                "zscale=t=linear:npl=100,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,eq=contrast=1.10:brightness=-0.02:saturation=1.12"
+            ])
+        cmd.extend(["-frames:v", "1", "-q:v", "3", str(output_cover_path)])
+        c_proc = subprocess.run(cmd, capture_output=True, timeout=15)
+        if c_proc.returncode != 0 or not output_cover_path.exists():
+            # 滤镜失败时安全回退普通抽取
+            subprocess.run([
+                "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(source_video_path),
+                "-frames:v", "1", "-q:v", "3", str(output_cover_path)
+            ], capture_output=True, timeout=10)
+        return output_cover_path.exists()
     except Exception as ce:
         print(f"[extract_cover_frame] 截取封面异常: {ce}")
         return False
@@ -255,8 +312,12 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
     if p.output_video_path:
         full_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
         if full_path.exists() and full_path.is_file():
-            p.output_absolute_path = str(full_path.resolve())
-            p.output_filename = full_path.name
+            if not (p.output_absolute_path and Path(p.output_absolute_path).exists()):
+                p.output_absolute_path = str(full_path.resolve())
+            if p.output_absolute_path and Path(p.output_absolute_path).exists():
+                p.output_filename = Path(p.output_absolute_path).name
+            else:
+                p.output_filename = full_path.name
             p.output_file_size_mb = round(full_path.stat().st_size / (1024 * 1024), 2)
         else:
             p.output_video_path = None
@@ -350,28 +411,38 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
     if not talking_head:
         raise HTTPException(status_code=404, detail="口播主视频素材未找到")
 
+    existing_proj = project_storage_service.get_by_material_id(req.talking_head_id)
+    known_proj_id = existing_proj.id if existing_proj else None
+
     # 如果非强制重算，且该视频已有持久化缓存工程，则直接加载返回
     if not req.force_retranscribe:
         cached_project = project_storage_service.get_by_material_id(req.talking_head_id)
         if cached_project:
+            _set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成（命中缓存）")
+            _set_progress(cached_project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成（命中缓存）")
             return _enrich_project_export_meta(cached_project)
 
     full_th_path = STORAGE_DIR.parent / talking_head.filepath
     if not full_th_path.exists():
         raise HTTPException(status_code=404, detail="口播主视频文件在磁盘上不存在")
 
+    def _notify_progress(stage: PipelineStage, percent: int, msg: str):
+        _set_progress(req.talking_head_id, stage, percent, msg)
+        if known_proj_id:
+            _set_progress(known_proj_id, stage, percent, msg)
+
     try:
-        _set_progress(req.talking_head_id, PipelineStage.AUDIO_EXTRACTING, 15, "正在抽取高质量音频...")
+        _notify_progress(PipelineStage.AUDIO_EXTRACTING, 15, "正在抽取高质量音频...")
 
         # 1. 固化 ASR 转写（自然句层，不切割）与智能合并
-        _set_progress(req.talking_head_id, PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
-        raw_segments = asr_runner.transcribe(full_th_path)
+        _notify_progress(PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
+        raw_segments = await asyncio.to_thread(asr_runner.transcribe, full_th_path)
 
         # 2. 字幕处理（支持高精 ASR 直通模式，杜绝大模型过度纠偏）：
         #    若开启 enable_llm_correction 则走大模型纠偏；
         #    默认高精 ASR 直通：直接以 ASR 原文为主 + 本地词库确定性兜底（0 延迟、0 幻觉、无过度改写）
         if req.enable_llm_correction:
-            _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "大模型行业专名词义智能纠偏中...")
+            _notify_progress(PipelineStage.LLM_CORRECTING, 70, "大模型行业专名词义智能纠偏中...")
             correction_req = HarnessCorrectionRequest(raw_subtitles=raw_segments)
             correction_res = await get_active_harness().correct_subtitles(correction_req)
             candidate_subs = correction_res.updated_subtitles
@@ -382,7 +453,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             engine_name = getattr(correction_res, 'harness_engine_used', 'api')
             latency_val = getattr(correction_res, 'latency_ms', 0.0)
         else:
-            _set_progress(req.talking_head_id, PipelineStage.LLM_CORRECTING, 70, "高精 ASR 直通与词库确定性匹配中...")
+            _notify_progress(PipelineStage.LLM_CORRECTING, 70, "高精 ASR 直通与词库确定性匹配中...")
             candidate_subs = []
             for s in raw_segments:
                 raw_t = str(s.get("raw_text") or s.get("text") or "")
@@ -411,9 +482,11 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             max_gap=0.55,
         )
 
-        for idx, seg in enumerate(corrected_segments):
-            if not seg.get("id") or seg["id"].startswith("seg_") or seg["id"].startswith("sub_"):
-                seg["id"] = str(uuid.uuid4())
+        # 字幕 ID 一律重生成 uuid4：ASR/纠偏链路的 s_N/seg_N 是确定性编号，
+        # 多工程共存时必然撞 subtitles.id 全局主键（批量混剪 4/5 失败的根因）。
+        # 此处位于粗剪/分镜/高光映射之前，后续全部基于新 ID 关联，链路内自洽。
+        for seg in corrected_segments:
+            seg["id"] = str(uuid.uuid4())
 
         th_duration = float(talking_head.duration or 0.0)
         if th_duration <= 0:
@@ -482,7 +555,8 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             fallback_keyword_rules,
             validate_and_clip,
             BrollCueItem,
-            generate_fallback_video_title
+            generate_fallback_video_title,
+            generate_fallback_cover_titles
         )
 
         decision_input = [
@@ -499,7 +573,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
         cues_or_decisions = None
         if req.enable_scene_decision:
-            _set_progress(req.talking_head_id, PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（稀疏指示清单与双层黄金编排）...")
+            _notify_progress(PipelineStage.SCENE_DECIDING, 82, "AI 分镜决策中（稀疏指示清单与双层黄金编排）...")
             try:
                 cues_or_decisions, engine_used, _latency, ok = await get_active_harness().decide_scenes(decision_input)
                 if not ok:
@@ -565,17 +639,30 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         if not ai_video_title:
             ai_video_title = generate_fallback_video_title(decision_input)
 
+        # 012: AI 伴随提炼的封面文案候选（含同城地域锚点）；离线/失败时规则兜底，rationale 如实标注
+        ai_covers_raw = getattr(cues_or_decisions, "suggested_cover_titles", []) or []
+        if not ai_covers_raw:
+            ai_covers_raw = generate_fallback_cover_titles(decision_input, ai_video_title)
+        _cover_fields = set(SuggestedCoverTitle.model_fields.keys())
+        suggested_titles = [
+            SuggestedCoverTitle(**{k: v for k, v in c.items() if k in _cover_fields})
+            for c in ai_covers_raw if isinstance(c, dict) and c.get("main_title")
+        ]
+
         ai_highlights_map = getattr(cues_or_decisions, "highlights", {}) if cues_or_decisions else {}
 
+        # 014: 基于 ASR 转写纠偏结果全自动推导目标城市车牌（如 "浙E·湖州"）
+        detected_target_region = deduce_target_region(corrected_segments)
+
         # 4. 关键词匹配与空镜智能分配 (J/L-Cut)
-        _set_progress(req.talking_head_id, PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
+        _notify_progress(PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
         subtitles: List[SubtitleSegment] = []
         brolls: List[BrollReplacement] = []
 
-        # 预加载各类空镜素材
-        venue_materials = storage_service.list_materials(MaterialCategory.VENUE)
+        # 预加载各类空镜素材，对场地与教学空镜施加严格同城过滤（0 跨市穿帮防线）
+        venue_materials = _filter_broll_by_region(storage_service.list_materials(MaterialCategory.VENUE), detected_target_region)
         experience_materials = storage_service.list_materials(MaterialCategory.EXPERIENCE)
-        lesson_materials = storage_service.list_materials(MaterialCategory.LESSON)
+        lesson_materials = _filter_broll_by_region(storage_service.list_materials(MaterialCategory.LESSON), detected_target_region)
 
         cat_map = {
             MaterialCategory.VENUE: venue_materials,
@@ -637,16 +724,30 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                         break
 
             sd = scene_decisions.get(sid)
-            if not sd and not is_p:
-                sd = SceneDecision(
-                    part="body",
-                    broll_category=assigned_cat,
-                    broll_duration=assigned_dur,
-                    material_id=assigned_broll_id,
-                    reason="双层黄金编排分镜" if assigned_cat else "保留口播真人画面"
-                )
-            elif assigned_broll_id and not is_p:
-                sd.material_id = assigned_broll_id
+            if not is_p:
+                if assigned_broll_id:
+                    if not sd:
+                        sd = SceneDecision(
+                            part="body",
+                            broll_category=assigned_cat,
+                            broll_duration=assigned_dur,
+                            material_id=assigned_broll_id,
+                            reason="双层黄金编排分镜"
+                        )
+                    else:
+                        sd.material_id = assigned_broll_id
+                        sd.broll_category = assigned_cat
+                        sd.broll_duration = assigned_dur
+                else:
+                    sd = SceneDecision(
+                        part=(sd.part if sd else "body"),
+                        broll_category=None,
+                        broll_duration=0.0,
+                        material_id=None,
+                        reason="保留口播真人画面"
+                    )
+            else:
+                sd = None
 
             h_words = [
                 HighlightWord(**w) for w in build_highlight_words(c_text, ai_hws)
@@ -703,6 +804,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
         project = CutProject(
             title=ai_video_title,
             talking_head_id=talking_head.id,
+            target_region=detected_target_region,
             aspect_ratio=req.aspect_ratio,
             task_dir=task_dir_rel,
             strategy=strat,
@@ -711,19 +813,23 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             broll_replacements=brolls,
             prune_spans=prune_spans,
             raw_asr_segments=raw_segments,
+            suggested_cover_titles=suggested_titles,
             status=CutProjectStatus.DRAFT,
             corrections_summary=summary_list,
             pipeline_notes={"scene_decision_engine": scene_engine_note, "scene_decision_degraded": scene_engine_note.startswith("keyword-rules")},
             last_engine_used=engine_name,
             correction_latency_ms=latency_val
         )
+        known_proj_id = project.id
+        _notify_progress(PipelineStage.BROLL_MATCHING, 90, "关键词视读匹配与空镜对齐中...")
+
         # 5. 智能剪辑成片压制与默认封面
         if req.auto_render:
-            _set_progress(req.talking_head_id, PipelineStage.VIDEO_COMPOSING, 95, "正在压制生成成片预览与封面...")
-            _set_progress(project.id, PipelineStage.VIDEO_COMPOSING, 95, "正在压制生成成片预览与封面...")
+            _notify_progress(PipelineStage.VIDEO_COMPOSING, 95, "正在压制生成成片预览与封面...")
 
             dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"output_{project.id}_{project.aspect_ratio.replace(':', '_')}_{dt_str}.mp4"
+            clean_title = sanitize_filename(project.title or (Path(talking_head.filename).stem if talking_head.filename else "成片"))
+            output_filename = f"{clean_title}_{dt_str}.mp4"
             output_path = task_dir_path / output_filename
 
             from app.native_engine.prune_engine import auto_prune_engine
@@ -809,18 +915,32 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
         _save_task_manifest(task_dir_path, project)
         project_storage_service.save_project(project)
-        _set_progress(project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
-        _set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
+        _notify_progress(PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
         return _enrich_project_export_meta(project)
     except Exception as e:
-        _set_progress(req.talking_head_id, PipelineStage.FAILED, 0, f"初剪失败: {str(e)}")
+        _notify_progress(PipelineStage.FAILED, 0, f"初剪失败: {str(e)}")
         raise e
 
 @router.get("/{project_id}/progress", response_model=PipelineProgress)
 async def get_project_progress(project_id: str):
-    """获取剪辑任务实时处理进度估算（为单视频剪辑与后续批量剪辑进度条预留数据接口）"""
+    """获取剪辑任务实时处理进度估算（兼容 project_id 或 talking_head_id 双向查询）"""
     if project_id in _pipeline_progress:
         return _pipeline_progress[project_id]
+
+    try:
+        proj = project_storage_service.get_by_project_id(project_id)
+        if proj and proj.talking_head_id and proj.talking_head_id in _pipeline_progress:
+            return _pipeline_progress[proj.talking_head_id]
+    except Exception:
+        pass
+
+    try:
+        proj_by_th = project_storage_service.get_by_material_id(project_id)
+        if proj_by_th and proj_by_th.id in _pipeline_progress:
+            return _pipeline_progress[proj_by_th.id]
+    except Exception:
+        pass
+
     return PipelineProgress(
         project_id=project_id,
         stage=PipelineStage.IDLE,
@@ -904,6 +1024,7 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
     engine_used = "minimax-cue"
     latency = 0.0
     degraded = False
+    cues_or_decisions = None
 
     try:
         cues_or_decisions, engine_used, latency, ok = await get_active_harness().decide_scenes(decision_input)
@@ -952,10 +1073,14 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
         degraded = True
         latency = 0.0
 
-    # 预加载空镜素材库
-    venue_materials = storage_service.list_materials(MaterialCategory.VENUE)
+    # 预加载空镜素材库，对场地与教学空镜施加严格同城过滤（0 跨市穿帮防线）
+    target_region = getattr(p, "target_region", None)
+    if not target_region:
+        target_region = deduce_target_region(p.subtitles)
+        p.target_region = target_region
+    venue_materials = _filter_broll_by_region(storage_service.list_materials(MaterialCategory.VENUE), target_region)
     experience_materials = storage_service.list_materials(MaterialCategory.EXPERIENCE)
-    lesson_materials = storage_service.list_materials(MaterialCategory.LESSON)
+    lesson_materials = _filter_broll_by_region(storage_service.list_materials(MaterialCategory.LESSON), target_region)
 
     cat_map = {
         MaterialCategory.VENUE: venue_materials,
@@ -1022,6 +1147,19 @@ async def redecide_scenes(project_id: str, req: SceneDecisionRequest = SceneDeci
     p.broll_replacements = new_brolls
     p.compact_subtitles = auto_prune_engine.reproject_subtitles_to_compact(p.subtitles, kept_spans) if kept_spans else [s for s in p.subtitles if not s.is_pruned]
     p.pipeline_notes = {**(p.pipeline_notes or {}), "scene_decision_engine": engine_used, "scene_decision_degraded": degraded}
+
+    # 012: 同步刷新 AI 伴随提炼的封面文案候选（含地域锚点）；规则兜底时如实标注 rationale
+    ai_covers_raw = getattr(cues_or_decisions, "suggested_cover_titles", []) if cues_or_decisions else []
+    if not ai_covers_raw:
+        from app.native_engine.scene_decision import generate_fallback_cover_titles
+        ai_covers_raw = generate_fallback_cover_titles(decision_input)
+    if ai_covers_raw:
+        _cover_fields = set(SuggestedCoverTitle.model_fields.keys())
+        p.suggested_cover_titles = [
+            SuggestedCoverTitle(**{k: v for k, v in c.items() if k in _cover_fields})
+            for c in ai_covers_raw if isinstance(c, dict) and c.get("main_title")
+        ]
+
     project_storage_service.save_project(p)
 
     return {
@@ -1042,11 +1180,25 @@ async def get_filter_presets():
     """获取所有官方口播画质调优预设列表及说明"""
     presets = [
         {
+            "id": "cold_white",
+            "name": "冷白暖亮",
+            "description": "面部冷白透亮去黄，背景环境温暖提亮，驱散室内暗沉发青，呈现阳光通透美感",
+            "is_recommended": True,
+            "tags": ["冷白皮", "暖阳环境", "通透提亮", "保边磨皮"]
+        },
+        {
             "id": "clean_natural",
             "name": "自然通透",
             "description": "面部暗沉驱散，皮肤质感自然白皙，发丝与眼神光清晰，适合日常手机口播",
-            "is_recommended": True,
-            "tags": ["日常口播", "提亮去黄", "眼神光增强"]
+            "is_recommended": False,
+            "tags": ["日常口播", "通透自然", "清晰发丝"]
+        },
+        {
+            "id": "teal_orange",
+            "name": "电影青橙",
+            "description": "国际大片黄金色调，阴影泛冷青蓝，高光肤色温暖立体，高级院线电影质感",
+            "is_recommended": False,
+            "tags": ["院线电影感", "青橙大片", "高质感"]
         },
         {
             "id": "crisp_hd",
@@ -1063,6 +1215,13 @@ async def get_filter_presets():
             "tags": ["美妆情感", "红润好气色", "柔化疲惫"]
         },
         {
+            "id": "vintage_film",
+            "name": "复古胶片",
+            "description": "模拟经典胶片温润色调，微黄暖调，带有边缘柔和暗角，富有叙事与怀旧质感",
+            "is_recommended": False,
+            "tags": ["经典胶片", "怀旧叙事", "电影暗角"]
+        },
+        {
             "id": "original",
             "name": "原始原色",
             "description": "保持素材原始色彩，不施加额外调色与锐化处理",
@@ -1075,11 +1234,51 @@ async def get_filter_presets():
         "data": presets
     }
 
+@router.get("/cover-templates")
+async def get_cover_templates():
+    """012: 获取 6 大实战封面模板预设、4 套高转化调色盘、学车特点库与安全区规格"""
+    hooks_raw = (load_glossary().get("cover_hooks") or {})
+    cover_hooks = [str(h).strip() for h in (hooks_raw.get("hooks") if isinstance(hooks_raw, dict) else None) or [] if str(h).strip()]
+    return {
+        "code": 0,
+        "data": {
+            "templates": COVER_TEMPLATES_CATALOG,
+            "palettes": [
+                {"id": pid, "name": pal["name"], "main": pal["main"], "sub": pal["sub"], "accent": pal["accent"]}
+                for pid, pal in COVER_PALETTES.items()
+            ],
+            "cover_hooks": cover_hooks,
+            "safe_zones": {
+                "douyin": {"top": 0.05, "bottom": 0.18, "left": 0.05, "right": 0.15},
+                "xiaohongshu": {"aspect": "3:4", "top": 0.125, "bottom": 0.125, "left": 0.0, "right": 0.0}
+            }
+        }
+    }
+
 @router.get("/{project_id}", response_model=CutProject)
 async def get_project(project_id: str):
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
+    return _enrich_project_export_meta(p)
+
+class UpdateTitleRequest(BaseModel):
+    title: str
+
+@router.put("/{project_id}/title", response_model=CutProject)
+async def update_project_title(project_id: str, req: UpdateTitleRequest):
+    """更新工程标题，并同步持久化到 SQLite 库与任务清单"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    new_title = req.title.strip()
+    if new_title:
+        p.title = new_title
+        project_storage_service.save_project(p)
+        if p.task_dir:
+            td = (STORAGE_DIR.parent / p.task_dir).resolve()
+            if td.exists():
+                _save_task_manifest(td, p)
     return _enrich_project_export_meta(p)
 
 @router.put("/{project_id}/subtitles", response_model=CutProject)
@@ -1297,10 +1496,33 @@ async def update_prune_config(project_id: str, req: PruneConfigRequest):
         "compact_subtitles": [s.model_dump() if hasattr(s, "model_dump") else s for s in compact_subs]
     }
 
+@router.get("/banned_words")
+async def get_banned_words():
+    """获取当前系统加载的违禁词映射字典"""
+    return {
+        "mappings": compliance_sanitizer.get_mappings()
+    }
+
+@router.get("/{project_id}/banned_words_check")
+async def check_project_banned_words(project_id: str):
+    """预检当前工程字幕中命中的违禁词，供导出前弹窗确认与明细展示"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    active_subs = [s for s in (p.subtitles or []) if not getattr(s, "is_pruned", False)]
+    report = compliance_sanitizer.detect_banned_words(active_subs)
+    report["project_id"] = project_id
+    return report
+
 @router.post("/{project_id}/render", response_model=CutProject)
 async def render_project(
     project_id: str,
-    video_speed: Optional[float] = Query(None, description="自定义导出倍速 (支持任意浮点数，如 1.08, 1.12, 1.15)")
+    video_speed: Optional[float] = Query(None, description="自定义导出倍速 (支持任意浮点数，如 1.08, 1.12, 1.15)"),
+    filter_banned_words: bool = Query(False, description="是否进行抖音违禁词脱敏清洗（仅在最终导出成片时生效，重新合成默认为 False）"),
+    export_dir: Optional[str] = Query(None, description="自定义成片与封面另存的目标文件夹路径"),
+    include_cover: bool = Query(True, description="导出时是否生成并导出封面图片"),
+    embed_cover_as_first_frame: Optional[bool] = Query(None, description="是否将封面压入视频首帧 (0.08s)")
 ):
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
@@ -1322,6 +1544,7 @@ async def render_project(
         p.strategy.watermark_text = wm_text
 
     p.status = CutProjectStatus.PROCESSING
+    project_storage_service.save_project(p)
 
     # 独立工程目录：确保专属目录存在，所有渲染成果（成片、字幕、音频、封面）落入独立目录
     if not p.task_dir:
@@ -1338,7 +1561,8 @@ async def render_project(
         old_output_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
 
     dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = f"output_{p.id}_{p.aspect_ratio.replace(':', '_')}_{dt_str}.mp4"
+    clean_title = sanitize_filename(p.title or (Path(th.filename).stem if th and th.filename else "成片"))
+    output_filename = f"{clean_title}_{dt_str}.mp4"
     output_path = target_task_dir / output_filename
 
     # 1. 确保粗剪区间与策略同步，并计算有效保留时间区间 (KeptSpans)
@@ -1396,6 +1620,11 @@ async def render_project(
     ass_path = target_task_dir / "subtitles.ass"
     speed = float(p.strategy.video_speed or 1.0)
     render_subtitles = _prepare_render_subtitles(p.subtitles, speed=speed, kept_spans=kept_spans)
+
+    # 011: 违禁词脱敏清洗处理（仅在视频最终导出且勾选合规清洗时处理，日常“重新合成”保持干净自然字幕）
+    if filter_banned_words:
+        render_subtitles = compliance_sanitizer.sanitize_subtitles(render_subtitles)
+
     generate_ass_file(
         render_subtitles,
         ass_path,
@@ -1406,42 +1635,338 @@ async def render_project(
     srt_path = target_task_dir / "subtitles.srt"
     generate_srt_file(render_subtitles, srt_path, smooth_timings=True)
 
-    # 4. 复合渲染：空镜平替 + ASS字幕 + 顶部横幅 + 水印
+    # 4. 复合渲染：主体底包指纹校验与极速复用缓存（避免仅因加封面/重导出而重复全片重编码）
     full_th_path = STORAGE_DIR.parent / th.filepath
     eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
-    try:
-        success = composer.compose_jl_cut(
-            talking_head_path=full_th_path,
-            broll_cuts=broll_cuts_payload,
-            output_path=output_path,
-            aspect_ratio=p.aspect_ratio,
-            total_duration=eff_total_dur,
-            ass_subtitle_path=ass_path,
-            strategy=p.strategy.model_dump(),
-            kept_spans=kept_spans
-        )
-    except Exception as e:
-        # 真实执行铁律：合成失败必须如实暴露，工程状态落库为 FAILED，并带回真实错误详情
-        p.status = CutProjectStatus.FAILED
-        project_storage_service.save_project(p)
-        raise HTTPException(status_code=500, detail=f"视频合成失败: {str(e)}")
 
-    if success and output_path.exists():
-        p.status = CutProjectStatus.COMPLETED
+    base_comp_path = target_task_dir / "_base_composition.mp4"
+    base_meta_path = target_task_dir / "_base_composition.meta.json"
+
+    import hashlib
+    import json as _json
+
+    body_meta = {
+        "talking_head_path": str(full_th_path.resolve()) if full_th_path.exists() else str(full_th_path),
+        "talking_head_mtime": full_th_path.stat().st_mtime if full_th_path.exists() else 0,
+        "kept_spans": [
+            {
+                "start": round(float(k.get("start_time", 0.0) if isinstance(k, dict) else getattr(k, "start_time", 0.0)), 3),
+                "end": round(float(k.get("end_time", 0.0) if isinstance(k, dict) else getattr(k, "end_time", 0.0)), 3),
+                "duration": round(float(k.get("duration", 0.0) if isinstance(k, dict) else getattr(k, "duration", 0.0)), 3)
+            }
+            for k in (kept_spans or [])
+        ],
+        "broll_cuts": [
+            {
+                "material_path": str(Path(b.get("material_path")).resolve()) if b.get("material_path") else "",
+                "start_time": round(float(b.get("start_time", 0)), 3),
+                "end_time": round(float(b.get("end_time", 0)), 3),
+                "transition": float(b.get("transition", 0.0))
+            }
+            for b in broll_cuts_payload
+        ],
+        "subtitles": [
+            {
+                "text": (s.get("corrected_text") or s.get("raw_text") or "") if isinstance(s, dict) else (s.corrected_text or s.raw_text or ""),
+                "start": round(float(s.get("start_time", 0.0) if isinstance(s, dict) else getattr(s, "start_time", 0.0)), 3),
+                "end": round(float(s.get("end_time", 0.0) if isinstance(s, dict) else getattr(s, "end_time", 0.0)), 3),
+                "hws": [
+                    (w.get("word") if isinstance(w, dict) else getattr(w, "word", ""))
+                    for w in ((s.get("highlight_words", []) if isinstance(s, dict) else getattr(s, "highlight_words", [])) or [])
+                    if (w.get("word") if isinstance(w, dict) else getattr(w, "word", None))
+                ]
+            }
+            for s in render_subtitles
+        ],
+        "speed": speed,
+        "aspect_ratio": p.aspect_ratio,
+        "filter_banned_words": filter_banned_words,
+        "strategy": p.strategy.model_dump()
+    }
+    body_fp = hashlib.sha256(_json.dumps(body_meta, sort_keys=True).encode("utf-8")).hexdigest()
+
+    min_comp_size = 10240 if (full_th_path.exists() and full_th_path.stat().st_size > 10240) else 1
+    need_compose = True
+    if base_comp_path.exists() and base_comp_path.stat().st_size >= min_comp_size and base_meta_path.exists():
+        try:
+            cached_meta = _json.loads(base_meta_path.read_text(encoding="utf-8"))
+            if cached_meta.get("body_fingerprint") == body_fp:
+                # 零信任探测：对于真实素材（>10KB），严格要求底包必须经 ffprobe 校验包含有效视频流
+                if full_th_path.exists() and full_th_path.stat().st_size > 10240:
+                    chk = subprocess.run([
+                        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+                        "-of", "json", str(base_comp_path)
+                    ], capture_output=True, timeout=5)
+                    if chk.returncode == 0:
+                        try:
+                            strms = _json.loads(chk.stdout).get("streams") or []
+                            if any(s.get("codec_type") == "video" for s in strms):
+                                need_compose = False
+                        except Exception:
+                            need_compose = True
+                else:
+                    need_compose = False
+        except Exception:
+            need_compose = True
+
+    if need_compose:
+        try:
+            success = await asyncio.to_thread(
+                composer.compose_jl_cut,
+                talking_head_path=full_th_path,
+                broll_cuts=broll_cuts_payload,
+                output_path=base_comp_path,
+                aspect_ratio=p.aspect_ratio,
+                total_duration=eff_total_dur,
+                ass_subtitle_path=ass_path,
+                strategy=p.strategy.model_dump(),
+                kept_spans=kept_spans
+            )
+            if success and base_comp_path.exists() and base_comp_path.stat().st_size >= min_comp_size:
+                base_meta_path.write_text(
+                    _json.dumps({"body_fingerprint": body_fp, "rendered_at": time.time()}),
+                    encoding="utf-8"
+                )
+            else:
+                raise RuntimeError("视频主体合成产物无效或文件过小")
+        except Exception as e:
+            # 真实执行铁律：合成失败必须如实暴露，工程状态落库为 FAILED，并带回真实错误详情
+            p.status = CutProjectStatus.FAILED
+            project_storage_service.save_project(p)
+            raise HTTPException(status_code=500, detail=f"视频合成失败: {str(e)}")
+    else:
+        print(f"[render_project] 视频主体内容未变 (fingerprint={body_fp[:10]}), 命中极速底包复用，跳过全片重编码直接执行封面处理与成片导出")
+
+    # 5. 封面生成与首帧极速压入 (concat -c copy 毫秒级拼接)
+    cover_dest = target_task_dir / "cover.jpg"
+    if include_cover:
+        # 若配置了封面，务必按最新设计参数强制重新渲染高清 cover.jpg 覆盖写盘，绝不直接复用旧图
+        if p.cover_config:
+            try:
+                base_img = None
+                if p.cover_config.source in ("custom_upload", "upload") and p.cover_config.custom_image_path:
+                    cand_p = ensure_storage_path(STORAGE_DIR.parent / p.cover_config.custom_image_path)
+                    if cand_p.exists():
+                        base_img = Image.open(cand_p).convert("RGBA")
+                if not base_img:
+                    ts_val = p.cover_config.frame_timestamp if p.cover_config.frame_timestamp > 0 else 0.5
+                    ts_tag = int(round(float(ts_val) * 100))
+                    cand_dirs = [
+                        target_task_dir / "thumbs",
+                        target_task_dir,
+                        COVERS_DIR / "candidates" / p.id,
+                    ]
+                    cached_frame = None
+                    for cdir in cand_dirs:
+                        if not cdir.exists():
+                            continue
+                        for mf in cdir.glob(f"thumb_candidate_*_{ts_tag}.jpg"):
+                            if mf.stat().st_size > 0:
+                                cached_frame = mf
+                                break
+                        if cached_frame:
+                            break
+                        raw_cand = cdir / f"_base_frame_{ts_tag}.jpg"
+                        if raw_cand.exists() and raw_cand.stat().st_size > 0:
+                            cached_frame = raw_cand
+                            break
+
+                    if cached_frame and cached_frame.exists():
+                        base_img = Image.open(cached_frame).convert("RGBA")
+                    else:
+                        temp_frame = target_task_dir / f"_base_frame_{ts_tag}.jpg"
+                        video_src_for_frame = base_comp_path if base_comp_path.exists() else None
+                        if not video_src_for_frame and th and th.filepath:
+                            mat_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
+                            if mat_p.exists():
+                                video_src_for_frame = mat_p
+                        if video_src_for_frame:
+                            import subprocess as _sub
+                            _sub.run([
+                                "ffmpeg", "-y",
+                                "-ss", f"{ts_val:.3f}",
+                                "-i", str(video_src_for_frame),
+                                "-frames:v", "1", "-q:v", "2",
+                                str(temp_frame)
+                            ], capture_output=True, timeout=15)
+                            if temp_frame.exists() and temp_frame.stat().st_size > 0:
+                                base_img = Image.open(temp_frame).convert("RGBA")
+
+                if not base_img:
+                    if cover_dest.exists() and cover_dest.stat().st_size > 0:
+                        try:
+                            base_img = Image.open(cover_dest).convert("RGBA")
+                        except Exception:
+                            base_img = None
+                    if not base_img:
+                        base_img = Image.new("RGBA", (1080, 1920), (18, 24, 38, 255))
+
+                final_cover = render_cover_image(base_img, p.cover_config, target_size=(1080, 1920))
+                final_cover.save(cover_dest, format="JPEG", quality=95)
+                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+            except Exception as ce:
+                print(f"[render_project] 重新渲染高清封面异常，回退处理: {ce}")
+                if not cover_dest.exists():
+                    extract_cover_frame(base_comp_path, cover_dest, timestamp=0.5)
+                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+        else:
+            if not cover_dest.exists():
+                if extract_cover_frame(base_comp_path, cover_dest, timestamp=0.5):
+                    p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                    p.cover_source = "frame"
+            else:
+                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+    else:
+        p.cover_image_path = None
+
+    # 若策略配置了在首帧压入封面 (embed_cover_as_first_frame)：优先流复制拼接实现零二次重编码，
+    # 仅当编码参数不兼容时才回退重编码并在 pipeline_notes 如实标注，严禁静默吞掉失败。
+    should_embed_cover = (
+        embed_cover_as_first_frame
+        if embed_cover_as_first_frame is not None
+        else getattr(p.strategy, "embed_cover_as_first_frame", True)
+    )
+
+    concat_ok = False
+    if include_cover and should_embed_cover and cover_dest.exists():
+        embed_status = "success"
+        try:
+            import subprocess
+            import json as _json
+            import re as _re
+            import os as _os
+
+            def _safe_token(raw_value: Any, fallback: str) -> str:
+                token = str(raw_value or "").strip()
+                return token if _re.fullmatch(r"[A-Za-z0-9_]+", token) else fallback
+
+            cover_clip = target_task_dir / f"_cover_clip_{int(time.time()*1000)}.mp4"
+            concat_list = target_task_dir / f"_concat_{int(time.time()*1000)}.txt"
+
+            # 1. 探测底包成片音视频编码参数，封面片段严格对齐（concat -c copy 的前提）
+            probe = subprocess.run([
+                "ffprobe", "-v", "error", "-show_entries",
+                "stream=codec_type,codec_name,profile,pix_fmt,r_frame_rate,sample_rate,channels,width,height",
+                "-of", "json", str(base_comp_path)
+            ], capture_output=True, timeout=10)
+            v_info: Dict[str, Any] = {}
+            a_info: Dict[str, Any] = {}
+            if probe.returncode == 0 and probe.stdout.strip():
+                for s_info in (_json.loads(probe.stdout).get("streams") or []):
+                    if s_info.get("codec_type") == "video" and not v_info:
+                        v_info = s_info
+                    elif s_info.get("codec_type") == "audio" and not a_info:
+                        a_info = s_info
+
+            fps_val = 30.0
+            rate_raw = str(v_info.get("r_frame_rate") or "")
+            if _re.fullmatch(r"[0-9]+/[0-9]+", rate_raw):
+                num, den = rate_raw.split("/")
+                if float(den) > 0:
+                    fps_val = round(float(num) / float(den), 3)
+            fps_str = "%.3f" % fps_val
+            v_w = int(v_info.get("width") or 1080)
+            v_h = int(v_info.get("height") or 1920)
+            audio_layout = "stereo" if int(a_info.get("channels") or 2) >= 2 else "mono"
+            audio_rate_raw = str(a_info.get("sample_rate") or "44100").strip()
+            audio_rate = audio_rate_raw if _re.fullmatch(r"[0-9]+", audio_rate_raw) else "44100"
+            codec_name = _safe_token(v_info.get("codec_name"), "libx264")
+            pix_fmt_name = _safe_token(v_info.get("pix_fmt"), "yuv420p")
+            audio_codec = _safe_token(a_info.get("codec_name"), "aac")
+            profile_name = _safe_token(v_info.get("profile"), "")
+
+            vf_args = (f"scale={v_w}:{v_h}:force_original_aspect_ratio=decrease,"
+                       f"pad={v_w}:{v_h}:(ow-iw)/2:(oh-ih)/2,fps=" + fps_str + ",setsar=1")
+            anullsrc_args = "anullsrc=channel_layout=" + audio_layout + ":sample_rate=" + audio_rate
+
+            # 封面首帧规则：严格压入 1 个物理视频首帧（1/fps，约 0.033~0.04s），消灭 1 秒静止停顿，开播直接播放
+            one_frame_duration = round(1.0 / fps_val, 4) if fps_val > 0 else 0.0333
+            cover_duration = max(0.0333, one_frame_duration)
+
+            cmd_clip = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", str(cover_dest),
+                "-f", "lavfi", "-i", anullsrc_args,
+                "-t", f"{cover_duration:.4f}",
+                "-vf", vf_args,
+                "-c:v", "libx264",
+                "-g", "1", "-bf", "0", "-tune", "stillimage",
+                "-pix_fmt", pix_fmt_name,
+                "-c:a", audio_codec,
+                str(cover_clip)
+            ]
+            if profile_name:
+                cmd_clip += ["-profile:v", profile_name]
+            c_clip = subprocess.run(cmd_clip, capture_output=True, timeout=15)
+
+            clip_valid = False
+            if c_clip.returncode == 0 and cover_clip.exists():
+                chk_probe = subprocess.run([
+                    "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,nb_frames",
+                    "-of", "json", str(cover_clip)
+                ], capture_output=True, text=True, timeout=5)
+                if chk_probe.returncode == 0:
+                    try:
+                        strms = _json.loads(chk_probe.stdout).get("streams") or []
+                        has_v = any(s.get("codec_type") == "video" for s in strms)
+                        clip_valid = has_v
+                    except Exception:
+                        clip_valid = False
+
+            if clip_valid:
+                concat_list.write_text(
+                    f"file '{cover_clip.resolve().as_posix()}'\nfile '{base_comp_path.resolve().as_posix()}'\n",
+                    encoding="utf-8"
+                )
+                c_concat = subprocess.run([
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
+                    "-c", "copy", "-movflags", "+faststart", str(output_path)
+                ], capture_output=True, timeout=30)
+                if c_concat.returncode == 0 and output_path.exists():
+                    verify_p = subprocess.run([
+                        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+                        "-of", "json", str(output_path)
+                    ], capture_output=True, text=True, timeout=5)
+                    if verify_p.returncode == 0:
+                        try:
+                            v_strms = _json.loads(verify_p.stdout).get("streams") or []
+                            has_v = any(s.get("codec_type") == "video" for s in v_strms)
+                            has_a = any(s.get("codec_type") == "audio" for s in v_strms)
+                            concat_ok = has_v and has_a
+                        except Exception:
+                            concat_ok = False
+
+            if concat_ok:
+                embed_status = "success"
+            else:
+                embed_status = "preserved_original_due_to_concat_mismatch"
+                output_path.unlink(missing_ok=True)
+                shutil.copyfile(str(base_comp_path), str(output_path))
+
+            try:
+                cover_clip.unlink(missing_ok=True)
+                concat_list.unlink(missing_ok=True)
+            except Exception:
+                pass
+        except Exception as e:
+            embed_status = "failed: " + str(e)[:120]
+            if not output_path.exists():
+                shutil.copyfile(str(base_comp_path), str(output_path))
+        p.pipeline_notes = {**(p.pipeline_notes or {}), "embed_cover_first_frame": embed_status}
+    else:
+        # 无需压入封面首帧，直接将底包成片同步为输出产物
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            shutil.copyfile(str(base_comp_path), str(output_path))
+
+    if output_path.exists():
         p.output_video_path = f"{p.task_dir}/{output_filename}"
         p.output_absolute_path = str(output_path.resolve())
         p.output_filename = output_filename
         p.output_file_size_mb = round(output_path.stat().st_size / (1024 * 1024), 2)
 
-        # 自动抽取 0.5s 默认封面帧（从成片抽取），便于在成片网格中直接显示缩略图
-        cover_dest = target_task_dir / "cover.jpg"
-        if extract_cover_frame(output_path, cover_dest, timestamp=0.5):
-            p.cover_image_path = f"{p.task_dir}/cover.jpg"
-            p.cover_source = "frame"
-
         # 安全清理上一版渲染产物，防止磁盘膨胀，若被播放器占用则静默忽略
-        for old_f in target_task_dir.glob("output_*.mp4"):
-            if old_f.name != output_filename:
+        for old_f in target_task_dir.glob("*.mp4"):
+            if old_f.name != output_filename and not old_f.name.startswith("temp_") and not old_f.name.startswith("_"):
                 try:
                     old_f.unlink(missing_ok=True)
                 except Exception as e:
@@ -1453,6 +1978,29 @@ async def render_project(
             except Exception as e:
                 print(f"[render] 保留旧渲染文件 (可能正在被播放): {e}")
 
+        if export_dir:
+            try:
+                dest_dir = Path(export_dir).resolve()
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                if dest_dir.is_dir():
+                    target_name = f"{clean_title}.mp4"
+                    dest_file = dest_dir / target_name
+                    if dest_file.exists():
+                        target_name = f"{clean_title}_{dt_str}.mp4"
+                        dest_file = dest_dir / target_name
+                    shutil.copy2(output_path, dest_file)
+                    p.output_absolute_path = str(dest_file)
+                    p.output_filename = dest_file.name
+                    if include_cover:
+                        cov_src = target_task_dir / "cover.jpg"
+                        if cov_src.exists():
+                            cov_name = f"{dest_file.stem}_cover.jpg"
+                            shutil.copy2(cov_src, dest_dir / cov_name)
+                    print(f"[render_project] 成功复制成片与封面至自定义目标目录: {dest_file}")
+            except Exception as exp_err:
+                print(f"[render_project] 复制到自定义导出目录失败: {exp_err}")
+
+        p.status = CutProjectStatus.COMPLETED
         _save_task_manifest(target_task_dir, p)
     else:
         p.status = CutProjectStatus.FAILED
@@ -1461,25 +2009,89 @@ async def render_project(
     return _enrich_project_export_meta(p)
 
 class CoverRequest(BaseModel):
-    source: str = "frame"             # frame | upload | ai
-    timestamp: Optional[float] = None  # source=frame 时必填：成片内秒数
-    image_base64: Optional[str] = None  # source=upload 时：图片 base64 内容
+    source: str = "video_frame"              # video_frame | custom_upload | frame | upload
+    timestamp: Optional[float] = None        # 兼容旧参数
+    frame_timestamp: float = 0.0            # 截帧时间点（秒）
+    custom_image_path: Optional[str] = None # 自定义上传图片的物理路径
+    # 6 大实战模板 + 3 个旧值兼容（sticker_double_stroke | split_contrast_bar | rainbow_arc_header |
+    # bottom_fog_vignette | angled_impact_stamp | clean_editorial | gold_bold | color_badge | dual_contrast）
+    template_id: str = "sticker_double_stroke"
+    location_tag: str = ""                  # 核心地域词（封面第一视觉锚点）
+    main_title: str = ""                    # 主标题
+    sub_title: str = ""                     # 副标题
+    color_theme: str = "classic_blue"      # 4 套调色盘（旧值自动映射兼容）
+    font_family: str = "heavy_gothic"       # 4 大字系
+    aspect_mode: str = "blur_padding"       # blur_padding | center_crop
+    show_safe_zone: bool = False            # 是否显示安全区
+    image_base64: Optional[str] = None      # 兼容 base64 内容
+    # R3: 分区文本样式覆盖（key ∈ location|main|sub；非法键/非法颜色 422，越界数值 clamp 后持久化）
+    zone_styles: Optional[Dict[COVER_ZONE_KEYS, CoverTextZoneStyle]] = None
+    # 贴纸涂鸦自由拖拽偏移字典
+    doodle_offsets: Optional[Dict[str, Dict[str, float]]] = None
+
+@router.post("/{project_id}/cover/candidates")
+async def get_cover_candidates(project_id: str):
+    """012: 从视频中提取 3~5 处黄金候选帧缩略图"""
+    p = project_storage_service.get_by_project_id(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="工程不存在")
+
+    video_file = None
+    if p.talking_head_id:
+        th = storage_service.get_material(p.talking_head_id)
+        if th and th.filepath:
+            cand_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
+            if cand_p.exists():
+                video_file = cand_p
+    if not video_file and p.output_video_path:
+        out_p = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
+        if out_p.exists():
+            video_file = out_p
+
+    if not video_file:
+        raise HTTPException(status_code=400, detail="未找到视频源文件，无法截取候选帧")
+
+    if p.task_dir:
+        target_dir = (STORAGE_DIR.parent / p.task_dir / "thumbs").resolve()
+        rel_base = f"{p.task_dir}/thumbs"
+    else:
+        target_dir = (COVERS_DIR / "candidates" / p.id).resolve()
+        rel_base = f"storage/covers/candidates/{p.id}"
+
+    frames = extract_candidate_frames(video_file, target_dir)
+    results = [
+        {
+            "timestamp": f["timestamp"],
+            "label": f["label"],
+            "filename": f["filename"],
+            "thumb_url": f"/{rel_base}/{f['filename']}",
+            "person_thumb_url": f"/{rel_base}/{Path(f['filename']).stem}_person.png" if (target_dir / f"{Path(f['filename']).stem}_person.png").exists() else None,
+            "has_person": (target_dir / f"{Path(f['filename']).stem}_person.png").exists()
+        }
+        for f in frames
+    ]
+    return {
+        "code": 0,
+        "data": {
+            "candidates": results,
+            "suggested_cover_titles": [c.model_dump() for c in (p.suggested_cover_titles or [])]
+        }
+    }
 
 @router.post("/{project_id}/cover")
 async def set_project_cover(project_id: str, req: CoverRequest):
-    """设置工程封面：成片截帧 / 本地上传；AI 生成仅规划占位，显式 501 不伪造结果"""
-    import base64 as _b64
-    import re as _re
+    """012: 保存封面配置并即时合成 1080x1920 印刷级高清封面图"""
     import subprocess
+    import io
 
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
 
-    if req.source == "ai":
-        raise HTTPException(status_code=501, detail="AI 封面生成规划中，敬请期待")
+    source = "video_frame" if req.source in ("video_frame", "frame") else "custom_upload"
+    ts_val = req.frame_timestamp if req.frame_timestamp > 0 else (req.timestamp or 0.0)
 
-    # 确定保存封面的目标目录：若有独立任务目录优先保存在专属目录
+    # 保存路径
     if p.task_dir:
         target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1487,72 +2099,134 @@ async def set_project_cover(project_id: str, req: CoverRequest):
         cover_path = target_dir / cover_name
         rel_cover = f"{p.task_dir}/{cover_name}"
     else:
-        ts = int(time.time())
-        cover_name = f"cover_{p.id}_{ts}.jpg"
+        ts_now = int(time.time())
+        cover_name = f"cover_{p.id}_{ts_now}.jpg"
         cover_path = COVERS_DIR / cover_name
         rel_cover = f"storage/covers/{cover_name}"
 
-    if req.source == "frame":
-        if not p.output_video_path:
-            raise HTTPException(status_code=400, detail="该工程尚未生成成片，无法截帧")
-        if req.timestamp is None:
-            raise HTTPException(status_code=400, detail="请提供有效的截帧时间点 timestamp")
-        # 路径守卫：规范化并校验必须位于 storage 目录内，之后才允许进入命令参数
-        full_video = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
-        if not full_video.exists():
-            raise HTTPException(status_code=404, detail="成片文件在磁盘上不存在")
+    base_img: Optional[Image.Image] = None
 
-        # 白名单清洗：时间点只能是纯数字秒值，不合法时回退首帧 0.000
-        ss_value = f"{max(0.0, min(float(req.timestamp), 36000.0)):.3f}"
-        if not _re.fullmatch(r"\d+\.\d{3}", ss_value):
-            ss_value = "0.000"
+    if source == "video_frame":
+        video_file = None
+        if p.task_dir:
+            base_p = ensure_storage_path(STORAGE_DIR.parent / p.task_dir / "_base_composition.mp4")
+            if base_p.exists() and base_p.stat().st_size > 10240:
+                video_file = base_p
+        if not video_file and p.output_video_path:
+            out_p = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
+            if out_p.exists():
+                video_file = out_p
+        if not video_file and p.talking_head_id:
+            th = storage_service.get_material(p.talking_head_id)
+            if th and th.filepath:
+                cand_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
+                if cand_p.exists():
+                    video_file = cand_p
 
-        proc = subprocess.run([
-            "ffmpeg", "-y",
-            "-ss", ss_value,
-            "-i", str(full_video),
-            "-frames:v", "1", "-q:v", "3",
-            str(cover_path)
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-        if proc.returncode != 0 or not cover_path.exists():
-            raise HTTPException(status_code=500, detail="截帧失败：请确认 FFmpeg 可用后重试")
-        p.cover_image_path = rel_cover
-        p.cover_source = "frame"
-    elif req.source == "upload":
-        if not req.image_base64:
-            raise HTTPException(status_code=400, detail="请上传图片内容 image_base64")
-        try:
+        if not video_file:
+            raise HTTPException(status_code=400, detail="未找到视频文件进行截帧")
+
+        # 缓存探测：优先复用已抽出的候选帧或底图帧，杜绝反复调用 ffmpeg
+        cached_frame_file: Optional[Path] = None
+        ts_tag = int(round(float(ts_val) * 100))
+        cand_dirs = []
+        if p.task_dir:
+            cand_dirs.append((STORAGE_DIR.parent / p.task_dir / "thumbs").resolve())
+            cand_dirs.append((STORAGE_DIR.parent / p.task_dir).resolve())
+        cand_dirs.append((COVERS_DIR / "candidates" / p.id).resolve())
+
+        for cdir in cand_dirs:
+            if not cdir.exists():
+                continue
+            for match_f in cdir.glob(f"thumb_candidate_*_{ts_tag}.jpg"):
+                if match_f.stat().st_size > 0:
+                    cached_frame_file = match_f
+                    break
+            if cached_frame_file:
+                break
+            raw_cand = cdir / f"_base_frame_{ts_tag}.jpg"
+            if raw_cand.exists() and raw_cand.stat().st_size > 0:
+                cached_frame_file = raw_cand
+                break
+
+        if cached_frame_file and cached_frame_file.exists():
+            base_img = Image.open(cached_frame_file).convert("RGBA")
+        else:
+            temp_frame_path = cover_path.parent / f"_base_frame_{ts_tag}.jpg"
+            ss_str = f"{max(0.0, min(float(ts_val), 36000.0)):.3f}"
+            proc = subprocess.run([
+                "ffmpeg", "-y",
+                "-ss", ss_str,
+                "-i", str(video_file),
+                "-frames:v", "1", "-q:v", "2",
+                str(temp_frame_path)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+
+            if proc.returncode != 0 or not temp_frame_path.exists():
+                raise HTTPException(status_code=500, detail="FFmpeg 截帧失败")
+
+            base_img = Image.open(temp_frame_path).convert("RGBA")
+
+    elif source == "custom_upload":
+        if req.custom_image_path:
+            img_p = ensure_storage_path(STORAGE_DIR.parent / req.custom_image_path)
+            if img_p.exists():
+                base_img = Image.open(img_p).convert("RGBA")
+        elif req.image_base64:
+            import base64 as _b64
             img_bytes = _b64.b64decode(req.image_base64)
-        except Exception:
-            raise HTTPException(status_code=400, detail="图片 base64 解码失败")
-        if len(img_bytes) > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
-        cover_path.write_bytes(img_bytes)
-        p.cover_image_path = rel_cover
-        p.cover_source = "upload"
-    else:
-        raise HTTPException(status_code=400, detail=f"不支持的封面来源: {req.source}")
+            base_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
 
+        if not base_img:
+            raise HTTPException(status_code=400, detail="未找到有效的自定义上传底图")
+
+    cover_cfg = CoverDesignConfig(
+        source=source,
+        frame_timestamp=ts_val,
+        custom_image_path=req.custom_image_path,
+        template_id=req.template_id or "sticker_double_stroke",
+        location_tag=(req.location_tag or "").strip(),
+        main_title=(req.main_title or p.title or "同城学车不踩坑").strip(),
+        sub_title=(req.sub_title or "").strip(),
+        color_theme=req.color_theme or "classic_blue",
+        font_family=req.font_family or "heavy_gothic",
+        aspect_mode=req.aspect_mode or "blur_padding",
+        show_safe_zone=req.show_safe_zone,
+        zone_styles=dict(req.zone_styles or {}),
+        doodle_offsets=dict(req.doodle_offsets or {})
+    )
+
+    final_cover = render_cover_image(base_img, cover_cfg, target_size=(1080, 1920))
+    final_cover.save(cover_path, format="JPEG", quality=95)
+
+    p.cover_image_path = rel_cover
+    p.cover_source = source
+    p.cover_config = cover_cfg
     project_storage_service.save_project(p)
+
     if p.task_dir:
         target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
         _save_task_manifest(target_dir, p)
 
     return {
         "code": 0,
+        "message": "封面保存并生成成功",
         "data": {
             "cover_image_path": p.cover_image_path,
             "cover_source": p.cover_source,
-            "cover_url": f"/{p.cover_image_path}"
+            "cover_url": f"/{p.cover_image_path}",
+            "cover_config": p.cover_config.model_dump()
         }
     }
 
 @router.post("/{project_id}/cover/upload")
 async def upload_project_cover(
     project_id: str,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    aspect_mode: str = Query("blur_padding")
 ):
-    """用户直接上传本地图片作为工程封面"""
+    """012: 上传自定义图片并自动进行画幅比例自适应"""
+    import io
     p = project_storage_service.get_by_project_id(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="工程不存在")
@@ -1564,25 +2238,51 @@ async def upload_project_cover(
         raise HTTPException(status_code=400, detail="请上传图片格式文件 (jpg, png, webp 等)")
 
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片超过 15MB 上限")
 
     cover_ext = ext if ext in valid_exts else ".jpg"
     if p.task_dir:
         target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
-        cover_name = f"cover{cover_ext}"
-        cover_path = target_dir / cover_name
-        rel_cover = f"{p.task_dir}/{cover_name}"
+        raw_name = f"custom_cover_raw{cover_ext}"
+        adapted_name = "cover.jpg"
+        raw_path = target_dir / raw_name
+        adapted_path = target_dir / adapted_name
+        rel_raw = f"{p.task_dir}/{raw_name}"
+        rel_cover = f"{p.task_dir}/{adapted_name}"
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        cover_name = f"cover_{p.id}_{ts}{cover_ext}"
-        cover_path = COVERS_DIR / cover_name
-        rel_cover = f"storage/covers/{cover_name}"
+        raw_name = f"custom_raw_{p.id}_{ts}{cover_ext}"
+        adapted_name = f"cover_{p.id}_{ts}.jpg"
+        raw_path = COVERS_DIR / raw_name
+        adapted_path = COVERS_DIR / adapted_name
+        rel_raw = f"storage/covers/{raw_name}"
+        rel_cover = f"storage/covers/{adapted_name}"
 
-    cover_path.write_bytes(content)
+    raw_path.write_bytes(content)
+
+    mode_to_use = aspect_mode if aspect_mode in ("blur_padding", "center_crop") else "blur_padding"
+    try:
+        src_img = Image.open(io.BytesIO(content)).convert("RGBA")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片文件损坏或格式不受支持: {e}")
+    if max(src_img.size) > 4096:
+        raise HTTPException(status_code=400, detail="图片尺寸超过 4096x4096 上限，请压缩后再上传")
+    try:
+        adapted_img = adapt_image_aspect_ratio(src_img, target_size=(1080, 1920), mode=mode_to_use)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"画幅比例自适应失败: {e}")
+    adapted_img.convert("RGB").save(adapted_path, format="JPEG", quality=95)
+
+    cover_cfg = p.cover_config or CoverDesignConfig()
+    cover_cfg.source = "custom_upload"
+    cover_cfg.custom_image_path = rel_raw
+    cover_cfg.aspect_mode = mode_to_use
+
     p.cover_image_path = rel_cover
     p.cover_source = "upload"
+    p.cover_config = cover_cfg
     project_storage_service.save_project(p)
 
     if p.task_dir:
@@ -1591,11 +2291,16 @@ async def upload_project_cover(
 
     return {
         "code": 0,
-        "message": "封面上传成功",
+        "message": "封面上传并自适应完成",
         "data": {
+            "custom_image_path": rel_raw,
             "cover_image_path": p.cover_image_path,
             "cover_source": p.cover_source,
-            "cover_url": f"/{p.cover_image_path}"
+            "cover_url": f"/{p.cover_image_path}",
+            "cover_config": p.cover_config.model_dump(),
+            "width": 1080,
+            "height": 1920,
+            "aspect_mode": mode_to_use
         }
     }
 
@@ -1658,38 +2363,7 @@ async def list_projects():
 
 def _cleanup_project_files(p: CutProject):
     """安全清理工程关联的磁盘生成文件及专属任务目录"""
-    # 1. 清理专属任务目录（包含 output_*.mp4, cover.jpg, subtitles.ass, project_manifest.json 等）
-    if p.task_dir:
-        try:
-            td = (STORAGE_DIR.parent / p.task_dir).resolve()
-            if td.exists() and td.is_dir() and TASKS_DIR.resolve() in td.parents:
-                shutil.rmtree(td, ignore_errors=True)
-        except Exception as e:
-            print(f"[_cleanup_project_files] 清理任务目录失败 {p.task_dir}: {e}")
-
-    # 2. 如果 output_video_path 位于历史 outputs 目录下，单独清理
-    if p.output_video_path:
-        try:
-            vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
-            if vp.exists() and vp.is_file() and (OUTPUTS_DIR.resolve() in vp.parents or TASKS_DIR.resolve() in vp.parents):
-                vp.unlink(missing_ok=True)
-        except Exception as e:
-            print(f"[_cleanup_project_files] 清理成片视频文件失败 {p.output_video_path}: {e}")
-
-    # 3. 如果 cover 位于历史 covers 目录下，单独清理
-    if p.cover_image_path:
-        try:
-            cp = (STORAGE_DIR.parent / p.cover_image_path).resolve()
-            if cp.exists() and cp.is_file() and COVERS_DIR.resolve() in cp.parents:
-                cp.unlink(missing_ok=True)
-        except Exception as e:
-            print(f"[_cleanup_project_files] 清理封面文件失败 {p.cover_image_path}: {e}")
-
-    # 4. 清理残留历史/影子 JSON，杜绝幽灵复活
-    try:
-        project_storage_service._remove_shadow_json(p.id, p.talking_head_id)
-    except Exception as e:
-        print(f"[_cleanup_project_files] 清理影子 JSON 失败: {e}")
+    project_storage_service.cleanup_project_files(p)
 
 class BatchDeleteProjectsRequest(BaseModel):
     project_ids: List[str]

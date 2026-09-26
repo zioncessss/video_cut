@@ -190,19 +190,41 @@ def load_fixture_subtitles(path: Path) -> List[Dict[str, Any]]:
 
 
 class CueList(list):
-    """携带 video_title 与 highlights 的分镜指示清单列表，100% 兼容 list 行为"""
-    def __init__(self, iterable=(), video_title: Optional[str] = None, highlights: Optional[Dict[str, Any]] = None):
+    """携带 video_title、suggested_cover_titles 与 highlights 的分镜指示清单列表，100% 兼容 list 行为"""
+    def __init__(
+        self,
+        iterable=(),
+        video_title: Optional[str] = None,
+        highlights: Optional[Dict[str, Any]] = None,
+        suggested_cover_titles: Optional[List[Dict[str, Any]]] = None
+    ):
         super().__init__(iterable)
         self.video_title = video_title
         self.highlights = highlights or {}
+        self.suggested_cover_titles = suggested_cover_titles or []
 
 
 def parse_cue_sheet(raw: str) -> CueList:
-    """从大模型稀疏输出中解析 broll_cues 列表、短视频爆款标题及全篇自主提取的高光词 highlights"""
+    """从大模型稀疏输出中解析 broll_cues 列表、短视频爆款标题、封面文案建议及全篇高光词"""
     data = llm_client.extract_json(raw)
     if not isinstance(data, dict):
         return CueList([])
     video_title = str(data.get("video_title") or "").strip() or None
+
+    # 012: 解析封面推荐标题（含同城地域锚点 location_tag，旧版响应无该字段时兼容为空串）
+    suggested_cover_titles: List[Dict[str, Any]] = []
+    raw_covers = data.get("suggested_cover_titles")
+    if isinstance(raw_covers, list):
+        for c in raw_covers:
+            if isinstance(c, dict) and c.get("main_title"):
+                suggested_cover_titles.append({
+                    "location_tag": str(c.get("location_tag") or "").strip(),
+                    "main_title": str(c.get("main_title")).strip(),
+                    "sub_title": str(c.get("sub_title") or "").strip(),
+                    "rationale": str(c.get("rationale") or "").strip(),
+                    "style_hint": str(c.get("style_hint") or "sticker_double_stroke").strip()
+                })
+
     raw_highlights = data.get("highlights")
     highlights_map: Dict[str, List[Dict[str, Any]]] = {}
     if isinstance(raw_highlights, dict):
@@ -222,9 +244,9 @@ def parse_cue_sheet(raw: str) -> CueList:
         if isinstance(data, list):
             items = data
         else:
-            return CueList([], video_title=video_title, highlights=highlights_map)
+            return CueList([], video_title=video_title, highlights=highlights_map, suggested_cover_titles=suggested_cover_titles)
 
-    result = CueList([], video_title=video_title, highlights=highlights_map)
+    result = CueList([], video_title=video_title, highlights=highlights_map, suggested_cover_titles=suggested_cover_titles)
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -274,6 +296,83 @@ def generate_fallback_video_title(subtitles: List[Dict[str, Any]]) -> str:
 
     first = clean_texts[0]
     return first[:16] if len(first) > 16 else first
+
+
+# 场地设施词属于空镜 venue 语义，不得充当封面地域锚点（地名提取时过滤）
+_VENUE_FACILITY_WORDS = {"车管所", "训练场", "场地", "考场", "校区", "五万平", "模拟场"}
+
+
+def _load_cover_hooks() -> List[str]:
+    """读取词库 cover_hooks.hooks 学车特点库（唯一事实源），缺失时返回空列表"""
+    try:
+        from app.core.config import load_glossary
+        raw = load_glossary().get("cover_hooks") or {}
+        if isinstance(raw, dict):
+            return [str(h).strip() for h in (raw.get("hooks") or []) if str(h).strip()]
+    except Exception as e:
+        print(f"[scene_decision] 读取学车特点库失败: {e}")
+    return []
+
+
+def generate_fallback_cover_titles(
+    subtitles: List[Dict[str, Any]],
+    video_title: str = ""
+) -> List[Dict[str, Any]]:
+    """离线规则兜底：基于词库地名高亮引擎与学车特点库提炼封面候选。
+
+    与 AI 伴随提炼的产出结构完全一致；rationale 如实标注'规则兜底'，绝不冒充大模型结果。
+    词库缺失时仅回退到规格明确允许的预设高频痛点话术。
+    """
+    from app.native_engine.keyword_matcher import extract_rule_highlight_words
+
+    location_tag = ""
+    for s in subtitles[:8]:
+        text = str(s.get("corrected_text") or s.get("raw_text") or "")
+        if not text:
+            continue
+        for hw in extract_rule_highlight_words(text):
+            word = str(hw.get("word") or "").strip()
+            if hw.get("category") != "location" or not word or word in _VENUE_FACILITY_WORDS or len(word) > 4:
+                continue
+            bare = re.sub(r"(?:市|区|县|镇)$", "", word)
+            if not bare:
+                continue
+            location_tag = bare if bare.endswith("学车") else f"{bare}学车"
+            break
+        if location_tag:
+            break
+
+    hooks = _load_cover_hooks()
+    main_a = hooks[0] if len(hooks) >= 1 else "驾校学车避坑指南"
+    main_b = hooks[1] if len(hooks) >= 2 else "3个技巧快速拿证"
+
+    titles: List[Dict[str, Any]] = [
+        {
+            "location_tag": location_tag,
+            "main_title": main_a,
+            "sub_title": "新手必看",
+            "rationale": "离线规则兜底（学车特点库选用）",
+            "style_hint": "sticker_double_stroke",
+        },
+        {
+            "location_tag": location_tag,
+            "main_title": main_b,
+            "sub_title": "一把过",
+            "rationale": "离线规则兜底（学车特点库选用）",
+            "style_hint": "split_contrast_bar",
+        },
+    ]
+
+    short = re.sub(r"[·:：!！?？，,\s]+.*$", "", video_title or "").strip()
+    if len(short) >= 4:
+        titles.insert(0, {
+            "location_tag": location_tag,
+            "main_title": short[:10],
+            "sub_title": location_tag[:6] or (hooks[2] if len(hooks) >= 3 else "同城推荐"),
+            "rationale": "离线规则兜底（提炼自短视频标题）",
+            "style_hint": "bottom_fog_vignette",
+        })
+    return titles[:3]
 
 
 def parse_decisions(raw: str) -> List[Dict[str, Any]]:

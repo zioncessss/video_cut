@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BatchJobControlContracts",
+  "description": "批量混剪作业取消与重试接口契约",
+  "definitions": {
+    "CancelBatchResponse": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "integer", "enum": [0] },
+        "message": { "type": "string" },
+        "job_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["canceled"] },
+        "canceled_items_count": { "type": "integer" }
+      },
+      "required": ["code", "message", "job_id", "status"]
+    },
+    "RetryFailedBatchResponse": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "integer", "enum": [0] },
+        "message": { "type": "string" },
+        "job_id": { "type": "string" },
+        "retrying_count": { "type": "integer" }
+      },
+      "required": ["code", "message", "job_id", "retrying_count"]
+    }
+  }
+}

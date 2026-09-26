@@ -27,28 +27,42 @@ export interface Material {
   created_at: number;
   content_hash?: string;
   file_size?: number;
+  plate_region?: string | null;
 }
 
-export const fetchMaterials = async (category?: string): Promise<Material[]> => {
-  const params = category ? { category } : {};
+export const fetchMaterials = async (category?: string, plateRegion?: string): Promise<Material[]> => {
+  const params: Record<string, string> = {};
+  if (category) params.category = category;
+  if (plateRegion) params.plate_region = plateRegion;
   const res = await axios.get(`${API_BASE}/materials`, { params });
   return res.data;
 };
 
-export const uploadMaterial = async (category: string, file: File): Promise<Material> => {
+export const uploadMaterial = async (category: string, file: File, plateRegion?: string): Promise<Material> => {
   const formData = new FormData();
   formData.append('category', category);
   formData.append('file', file);
+  if (plateRegion) {
+    formData.append('plate_region', plateRegion);
+  }
   const res = await axios.post(`${API_BASE}/materials/upload`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return res.data;
 };
 
-export const importLocalMaterial = async (category: string, filePath: string): Promise<Material> => {
+export const importLocalMaterial = async (category: string, filePath: string, plateRegion?: string): Promise<Material> => {
   const res = await axios.post(`${API_BASE}/materials/import-local`, {
     category,
-    file_path: filePath
+    file_path: filePath,
+    plate_region: plateRegion || null
+  });
+  return res.data;
+};
+
+export const updateMaterialRegion = async (materialId: string, plateRegion?: string | null): Promise<Material> => {
+  const res = await axios.patch(`${API_BASE}/materials/${materialId}/region`, {
+    plate_region: plateRegion || null
   });
   return res.data;
 };
@@ -259,8 +273,11 @@ export interface EditingStrategy {
   mid_silence_breath_gap?: number;
   retake_pause_min?: number;
   retake_similarity_min?: number;
-  filter_preset?: 'clean_natural' | 'crisp_hd' | 'warm_radiant' | 'original';
+  filter_preset?: 'cold_white' | 'clean_natural' | 'teal_orange' | 'crisp_hd' | 'warm_radiant' | 'vintage_film' | 'original';
   filter_strength?: number; // 0.0 ~ 1.0 (默认 1.0)
+  banned_words_enabled?: boolean;
+  banned_words_mode?: 'glyph' | 'redact' | 'pinyin';
+  embed_cover_as_first_frame?: boolean; // 是否将封面作为首帧压入视频 (0.08s)
 }
 
 export interface PruneSpan {
@@ -350,9 +367,15 @@ export const redecideScenes = async (
 export interface BatchJobItem {
   material_id: string;
   project_id?: string | null;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
   error?: string | null;
   progress: number;
+  task_dir?: string | null;
+  output_video_path?: string | null;
+  output_absolute_path?: string | null;
+  cover_image_path?: string | null;
+  filename?: string | null;
+  duration?: number | null;
 }
 
 export const submitBatch = async (materialIds: string[], aspectRatio: string = '9:16') => {
@@ -360,49 +383,207 @@ export const submitBatch = async (materialIds: string[], aspectRatio: string = '
   return res.data.data as { job_id: string; queued: number; concurrency: number };
 };
 
+export const cancelBatchJob = async (jobId: string) => {
+  const res = await axios.post(`${API_BASE}/batch/jobs/${jobId}/cancel`);
+  return res.data;
+};
+
+export const retryFailedBatchJob = async (jobId: string) => {
+  const res = await axios.post(`${API_BASE}/batch/jobs/${jobId}/retry-failed`);
+  return res.data;
+};
+
 export const fetchBatchJob = async (jobId: string) => {
   const res = await axios.get(`${API_BASE}/batch/jobs/${jobId}`);
   return res.data.data as {
     job_id: string;
-    status: 'queued' | 'running' | 'finished';
+    status: 'queued' | 'running' | 'finished' | 'canceled' | 'interrupted';
     concurrency: number;
     completed_count: number;
+    failed_count?: number;
     items: BatchJobItem[];
   };
 };
 
-// ===== 工程封面（005，AI 生成暂为规划占位）=====
+// ===== 视频封面设计与模板导出（012）=====
+
+export type CoverTemplateId =
+  | 'sticker_double_stroke'
+  | 'split_contrast_bar'
+  | 'rainbow_arc_header'
+  | 'bottom_fog_vignette'
+  | 'angled_impact_stamp'
+  | 'clean_editorial'
+  | 'text_behind_person'
+  | 'neon_3d_sticker'
+  | 'pure_image'
+  // 旧值向后兼容（存量工程数据）
+  | 'gold_bold'
+  | 'color_badge'
+  | 'dual_contrast';
+
+export type CoverPaletteId = 'classic_blue' | 'authority_red' | 'sunset_orange' | 'frost_burgundy';
+
+export type CoverFontFamily = 'heavy_gothic' | 'brush_kai' | 'handwriting_tilt' | 'editorial_serif';
+
+// R3: 分区文本样式覆盖（location|main|sub）；None/中性值 = 跟随模板与调色盘默认
+export type CoverZoneKey = 'location' | 'main' | 'sub';
+
+export interface CoverTextZoneStyle {
+  text_color?: string | null;   // 文字填充色 #RRGGBB（候选：调色盘 main/sub/accent + 纯白 + 纯黑）
+  stroke_color?: string | null; // 文字描边色 #RRGGBB（仅带描边层的元素生效）
+  scale?: number;               // 字号缩放，clamp [0.6, 1.4]
+  offset_x?: number;            // 横向偏移（画布宽占比，正右负左），clamp [-0.20, 0.20]
+  offset_y?: number;            // 纵向偏移（画布高占比，正下负上），clamp [-0.12, 0.12]
+}
+
+export interface CoverDesignConfig {
+  source: 'video_frame' | 'custom_upload' | 'frame' | 'upload';
+  frame_timestamp: number;
+  custom_image_path?: string;
+  template_id: CoverTemplateId;
+  location_tag?: string;
+  main_title: string;
+  sub_title: string;
+  color_theme?: CoverPaletteId | string;
+  font_family?: CoverFontFamily | string;
+  aspect_mode?: 'blur_padding' | 'center_crop';
+  show_safe_zone?: boolean;
+  zone_styles?: Partial<Record<CoverZoneKey, CoverTextZoneStyle>>;
+  enable_portrait_enhancement?: boolean;
+  beauty_mode?: 'natural' | 'hd_clear' | 'delicate' | 'off';
+  beauty_strength?: number;
+  clarity_strength?: number;
+  doodle_offsets?: Record<string, { x: number; y: number }>;
+}
+
+export interface SuggestedCoverTitle {
+  location_tag?: string;
+  main_title: string;
+  sub_title?: string;
+  rationale?: string;
+  style_hint?: string;
+}
+
+export interface CoverTemplateItem {
+  id: string;
+  name: string;
+  category: string;
+  badge: string;
+  sample_preview: string;
+  description: string;
+  supported_themes: string[];
+}
+
+export interface CoverPalette {
+  id: string;
+  name: string;
+  main: string;
+  sub: string;
+  accent: string;
+}
+
+export interface CoverSafeZoneRect {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  aspect?: string;
+}
+
+export interface CoverCandidateFrame {
+  timestamp: number;
+  label: string;
+  filename: string;
+  thumb_url: string;
+  person_thumb_url?: string;
+  has_person?: boolean;
+}
+
+export interface CoverCandidatesResponse {
+  candidates: CoverCandidateFrame[];
+  suggested_cover_titles: SuggestedCoverTitle[];
+}
+
+export const getCoverTemplates = async (): Promise<{
+  templates: CoverTemplateItem[];
+  palettes: CoverPalette[];
+  cover_hooks: string[];
+  safe_zones: Record<string, any>;
+}> => {
+  const res = await axios.get(`${API_BASE}/editor/cover-templates`);
+  return res.data.data;
+};
+
+export const getCoverCandidates = async (projectId: string): Promise<CoverCandidatesResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/cover/candidates`);
+  return res.data.data;
+};
 
 export const setProjectCover = async (
   projectId: string,
-  source: 'frame' | 'upload' | 'ai',
+  configOrSource: (Partial<CoverDesignConfig> & {
+    source?: string;
+    timestamp?: number;
+    image_base64?: string;
+  }) | string,
   timestamp?: number,
   imageBase64?: string
 ) => {
-  const res = await axios.post(`${API_BASE}/projects/${projectId}/cover`, {
-    source,
-    timestamp,
-    image_base64: imageBase64
-  });
-  return res.data.data as { cover_image_path: string; cover_source: string; cover_url: string };
+  let payload: any = {};
+  if (typeof configOrSource === 'string') {
+    payload = {
+      source: configOrSource === 'frame' ? 'video_frame' : configOrSource,
+      frame_timestamp: timestamp ?? 0,
+      timestamp,
+      image_base64: imageBase64
+    };
+  } else {
+    payload = configOrSource;
+  }
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/cover`, payload);
+  return res.data.data as {
+    cover_image_path: string;
+    cover_source: string;
+    cover_url: string;
+    cover_config: CoverDesignConfig;
+  };
 };
 
-export const uploadProjectCoverFile = async (projectId: string, file: File) => {
+export const uploadProjectCoverFile = async (
+  projectId: string,
+  file: File,
+  aspectMode: 'blur_padding' | 'center_crop' = 'blur_padding'
+) => {
   const formData = new FormData();
   formData.append('file', file);
   const res = await axios.post(`${API_BASE}/projects/${projectId}/cover/upload`, formData, {
+    params: { aspect_mode: aspectMode },
     headers: { 'Content-Type': 'multipart/form-data' }
   });
-  return res.data.data as { cover_image_path: string; cover_source: string; cover_url: string };
+  return res.data.data as {
+    cover_image_path: string;
+    cover_source: string;
+    cover_url: string;
+    custom_image_path: string;
+    width: number;
+    height: number;
+    aspect_mode: string;
+  };
 };
 
-export const fetchProjectByMaterial = async (materialId: string) => {
-  const res = await axios.get(`${API_BASE}/projects/by-material/${materialId}`);
+export const fetchProjectByMaterial = async (materialId: string, signal?: AbortSignal) => {
+  const res = await axios.get(`${API_BASE}/projects/by-material/${materialId}`, { signal });
   return res.data;
 };
 
-export const fetchProjectById = async (projectId: string) => {
-  const res = await axios.get(`${API_BASE}/projects/${projectId}`);
+export const fetchProjectById = async (projectId: string, signal?: AbortSignal) => {
+  const res = await axios.get(`${API_BASE}/projects/${projectId}`, { signal });
+  return res.data;
+};
+
+export const updateProjectTitle = async (projectId: string, title: string) => {
+  const res = await axios.put(`${API_BASE}/projects/${projectId}/title`, { title });
   return res.data;
 };
 
@@ -425,15 +606,20 @@ export const analyzeAndCutVideo = async (
     autoBroll?: boolean;
     forceRetranscribe?: boolean;
     autoRender?: boolean;
+    signal?: AbortSignal;
   }
 ) => {
-  const res = await axios.post(`${API_BASE}/projects/analyze-and-cut`, {
-    talking_head_id: talkingHeadId,
-    aspect_ratio: options?.aspectRatio || '9:16',
-    auto_broll: options?.autoBroll !== false,
-    force_retranscribe: !!options?.forceRetranscribe,
-    auto_render: !!options?.autoRender,
-  });
+  const res = await axios.post(
+    `${API_BASE}/projects/analyze-and-cut`,
+    {
+      talking_head_id: talkingHeadId,
+      aspect_ratio: options?.aspectRatio || '9:16',
+      auto_broll: options?.autoBroll !== false,
+      force_retranscribe: !!options?.forceRetranscribe,
+      auto_render: !!options?.autoRender,
+    },
+    { signal: options?.signal }
+  );
   return res.data;
 };
 
@@ -456,10 +642,54 @@ export interface RenderProjectResult {
   strategy?: EditingStrategy;
   cover_image_path?: string;
   cover_source?: string;
+  cover_config?: CoverDesignConfig;
+  suggested_cover_titles?: SuggestedCoverTitle[];
 }
 
-export const renderProject = async (projectId: string, videoSpeed?: number): Promise<RenderProjectResult> => {
-  const params = videoSpeed !== undefined ? { video_speed: videoSpeed } : {};
+export interface BannedWordMatch {
+  subtitle_index: number;
+  original_word: string;
+  replacement_word: string;
+  original_line: string;
+  sanitized_line: string;
+}
+
+export interface BannedWordsCheckResult {
+  project_id: string;
+  has_banned_words: boolean;
+  total_matches: number;
+  matches: BannedWordMatch[];
+}
+
+export const checkBannedWords = async (projectId: string): Promise<BannedWordsCheckResult> => {
+  const res = await axios.get(`${API_BASE}/projects/${projectId}/banned_words_check`);
+  return res.data;
+};
+
+export const renderProject = async (
+  projectId: string,
+  videoSpeed?: number,
+  filterBannedWords?: boolean,
+  exportDir?: string,
+  includeCover?: boolean,
+  embedCoverAsFirstFrame?: boolean
+): Promise<RenderProjectResult> => {
+  const params: Record<string, any> = {};
+  if (videoSpeed !== undefined) {
+    params.video_speed = videoSpeed;
+  }
+  if (filterBannedWords !== undefined) {
+    params.filter_banned_words = filterBannedWords;
+  }
+  if (exportDir) {
+    params.export_dir = exportDir;
+  }
+  if (includeCover !== undefined) {
+    params.include_cover = includeCover;
+  }
+  if (embedCoverAsFirstFrame !== undefined) {
+    params.embed_cover_as_first_frame = embedCoverAsFirstFrame;
+  }
   const res = await axios.post(`${API_BASE}/projects/${projectId}/render`, null, { params });
   return res.data;
 };
@@ -473,6 +703,7 @@ export interface ProjectSummary {
   id: string;
   title: string;
   talking_head_id: string;
+  target_region?: string;
   aspect_ratio: string;
   status: 'draft' | 'processing' | 'completed' | 'failed';
   output_video_path?: string;
@@ -482,6 +713,8 @@ export interface ProjectSummary {
   task_dir?: string;
   cover_image_path?: string;
   cover_source?: string;
+  cover_config?: CoverDesignConfig;
+  suggested_cover_titles?: SuggestedCoverTitle[];
   created_at: number;
   updated_at: number;
   subtitles?: SubtitleSegment[];
@@ -557,7 +790,8 @@ export const uploadAndBatchCut = async (
   files: File[],
   aspectRatio: string = '9:16',
   concurrency?: number,
-  videoSpeed: number = 1.0
+  videoSpeed: number = 1.0,
+  onProgress?: (progressEvent: any) => void
 ) => {
   const formData = new FormData();
   files.forEach(f => formData.append('files', f));
@@ -567,7 +801,8 @@ export const uploadAndBatchCut = async (
     formData.append('concurrency', String(concurrency));
   }
   const res = await axios.post(`${API_BASE}/batch/upload-and-cut`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: onProgress
   });
   return res.data.data as { job_id: string; queued: number; concurrency: number };
 };
@@ -589,14 +824,28 @@ export const importAndBatchCut = async (
 
 export interface PipelineProgress {
   project_id: string;
-  stage: 'idle' | 'audio_extracting' | 'asr_transcribing' | 'llm_correcting' | 'scene_deciding' | 'broll_matching' | 'completed' | 'failed';
+  stage:
+    | 'idle'
+    | 'audio_extracting'
+    | 'asr_transcribing'
+    | 'llm_correcting'
+    | 'scene_deciding'
+    | 'broll_matching'
+    | 'video_composing'
+    | 'completed'
+    | 'failed';
   percent: number;
   message: string;
-  updated_at: number;
+  updated_at?: number;
 }
 
-export const fetchProjectProgress = async (projectId: string): Promise<PipelineProgress> => {
-  const res = await axios.get(`${API_BASE}/projects/${projectId}/progress`);
+export const fetchProjectProgress = async (
+  projectId: string,
+  options?: { signal?: AbortSignal }
+): Promise<PipelineProgress> => {
+  const res = await axios.get(`${API_BASE}/projects/${projectId}/progress`, {
+    signal: options?.signal,
+  });
   return res.data;
 };
 

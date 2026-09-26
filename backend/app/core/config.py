@@ -210,9 +210,38 @@ ensure_storage_path = _ensure_storage_path
 
 _GLOSSARY_CACHE: Dict[str, object] = {"mtime": None, "data": None}
 
+def _seed_default_glossary_if_missing(dest: Path) -> None:
+    """若 storage/glossary.json 不存在，从系统/打包自带的模板词库复制初始化"""
+    if dest.exists():
+        return
+    import sys
+    candidates = [
+        ROOT_DIR / "storage" / "glossary.json",
+        Path(__file__).resolve().parent.parent.parent.parent / "storage" / "glossary.json"
+    ]
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates.extend([
+            exe_dir.parent / "default_storage" / "glossary.json",
+            exe_dir.parent.parent / "resources" / "default_storage" / "glossary.json",
+            exe_dir / "default_storage" / "glossary.json"
+        ])
+    for cand in candidates:
+        if cand.exists() and cand.resolve() != dest.resolve():
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copyfile(str(cand), str(dest))
+                print(f"[Config] 已自动从 {cand} 初始挂载词库到 {dest}")
+                break
+            except Exception as e:
+                print(f"[Config] 初始挂载词库失败: {e}")
+
 def load_glossary() -> dict:
     """动态读取本地词库与纠错配置文件，按 mtime 缓存：编辑文件后立即生效，无需重启"""
     glossary_file = _ensure_storage_path(GLOSSARY_FILE)
+    if not glossary_file.exists():
+        _seed_default_glossary_if_missing(glossary_file)
     try:
         mtime = glossary_file.stat().st_mtime if glossary_file.exists() else None
     except OSError:

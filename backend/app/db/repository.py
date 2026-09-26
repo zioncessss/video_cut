@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from typing import List, Optional, Dict, Any
 from app.db.session import get_db_connection
 from app.models.entities import (
@@ -14,6 +15,8 @@ from app.models.entities import (
     HighlightWord,
     SceneDecision,
     PruneSpan,
+    CoverDesignConfig,
+    SuggestedCoverTitle,
     BatchJob,
     BatchJobItem,
     BatchJobStatus
@@ -27,8 +30,8 @@ class MaterialRepository:
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO materials 
-                (id, category, filename, filepath, duration, width, height, fps, content_hash, file_size, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, category, filename, filepath, duration, width, height, fps, content_hash, file_size, plate_region, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 material.id,
                 material.category.value if hasattr(material.category, 'value') else str(material.category),
@@ -40,9 +43,15 @@ class MaterialRepository:
                 material.fps,
                 material.content_hash,
                 material.file_size or 0,
+                material.plate_region,
                 material.created_at
             ))
         return material
+
+    def update_plate_region(self, material_id: str, plate_region: Optional[str]) -> bool:
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute("UPDATE materials SET plate_region = ? WHERE id = ?", (plate_region, material_id))
+            return cur.rowcount > 0
 
     def get_by_id(self, material_id: str) -> Optional[Material]:
         with get_db_connection(self.db_path) as conn:
@@ -59,11 +68,21 @@ class MaterialRepository:
             cur = conn.execute("SELECT * FROM materials WHERE content_hash = ? ORDER BY created_at ASC", (content_hash,))
             return [Material(**dict(r)) for r in cur.fetchall()]
 
-    def list_all(self, category: Optional[MaterialCategory] = None) -> List[Material]:
+    def list_all(self, category: Optional[MaterialCategory] = None, plate_region: Optional[str] = None) -> List[Material]:
         with get_db_connection(self.db_path) as conn:
+            conditions = []
+            params = []
             if category:
                 cat_val = category.value if hasattr(category, 'value') else str(category)
-                cur = conn.execute("SELECT * FROM materials WHERE category = ? ORDER BY created_at DESC", (cat_val,))
+                conditions.append("category = ?")
+                params.append(cat_val)
+            if plate_region:
+                conditions.append("plate_region = ?")
+                params.append(plate_region)
+
+            if conditions:
+                query = f"SELECT * FROM materials WHERE {' AND '.join(conditions)} ORDER BY created_at DESC"
+                cur = conn.execute(query, tuple(params))
             else:
                 cur = conn.execute("SELECT * FROM materials ORDER BY created_at DESC")
             return [Material(**dict(r)) for r in cur.fetchall()]
@@ -96,6 +115,20 @@ class ProjectRepository:
             ensure_ascii=False
         ) if getattr(project, 'prune_spans', None) else '[]'
 
+        cover_config_json = (
+            json.dumps(project.cover_config.model_dump(), ensure_ascii=False)
+            if getattr(project, 'cover_config', None)
+            else None
+        )
+        suggested_covers_json = (
+            json.dumps(
+                [(c.model_dump() if hasattr(c, 'model_dump') else c) for c in (getattr(project, 'suggested_cover_titles', None) or [])],
+                ensure_ascii=False
+            )
+            if getattr(project, 'suggested_cover_titles', None)
+            else '[]'
+        )
+
         with get_db_connection(self.db_path) as conn:
             # 0. 若当前为草稿工程，清理同素材历史草稿（保护已完成成片成果不被误删）
             st = getattr(project, 'status', None)
@@ -109,15 +142,16 @@ class ProjectRepository:
             # 1. 保存/更新 Project 主表（含 AI 纠偏元数据与分镜时间线）
             conn.execute("""
                 INSERT OR REPLACE INTO projects
-                (id, title, talking_head_id, aspect_ratio, status, output_video_path, raw_asr_json,
+                (id, title, talking_head_id, target_region, aspect_ratio, status, output_video_path, raw_asr_json,
                  last_engine_used, corrections_summary_json, correction_latency_ms, brolls_json,
-                 task_dir, cover_image_path, cover_source, prune_spans_json,
+                 task_dir, cover_image_path, cover_source, cover_config_json, suggested_cover_titles_json, prune_spans_json,
                  created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 project.id,
                 project.title,
                 project.talking_head_id,
+                getattr(project, 'target_region', None),
                 project.aspect_ratio,
                 project.status.value if hasattr(project.status, 'value') else str(project.status),
                 project.output_video_path,
@@ -129,6 +163,8 @@ class ProjectRepository:
                 getattr(project, 'task_dir', None),
                 getattr(project, 'cover_image_path', None),
                 getattr(project, 'cover_source', None),
+                cover_config_json,
+                suggested_covers_json,
                 prune_spans_json,
                 project.created_at,
                 project.updated_at
@@ -136,7 +172,29 @@ class ProjectRepository:
 
             # 2. 保存/更新 Subtitles（含高亮词与分镜决策）
             conn.execute("DELETE FROM subtitles WHERE project_id = ?", (project.id,))
+            # 防御性主键自愈：subtitles.id 是全局主键，同项目内重复或与其他工程存量行冲突
+            # 都会令整次保存失败（批量混剪曾因此 4/5 全挂）。命中冲突时仅重映射 id，
+            # 原文/高亮词/分镜决策全量保留并显式告警，绝不静默丢行。
+            all_ids = [s.id for s in project.subtitles]
+            foreign_ids: set = set()
+            if all_ids:
+                qmarks = ",".join("?" * len(all_ids))
+                foreign_ids = {
+                    row[0] for row in conn.execute(
+                        f"SELECT id FROM subtitles WHERE id IN ({qmarks}) AND project_id != ?",
+                        [*all_ids, project.id]
+                    )
+                }
+            seen_ids: set = set()
+            id_remap: dict = {}
             for idx, s in enumerate(project.subtitles):
+                old_id = s.id
+                if s.id in seen_ids or s.id in foreign_ids:
+                    new_id = str(uuid.uuid4())
+                    print(f"[ProjectRepository] 字幕主键冲突，重映射 {s.id} -> {new_id} (project={project.id})")
+                    s.id = new_id
+                    id_remap[old_id] = new_id
+                seen_ids.add(s.id)
                 kw_json = json.dumps(s.matched_keywords, ensure_ascii=False) if s.matched_keywords else '[]'
                 hw_json = json.dumps(
                     [w.model_dump() if hasattr(w, 'model_dump') else w for w in (s.highlight_words or [])],
@@ -148,31 +206,79 @@ class ProjectRepository:
                 ) if getattr(s, 'words', None) else '[]'
                 sd_json = json.dumps(s.scene_decision.model_dump(), ensure_ascii=False) if s.scene_decision else None
                 cat_val = s.matched_category.value if (s.matched_category and hasattr(s.matched_category, 'value')) else (str(s.matched_category) if s.matched_category else None)
-                conn.execute("""
-                    INSERT INTO subtitles
-                    (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
-                     matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited,
-                     is_pruned, prune_reason, prune_span_id, words_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    s.id,
-                    project.id,
-                    idx,
-                    s.start_time,
-                    s.end_time,
-                    s.raw_text,
-                    s.corrected_text,
-                    cat_val,
-                    kw_json,
-                    s.broll_material_id,
-                    hw_json,
-                    sd_json,
-                    1 if s.is_manual_edited else 0,
-                    1 if getattr(s, 'is_pruned', False) else 0,
-                    getattr(s, 'prune_reason', None),
-                    getattr(s, 'prune_span_id', None),
-                    words_json
-                ))
+                try:
+                    conn.execute("""
+                        INSERT INTO subtitles
+                        (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
+                         matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited,
+                         is_pruned, prune_reason, prune_span_id, words_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        s.id,
+                        project.id,
+                        idx,
+                        s.start_time,
+                        s.end_time,
+                        s.raw_text,
+                        s.corrected_text,
+                        cat_val,
+                        kw_json,
+                        s.broll_material_id,
+                        hw_json,
+                        sd_json,
+                        1 if s.is_manual_edited else 0,
+                        1 if getattr(s, 'is_pruned', False) else 0,
+                        getattr(s, 'prune_reason', None),
+                        getattr(s, 'prune_span_id', None),
+                        words_json
+                    ))
+                except sqlite3.IntegrityError as ie:
+                    if "subtitles.id" in str(ie):
+                        healed_id = str(uuid.uuid4())
+                        print(f"[ProjectRepository] 并发主键冲突自愈：{s.id} -> {healed_id} (project={project.id})")
+                        id_remap[s.id] = healed_id
+                        s.id = healed_id
+                        seen_ids.add(healed_id)
+                        conn.execute("""
+                            INSERT INTO subtitles
+                            (id, project_id, sort_index, start_time, end_time, raw_text, corrected_text, matched_category,
+                             matched_keywords_json, broll_material_id, highlight_words_json, scene_decision_json, is_manual_edited,
+                             is_pruned, prune_reason, prune_span_id, words_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            healed_id,
+                            project.id,
+                            idx,
+                            s.start_time,
+                            s.end_time,
+                            s.raw_text,
+                            s.corrected_text,
+                            cat_val,
+                            kw_json,
+                            s.broll_material_id,
+                            hw_json,
+                            sd_json,
+                            1 if s.is_manual_edited else 0,
+                            1 if getattr(s, 'is_pruned', False) else 0,
+                            getattr(s, 'prune_reason', None),
+                            getattr(s, 'prune_span_id', None),
+                            words_json
+                        ))
+                    else:
+                        raise
+
+            # 同步工程内紧凑字幕与粗剪片段对字幕 ID 的引用
+            if id_remap:
+                if project.compact_subtitles:
+                    for cs in project.compact_subtitles:
+                        if cs.id in id_remap:
+                            cs.id = id_remap[cs.id]
+                if project.prune_spans:
+                    for ps in project.prune_spans:
+                        if ps.source_subtitle_id in id_remap:
+                            ps.source_subtitle_id = id_remap[ps.source_subtitle_id]
+                        if ps.target_subtitle_id in id_remap:
+                            ps.target_subtitle_id = id_remap[ps.target_subtitle_id]
 
             # 3. 保存/更新 Strategy
             strat = project.strategy
@@ -190,8 +296,8 @@ class ProjectRepository:
                 (project_id, subtitle_theme, font_size, subtitle_font_family, subtitle_font_size, show_subtitles, subtitle_position_y, subtitle_position_x, subtitle_width_percent,
                  enable_highlight, highlight_color, highlight_scale, custom_highlight_words_json,
                  enable_top_banner, banner_main_title, banner_sub_title, banner_style, banner_size, banner_font_size, banner_width_percent, banner_position_x, banner_position_y,
-                 enable_watermark, watermark_text, watermark_position, watermark_size, watermark_font_size, watermark_position_x, watermark_position_y, watermark_opacity, broll_pacing, video_speed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 enable_watermark, watermark_text, watermark_position, watermark_size, watermark_font_size, watermark_position_x, watermark_position_y, watermark_opacity, broll_pacing, video_speed, embed_cover_as_first_frame)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 project.id,
                 strat.subtitle_theme,
@@ -224,7 +330,8 @@ class ProjectRepository:
                 getattr(strat, 'watermark_position_y', None),
                 strat.watermark_opacity,
                 strat.broll_pacing,
-                getattr(strat, 'video_speed', 1.0)
+                getattr(strat, 'video_speed', 1.0),
+                1 if getattr(strat, 'embed_cover_as_first_frame', True) else 0
             ))
 
         return project
@@ -327,7 +434,8 @@ class ProjectRepository:
                 watermark_opacity=strat_row["watermark_opacity"],
                 broll_pacing=strat_row["broll_pacing"],
                 subtitle_font_family=strat_row["subtitle_font_family"] if "subtitle_font_family" in keys and strat_row["subtitle_font_family"] else "notoserif",
-                video_speed=float(strat_row["video_speed"]) if "video_speed" in keys and strat_row["video_speed"] is not None else 1.0
+                video_speed=float(strat_row["video_speed"]) if "video_speed" in keys and strat_row["video_speed"] is not None else 1.0,
+                embed_cover_as_first_frame=bool(strat_row["embed_cover_as_first_frame"]) if "embed_cover_as_first_frame" in keys and strat_row["embed_cover_as_first_frame"] is not None else True
             )
         else:
             strat = EditingStrategy()
@@ -389,16 +497,33 @@ class ProjectRepository:
             except Exception:
                 prune_spans = []
 
+        cover_config = None
+        if "cover_config_json" in keys and row["cover_config_json"]:
+            try:
+                cover_config = CoverDesignConfig(**json.loads(row["cover_config_json"]))
+            except Exception:
+                cover_config = None
+
+        suggested_covers = []
+        if "suggested_cover_titles_json" in keys and row["suggested_cover_titles_json"]:
+            try:
+                suggested_covers = [SuggestedCoverTitle(**c) for c in json.loads(row["suggested_cover_titles_json"])]
+            except Exception:
+                suggested_covers = []
+
         return CutProject(
             id=row["id"],
             title=row["title"],
             talking_head_id=row["talking_head_id"],
+            target_region=row["target_region"] if "target_region" in keys else None,
             aspect_ratio=row["aspect_ratio"],
             status=CutProjectStatus(row["status"]),
             output_video_path=row["output_video_path"],
             task_dir=row["task_dir"] if "task_dir" in keys else None,
             cover_image_path=row["cover_image_path"] if "cover_image_path" in keys else None,
             cover_source=row["cover_source"] if "cover_source" in keys else None,
+            cover_config=cover_config,
+            suggested_cover_titles=suggested_covers,
             raw_asr_segments=raw_asr,
             subtitles=subtitles,
             broll_replacements=broll_cuts,
@@ -529,3 +654,39 @@ class BatchJobRepository:
         with get_db_connection(self.db_path) as conn:
             cur = conn.execute("SELECT * FROM batch_jobs ORDER BY created_at DESC")
             return [self._row_to_job(r) for r in cur.fetchall()]
+
+    def cleanup_zombie_running_jobs(self) -> int:
+        """
+        在应用启动时巡检 batch_jobs 表：
+        1. 将所有未决的 running / queued 僵尸批次置为 interrupted，并将其内部未完成 items 置为 failed；
+        2. 巡检已处于 finished / interrupted 的历史批次，若内部仍有残留排队或运行中 items，自愈为 failed，
+           避免服务重启后因任务已被打断而永远显示‘排队中’且无法重试。
+        """
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute("SELECT * FROM batch_jobs WHERE status IN ('running', 'queued')")
+            rows = cur.fetchall()
+            count = 0
+            for r in rows:
+                job = self._row_to_job(r)
+                job.status = BatchJobStatus.INTERRUPTED
+                for it in job.items:
+                    if it.status in ("running", "queued"):
+                        it.status = "failed"
+                        it.error = "服务重启导致作业中断 (Server interrupted)"
+                self.save(job)
+                count += 1
+
+            cur2 = conn.execute("SELECT * FROM batch_jobs WHERE status IN ('finished', 'interrupted')")
+            for r in cur2.fetchall():
+                job = self._row_to_job(r)
+                healed = False
+                for it in job.items:
+                    if it.status in ("running", "queued"):
+                        it.status = "failed"
+                        it.error = "未完成或意外中断 (Pending retry)"
+                        healed = True
+                if healed:
+                    job.completed_count = sum(1 for i in job.items if i.status == "completed")
+                    self.save(job)
+                    count += 1
+            return count
