@@ -1068,9 +1068,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
 
     try {
       if (matchedProj) {
-        await deleteProjectByMaterial(material.id);
+        try {
+          await deleteProjectByMaterial(material.id);
+        } catch (e: any) {
+          if (e?.response?.status !== 404) throw e;
+        }
       }
-      await deleteMaterial(material.id);
+      try {
+        await deleteMaterial(material.id);
+      } catch (e: any) {
+        if (e?.response?.status !== 404) throw e;
+      }
 
       setTalkingHeads(prev => prev.filter(m => m.id !== material.id));
       setAllProjects(prev => prev.filter(p => p.talking_head_id !== material.id));
@@ -1194,6 +1202,12 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               type="button"
               onClick={() => {
                 fetchAllProjects().then(setAllProjects).catch(() => {});
+                fetchMaterials().then(allMats => {
+                  const map: Record<string, Material> = {};
+                  allMats.forEach(m => { map[m.id] = m; });
+                  setMaterialsMap(map);
+                  setTalkingHeads(allMats.filter(m => m.category === 'talking_head'));
+                }).catch(() => {});
                 setShowProjectPicker(true);
               }}
               title={displayTitle}

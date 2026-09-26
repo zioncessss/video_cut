@@ -97,9 +97,8 @@ async def get_material(material_id: str):
 @router.delete("/{material_id}")
 async def delete_material(material_id: str):
     success = storage_service.delete_material(material_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Material not found")
-    return {"code": 0, "message": "Material deleted successfully"}
+    # 幂等性防御：若该素材已在批量混剪或其他页面删除，直接返回成功，避免前端弹窗报错
+    return {"code": 0, "message": "Material deleted successfully", "deleted": success}
 
 @router.post("/cleanup")
 async def cleanup_materials(dry_run: bool = False):
