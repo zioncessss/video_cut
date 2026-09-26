@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, cpSync, statSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -53,46 +53,6 @@ export class EngineManager {
     return await checkPath('/api/health');
   }
 
-  /** 自动无缝迁移历史存量数据（materials, projects, videocut.db 等）至软件目录 storage */
-  private static migrateLegacyStorage(srcDir: string, destDir: string): void {
-    if (!existsSync(srcDir) || srcDir === destDir) return;
-    const dbSrc = resolve(srcDir, 'videocut.db');
-    const dbDest = resolve(destDir, 'videocut.db');
-    try {
-      mkdirSync(destDir, { recursive: true });
-      // 数据库迁移决策：若目标不存在，或目标小于 100KB，或源文件更新且更大，则安全复制
-      if (existsSync(dbSrc)) {
-        const needCopyDb = !existsSync(dbDest) || statSync(dbDest).size < 100 * 1024 || (
-          statSync(dbSrc).mtimeMs > statSync(dbDest).mtimeMs && statSync(dbSrc).size >= statSync(dbDest).size
-        );
-        if (needCopyDb) {
-          console.log(`[EngineManager] Migrating videocut.db from ${srcDir} to ${destDir}...`);
-          copyFileSync(dbSrc, dbDest);
-        }
-      }
-      const settingsSrc = resolve(srcDir, 'settings.json');
-      const settingsDest = resolve(destDir, 'settings.json');
-      if (existsSync(settingsSrc) && !existsSync(settingsDest)) {
-        copyFileSync(settingsSrc, settingsDest);
-      }
-      for (const sub of ['materials', 'covers', 'projects', 'tasks', 'outputs']) {
-        const sPath = resolve(srcDir, sub);
-        const dPath = resolve(destDir, sub);
-        if (existsSync(sPath)) {
-          cpSync(sPath, dPath, { recursive: true, force: false });
-        }
-      }
-      console.log('[EngineManager] Storage migration completed successfully.');
-      try {
-        renameSync(srcDir, `${srcDir}_migrated`);
-      } catch (renameErr) {
-        console.warn('[EngineManager] Could not rename legacy storage dir:', renameErr);
-      }
-    } catch (e) {
-      console.warn('[EngineManager] Storage migration error:', e);
-    }
-  }
-
   public static async startEngine(projectRoot: string): Promise<void> {
     if (await this.isEngineRunning()) {
       console.log(`[EngineManager] Python engine already running on port ${this.port}`);
@@ -140,16 +100,6 @@ export class EngineManager {
       VIDEOCUT_HOST: '127.0.0.1',
       VIDEOCUT_STORAGE_DIR: this.storageDir
     };
-
-    // 自动无缝迁移旧存量数据：如果用户曾在 AppData/storage 中产生过项目/素材，自动合并迁移回软件目录 storage
-    try {
-      const appDataStorage = resolve(app.getPath('userData'), 'storage');
-      if (existsSync(appDataStorage) && appDataStorage !== this.storageDir) {
-        this.migrateLegacyStorage(appDataStorage, this.storageDir);
-      }
-    } catch (err) {
-      console.warn('[EngineManager] AppData storage migration warning:', err);
-    }
 
     if (useSidecar) {
       // 确保存储目录就绪并安全同步初始词库与违禁词字典（如果目标目录尚不存在）

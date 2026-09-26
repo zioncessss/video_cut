@@ -211,31 +211,6 @@ def _default_db_path() -> Path:
     return DB_PATH
 
 
-def merge_legacy_appdata_db(current_db_path: Optional[Path] = None) -> None:
-    """自动将历史 AppData 数据库中未收录的 materials, projects, batch_jobs 增量合入当前数据库"""
-    import os
-    appdata = os.environ.get("APPDATA")
-    if not appdata:
-        return
-    legacy_db = Path(appdata) / "videocut" / "storage" / "videocut.db"
-    cur_db = current_db_path or _default_db_path()
-    if not legacy_db.exists() or legacy_db.resolve() == cur_db.resolve():
-        return
-    try:
-        conn = sqlite3.connect(str(cur_db), timeout=10.0)
-        legacy_db_str = str(legacy_db.resolve()).replace("'", "''")
-        conn.execute(f"ATTACH DATABASE '{legacy_db_str}' AS legacy_db")
-        for table in ["materials", "projects", "batch_jobs"]:
-            try:
-                conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM legacy_db.{table}")
-            except Exception:
-                pass
-        conn.commit()
-        conn.execute("DETACH DATABASE legacy_db")
-        conn.close()
-    except Exception as e:
-        print(f"[Migrator] 增量合并 AppData 数据库异常: {e}")
-
 def migrate_legacy_data(db_path: Optional[Path] = None):
     """平滑升级：将旧版 materials_meta.json、projects/*.json 与 settings.json 迁移至 SQLite"""
     init_db(db_path)
@@ -257,12 +232,6 @@ def migrate_legacy_data(db_path: Optional[Path] = None):
                 print(f"[Migrator][Schema] {a}")
     except Exception as e:
         print(f"[Migrator][Schema] 移除级联异常: {e}")
-
-    # 自动合并历史 AppData 数据库中未收录的素材、工程与批次记录
-    try:
-        merge_legacy_appdata_db(db_path)
-    except Exception as e:
-        print(f"[Migrator] AppData 数据库增量合并异常: {e}")
 
     # 自动自愈磁盘自包含任务工程与 JSON
     try:
