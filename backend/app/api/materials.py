@@ -4,6 +4,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from app.models.entities import Material, MaterialCategory
 from app.native_engine.storage import storage_service
+from app.core.config import ALLOWED_VIDEO_EXTENSIONS
 from app.core.plate_regions import ZHEJIANG_REGIONS, is_valid_zhejiang_region, normalize_region_code
 
 router = APIRouter()
@@ -36,12 +37,19 @@ async def upload_material(
     file: UploadFile = File(...),
     plate_region: Optional[str] = Form(None)
 ):
+    fname = file.filename or "video.mp4"
+    ext = Path(fname).suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: '{ext}'，仅支持视频格式: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+        )
     try:
         norm_region = normalize_region_code(plate_region) if plate_region else None
         content = await file.read()
         material = storage_service.save_material(
             category=category,
-            filename=file.filename or "video.mp4",
+            filename=fname,
             source_path_or_bytes=content,
             plate_region=norm_region
         )
@@ -55,6 +63,12 @@ async def import_local_material(payload: LocalImportRequest):
     p = Path(payload.file_path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=400, detail="指定的本地文件不存在")
+    ext = p.suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: '{ext}'，仅支持视频格式: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+        )
     try:
         norm_region = normalize_region_code(payload.plate_region) if payload.plate_region else None
         material = storage_service.save_material(

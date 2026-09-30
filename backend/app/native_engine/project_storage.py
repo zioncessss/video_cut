@@ -404,7 +404,8 @@ class ProjectStorageService:
         self._remove_shadow_json(project_id, p.talking_head_id if p else None)
 
         try:
-            return self.repo.delete(project_id)
+            db_deleted = self.repo.delete(project_id)
+            return db_deleted or (p is not None)
         except Exception as e:
             print(f"[ProjectStorageService] 从 SQLite 删除工程失败: {e}")
             return False

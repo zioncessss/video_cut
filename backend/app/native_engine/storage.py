@@ -158,7 +158,7 @@ class StorageService:
         # 2. 幂等写盘：使用确定性文件名（前缀+哈希指纹），杜绝时间戳导致的多份冗余文件
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_VIDEO_EXTENSIONS:
-            ext = ".mp4"
+            raise ValueError(f"不支持的视频格式: '{ext}'，仅支持 {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}")
         raw_stem = _SAFE_FILENAME_RE.sub("_", Path(filename).stem)[:60].strip("._") or "material"
         deterministic_name = f"{raw_stem}_{content_hash[:12]}{ext}"
         dest_path = ensure_storage_path(target_dir / deterministic_name)
@@ -234,7 +234,7 @@ class StorageService:
     def list_materials(self, category: Optional[MaterialCategory] = None, plate_region: Optional[str] = None) -> List[Material]:
         try:
             db_list = self.repo.list_all(category, plate_region)
-            if db_list:
+            if db_list is not None:
                 for m in db_list:
                     self._cache[m.id] = m
                 return db_list

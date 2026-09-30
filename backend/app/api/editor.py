@@ -2415,8 +2415,9 @@ async def batch_delete_projects(req: BatchDeleteProjectsRequest):
             continue
         if req.delete_files:
             _cleanup_project_files(p)
-        if project_storage_service.delete_project(pid):
-            deleted_ids.append(pid)
+        if project_storage_service.get_by_project_id(pid) is not None:
+            project_storage_service.delete_project(pid)
+        deleted_ids.append(pid)
     return {
         "code": 0,
         "message": f"成功删除 {len(deleted_ids)} 个工程",
@@ -2437,9 +2438,11 @@ async def delete_project(
     if delete_files:
         _cleanup_project_files(p)
 
-    success = project_storage_service.delete_project(project_id)
-    if not success:
-        raise HTTPException(status_code=500, detail="删除工程失败")
+    # 幂等性防御：若 _cleanup_project_files 级联已将工程清理，直接视为成功
+    if project_storage_service.get_by_project_id(project_id) is not None:
+        success = project_storage_service.delete_project(project_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="删除工程失败")
 
     return {
         "code": 0,

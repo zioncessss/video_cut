@@ -200,21 +200,48 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
       if (!res.canceled && res.filePaths.length > 0) {
         setUploading(true);
         const regionToTag = (activeTab === 'venue' || activeTab === 'lesson') ? selectedRegion : undefined;
+        let successCount = 0;
+        const failedErrors: string[] = [];
+
         try {
           for (let i = 0; i < res.filePaths.length; i++) {
             const p = res.filePaths[i];
             const name = p.split(/[/\\]/).pop() || p;
             setUploadProgressText(`正在导入 (${i + 1}/${res.filePaths.length}): ${name}...`);
-            await importLocalMaterial(activeTab, p, regionToTag);
+            try {
+              await importLocalMaterial(activeTab, p, regionToTag);
+              successCount++;
+            } catch (err: any) {
+              const detail = err?.response?.data?.detail;
+              const msg = typeof detail === 'string'
+                ? detail
+                : (err?.message || '文件读取或入库失败');
+              failedErrors.push(`${name}: ${msg}`);
+            }
           }
-          await loadData(activeTab, filterRegion);
-          showToast(`成功导入 ${res.filePaths.length} 个本地素材`);
-        } catch (err: any) {
-          const detail = err?.response?.data?.detail;
-          const msg = typeof detail === 'string'
-            ? detail
-            : (err?.message ? `本地导入失败: ${err.message}` : '本地导入失败，请检查文件是否存在且有读取权限。');
-          showAlert({ title: '本地导入失败', message: msg, type: 'error' });
+
+          if (regionToTag && filterRegion && filterRegion !== regionToTag) {
+            setFilterRegion(regionToTag);
+          } else {
+            await loadData(activeTab, filterRegion);
+          }
+
+          if (successCount > 0 && failedErrors.length === 0) {
+            showToast(`成功导入 ${successCount} 个本地素材`);
+          } else if (successCount > 0 && failedErrors.length > 0) {
+            showToast(`导入完成: 成功 ${successCount} 个，失败 ${failedErrors.length} 个`);
+            showAlert({
+              title: '部分素材导入失败',
+              message: `成功 ${successCount} 个，以下 ${failedErrors.length} 个文件导入失败:\n${failedErrors.slice(0, 5).join('\n')}${failedErrors.length > 5 ? '\n...' : ''}`,
+              type: 'warning'
+            });
+          } else if (failedErrors.length > 0) {
+            showAlert({
+              title: '本地导入失败',
+              message: `所有文件导入失败:\n${failedErrors.slice(0, 5).join('\n')}${failedErrors.length > 5 ? '\n...' : ''}`,
+              type: 'error'
+            });
+          }
         } finally {
           setUploading(false);
           setUploadProgressText('');
@@ -229,27 +256,53 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
     if (!files || files.length === 0) return;
     setUploading(true);
     const regionToTag = (activeTab === 'venue' || activeTab === 'lesson') ? selectedRegion : undefined;
+    let successCount = 0;
+    const failedErrors: string[] = [];
+
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         // 如果在 Electron 环境中拖拽，优先获取其原生文件绝对路径执行零拷贝快速导入
         const nativePath = (file as any).path;
-        if (nativePath && window.electronAPI) {
-          setUploadProgressText(`正在极速导入 (${i + 1}/${files.length}): ${file.name}...`);
-          await importLocalMaterial(activeTab, nativePath, regionToTag);
-        } else {
-          setUploadProgressText(`正在上传 (${i + 1}/${files.length}): ${file.name}...`);
-          await uploadMaterial(activeTab, file, regionToTag);
+        setUploadProgressText(`正在${nativePath && window.electronAPI ? '极速导入' : '上传'} (${i + 1}/${files.length}): ${file.name}...`);
+        try {
+          if (nativePath && window.electronAPI) {
+            await importLocalMaterial(activeTab, nativePath, regionToTag);
+          } else {
+            await uploadMaterial(activeTab, file, regionToTag);
+          }
+          successCount++;
+        } catch (err: any) {
+          const detail = err?.response?.data?.detail;
+          const msg = typeof detail === 'string'
+            ? detail
+            : (err?.message || '文件上传或入库失败');
+          failedErrors.push(`${file.name}: ${msg}`);
         }
       }
-      await loadData(activeTab, filterRegion);
-      showToast(`成功上传 ${files.length} 个素材`);
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail;
-      const msg = typeof detail === 'string'
-        ? detail
-        : (err?.message ? `素材上传失败: ${err.message}` : '素材上传失败，请确保后端服务正常运行。');
-      showAlert({ title: '上传失败', message: msg, type: 'error' });
+
+      if (regionToTag && filterRegion && filterRegion !== regionToTag) {
+        setFilterRegion(regionToTag);
+      } else {
+        await loadData(activeTab, filterRegion);
+      }
+
+      if (successCount > 0 && failedErrors.length === 0) {
+        showToast(`成功上传 ${successCount} 个素材`);
+      } else if (successCount > 0 && failedErrors.length > 0) {
+        showToast(`上传完成: 成功 ${successCount} 个，失败 ${failedErrors.length} 个`);
+        showAlert({
+          title: '部分素材上传失败',
+          message: `成功 ${successCount} 个，以下 ${failedErrors.length} 个文件上传失败:\n${failedErrors.slice(0, 5).join('\n')}${failedErrors.length > 5 ? '\n...' : ''}`,
+          type: 'warning'
+        });
+      } else if (failedErrors.length > 0) {
+        showAlert({
+          title: '素材上传失败',
+          message: `所有文件上传失败:\n${failedErrors.slice(0, 5).join('\n')}${failedErrors.length > 5 ? '\n...' : ''}`,
+          type: 'error'
+        });
+      }
     } finally {
       setUploading(false);
       setUploadProgressText('');

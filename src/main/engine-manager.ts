@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -89,8 +89,20 @@ export class EngineManager {
 
     console.log(`[EngineManager] Starting Python engine (${useSidecar ? 'sidecar' : 'dev'}) using: ${pythonExecutable} on port ${this.port}`);
 
-    // 存储目录铁律：数据严格存放在软件程序根目录的 storage 下，不在系统 C 盘 AppData 占用宝贵空间
-    this.storageDir = resolve(projectRoot, 'storage');
+    // 存储目录铁律：数据优先存放在软件程序根目录的 storage 下，不在系统 C 盘 AppData 占用宝贵空间；
+    // 自愈防御：若安装于受保护系统目录（如 C:\Program Files）导致无写入权限，自动降级至用户应用安全数据区
+    let chosenStorage = resolve(projectRoot, 'storage');
+    try {
+      mkdirSync(chosenStorage, { recursive: true });
+      const testFile = resolve(chosenStorage, '.write_probe');
+      writeFileSync(testFile, 'ok');
+      unlinkSync(testFile);
+    } catch (permErr) {
+      console.warn(`[EngineManager] 程序根目录 ${chosenStorage} 不可写（可能安装在 Program Files 且无管理员权限），自动降级使用用户可写数据目录:`, permErr);
+      chosenStorage = resolve(app.getPath('userData'), 'storage');
+      mkdirSync(chosenStorage, { recursive: true });
+    }
+    this.storageDir = chosenStorage;
 
     const env = {
       ...process.env,

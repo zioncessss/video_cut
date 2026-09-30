@@ -6,14 +6,32 @@ from typing import Dict, List, Tuple
 # 基础工作区与存储路径
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 # 数据根目录可被环境变量注入（sidecar 打包模式由 Electron 主进程指定便携目录）
-VIDEOCUT_STORAGE_DIR = os.getenv("VIDEOCUT_STORAGE_DIR", "").strip()
-STORAGE_DIR = Path(VIDEOCUT_STORAGE_DIR) if VIDEOCUT_STORAGE_DIR else ROOT_DIR / "storage"
+VIDEOCUT_STORAGE_DIR = os.getenv("VIDEOCUT_STORAGE_DIR", "").strip().strip('"').strip("'")
+
+def _resolve_safe_storage_dir() -> Path:
+    base = Path(VIDEOCUT_STORAGE_DIR) if VIDEOCUT_STORAGE_DIR else ROOT_DIR / "storage"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        test_f = base / ".write_probe"
+        test_f.write_bytes(b"ok")
+        test_f.unlink(missing_ok=True)
+        return base
+    except Exception as e:
+        # 当安装目录不可写（例如 Windows 安装到 C:\Program Files 且非管理员权限）时，自愈回退至用户数据安全存储区
+        print(f"[Config] 目标存储目录 {base} 不可写 ({e})，自动自愈切换至用户安全存储区...")
+        fallback = Path(os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())) / "videocut" / "storage"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+STORAGE_DIR = _resolve_safe_storage_dir()
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
 COVERS_DIR = STORAGE_DIR / "covers"     # 005: 工程封面（截帧/上传）
 TASKS_DIR = STORAGE_DIR / "tasks"       # 005-US11: 独立工程文件夹目录（日期+时间）
-DB_PATH = Path(os.getenv("VIDEOCUT_DB_PATH", str(STORAGE_DIR / "videocut.db")))
+
+raw_db_env = os.getenv("VIDEOCUT_DB_PATH", "").strip().strip('"').strip("'")
+DB_PATH = Path(raw_db_env) if raw_db_env else (STORAGE_DIR / "videocut.db")
 
 # 素材分类定义（experience 为原 medical 体检分类的扩展升级：学员全流程体验空镜）
 CATEGORIES: List[str] = ["talking_head", "venue", "experience", "lesson"]

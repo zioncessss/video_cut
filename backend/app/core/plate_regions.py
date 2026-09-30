@@ -110,13 +110,18 @@ def is_valid_zhejiang_region(code: Optional[str]) -> bool:
 
 
 def normalize_region_code(code: Optional[str]) -> Optional[str]:
-    """标准化地区代码，如 '浙A' 或 '杭州' 映射为 '浙A·杭州'"""
+    """标准化地区代码，如 '浙A'、'杭州'、'ZHE_A'、'ZHE_J' 均映射为标准 '浙A·杭州'、'浙J·台州'"""
     if not code:
         return None
     code_strip = code.strip()
     if code_strip in REGION_MAP_BY_CODE:
         return code_strip
+    # 兼容英文前缀，如 ZHE_A, ZHE_J, ZHE-J
+    upper = code_strip.upper().replace("-", "_")
     for r in ZHEJIANG_REGIONS:
+        letter = r.plate_prefix[-1]  # 'A', 'B', etc.
+        if upper in (f"ZHE_{letter}", f"ZHE{letter}", f"ZH_{letter}"):
+            return r.code
         if code_strip == r.plate_prefix or code_strip == r.city_name or f"{r.plate_prefix}·{r.city_name}" == code_strip:
             return r.code
         # 兼容中间是空格或短横线的写法，如 "浙A 杭州"

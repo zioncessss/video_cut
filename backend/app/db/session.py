@@ -1,8 +1,10 @@
+import os
 import sqlite3
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, Optional, Tuple
 from app.core.config import DB_PATH
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -318,12 +320,42 @@ def _ensure_columns(conn) -> None:
     conn.commit()
 
 
+def _connect_sqlite(target_path: Path, timeout: float = 10.0) -> Tuple[sqlite3.Connection, Path]:
+    """带有自愈能力的 SQLite 连接器：当遭遇权限不足/SQLITE_CANTOPEN 时，尝试修复权限或降级至用户安全存储区"""
+    clean_str = str(target_path).strip().strip('"').strip("'")
+    clean_path = Path(clean_str)
+    try:
+        clean_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(clean_path), timeout=timeout)
+        return conn, clean_path
+    except sqlite3.OperationalError as e:
+        err_msg = str(e).lower()
+        if "unable to open database file" in err_msg or "cantopen" in err_msg or "permission" in err_msg:
+            # 1. 尝试使用 Windows icacls 修复父目录写权限
+            if sys.platform == "win32":
+                try:
+                    subprocess.run(
+                        ["icacls", str(clean_path.parent), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/Q"],
+                        capture_output=True, timeout=3
+                    )
+                    conn = sqlite3.connect(str(clean_path), timeout=timeout)
+                    return conn, clean_path
+                except Exception:
+                    pass
+            # 2. 若仍不可写，自动降级至用户主目录安全存储区
+            print(f"[SQLite] 数据库路径 {clean_path} 无法打开 ({e})，正在自动切换至用户安全存储区自愈...")
+            fallback_dir = Path(os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())) / "videocut" / "storage"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            fallback_db = fallback_dir / "videocut.db"
+            conn = sqlite3.connect(str(fallback_db), timeout=timeout)
+            return conn, fallback_db
+        raise
+
 def init_db(db_path: Optional[Path] = None):
     """初始化数据库并应用 schema.sql 与增量列自愈"""
     target_path = db_path or DB_PATH
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with sqlite3.connect(str(target_path)) as conn:
+    conn, actual_path = _connect_sqlite(target_path, timeout=10.0)
+    with conn:
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
@@ -336,15 +368,13 @@ def init_db(db_path: Optional[Path] = None):
 def get_db_connection(db_path: Optional[Path] = None) -> Generator[sqlite3.Connection, None, None]:
     """获取配置好 WAL 模式与外键约束的 SQLite 连接"""
     target_path = db_path or DB_PATH
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(target_path), timeout=10.0)
+    conn, actual_path = _connect_sqlite(target_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA busy_timeout = 5000;")
 
-    # 防御性自愈：如果数据库未建表（如单测独立调用场景），自动应用 schema；
+    # 防御性自愈：如果数据库未建表（如单测独立调用或降级存储场景），自动应用 schema；
     # 已建表则同样应用共享的增量列自愈清单（projects 新列等在此补齐）
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='materials';")
