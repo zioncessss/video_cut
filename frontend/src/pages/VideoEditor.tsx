@@ -981,6 +981,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         ? '🎉 最终成片已完成合规清洗并导出成功！'
         : '🎉 新成片已复合压制完成并替代前序版本！已自动切换为高清成片预览。';
       setAiFeedback(exportFeedback);
+      showToast(exportDir ? `成片与封面已保存至: ${exportDir}` : '成片导出成功！', 'success');
     } catch (err: any) {
       showAlert({
         title: '渲染合成失败',

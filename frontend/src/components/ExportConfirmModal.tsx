@@ -60,7 +60,36 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
   onToggleEmbedFirstFrame,
   projectTitle = '',
 }) => {
-  const [exportDir, setExportDir] = useState<string>('');
+  const [exportDir, setExportDir] = useState<string>(() => {
+    try {
+      return localStorage.getItem('videocut_export_dir') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  // 当弹窗打开时，若有已保存的历史导出路径，自动同步并使用
+  useEffect(() => {
+    if (isOpen) {
+      try {
+        const saved = localStorage.getItem('videocut_export_dir');
+        if (saved) {
+          setExportDir(saved);
+        }
+      } catch {}
+    }
+  }, [isOpen]);
+
+  const updateExportDir = (dir: string) => {
+    setExportDir(dir);
+    try {
+      if (dir) {
+        localStorage.setItem('videocut_export_dir', dir);
+      } else {
+        localStorage.removeItem('videocut_export_dir');
+      }
+    } catch {}
+  };
   const cleanTitle = (projectTitle || '成片')
     .replace(/[\\/*?:"<>|\r\n\t]+/g, '_')
     .replace(/^[ ._]+|[ ._]+$/g, '') || '成片';
@@ -98,20 +127,23 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSelectExportDir = async () => {
+  const handleSelectExportDir = async (): Promise<string | null> => {
     if (window.electronAPI?.showOpenDialog) {
       try {
         const res = await window.electronAPI.showOpenDialog({
-          title: '选择成片导出目标文件夹',
+          title: '选择成片与封面的导出目标文件夹',
           properties: ['openDirectory']
         });
         if (!res.canceled && res.filePaths && res.filePaths.length > 0) {
-          setExportDir(res.filePaths[0]);
+          const selected = res.filePaths[0];
+          updateExportDir(selected);
+          return selected;
         }
       } catch (err) {
         console.error('选择目标文件夹失败:', err);
       }
     }
+    return null;
   };
 
   // 提取去重后的替换对
@@ -128,6 +160,18 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
   }
 
   const handleStartExport = async () => {
+    let targetExportDir = exportDir;
+
+    // 若未曾选择过导出位置，确认导出时主动弹出文件夹选择对话框，引导用户选择目标文件夹
+    if (!targetExportDir && window.electronAPI?.showOpenDialog) {
+      const selected = await handleSelectExportDir();
+      if (!selected) {
+        // 用户主动取消了文件夹选择，中止导出以避免保存到未知位置
+        return;
+      }
+      targetExportDir = selected;
+    }
+
     // 1. 如果开启了封面导出且配置了封面，先调用接口落盘高清 cover.jpg
     if (includeCover && projectId && currentCoverConfig) {
       setIsSavingCover(true);
@@ -144,7 +188,7 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
     onConfirm(
       filterBannedWords,
       includeCover ? (currentCoverConfig || undefined) : undefined,
-      exportDir || undefined,
+      targetExportDir || undefined,
       includeCover,
       includeCover
     );
@@ -232,35 +276,49 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
         {/* Modal Body: 滚动展示 */}
         <div className="p-6 overflow-y-auto max-h-[calc(92vh-150px)] space-y-4">
           {/* 自选导出目标目录设置卡片 */}
-          <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/80 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-              <div className="p-2 rounded-lg bg-blue-100 text-blue-700 shrink-0">
-                <Folder className="w-4 h-4" />
+          <div className="p-3.5 rounded-xl border border-blue-200/90 bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-blue-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="p-2.5 rounded-xl bg-blue-600 text-white shadow-xs shrink-0">
+                <FolderOpen className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-slate-800 shrink-0">导出存放位置:</span>
-                  <span
-                    className="text-xs text-slate-700 font-mono bg-white px-2 py-0.5 rounded border border-slate-200 truncate block max-w-full"
-                    title={exportDir || '默认项目工作区 (storage/task_dirs/...)'}
-                  >
-                    {exportDir || '默认项目工作区 (storage/task_dirs/...)'}
-                  </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-slate-900 shrink-0">成片导出目标文件夹:</span>
+                  {exportDir ? (
+                    <span
+                      className="text-xs text-blue-900 font-mono font-medium bg-white px-2.5 py-0.5 rounded-md border border-blue-200 truncate max-w-full inline-block shadow-2xs"
+                      title={exportDir}
+                    >
+                      {exportDir}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-md border border-amber-200 font-medium">
+                      尚未选定（确认导出时将主动提示选取，或点击右侧选择）
+                    </span>
+                  )}
+                  {exportDir && (
+                    <span className="text-[10px] text-emerald-700 bg-emerald-100/90 px-1.5 py-0.2 rounded font-medium shrink-0">
+                      已记住该位置
+                    </span>
+                  )}
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  成片及高清封面将自动输出并保存至该位置
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {exportDir
+                    ? '已记住此导出位置，后续导出默认保存至此；成片及高清封面将自动另存至该位置'
+                    : '成片及高清封面将自动另存至您指定的文件夹，方便快速查找'}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               {exportDir && (
                 <button
                   type="button"
-                  onClick={() => setExportDir('')}
-                  className="px-2 py-1 text-xs text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                  onClick={() => updateExportDir('')}
+                  className="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                  title="清空已记住的文件夹"
                 >
-                  恢复默认
+                  重置
                 </button>
               )}
               {window.electronAPI?.showOpenDialog ? (
@@ -268,7 +326,7 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
                   type="button"
                   onClick={handleSelectExportDir}
                   disabled={isRendering || isSavingCover}
-                  className="px-3 py-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-white hover:bg-blue-50/80 rounded-xl transition-all border border-blue-200 shadow-2xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                  className="px-3.5 py-1.5 text-xs font-semibold text-blue-700 hover:text-white bg-white hover:bg-blue-600 rounded-xl transition-all border border-blue-300 shadow-2xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
                   <span>{exportDir ? '更改文件夹' : '选择目标文件夹'}</span>
@@ -277,7 +335,7 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
                 <input
                   type="text"
                   value={exportDir}
-                  onChange={(e) => setExportDir(e.target.value)}
+                  onChange={(e) => updateExportDir(e.target.value)}
                   placeholder="键入自定义导出路径"
                   className="text-xs px-2.5 py-1 bg-white border border-slate-200 rounded-lg outline-none focus:border-blue-500 w-44 font-mono"
                 />
@@ -453,35 +511,57 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-slate-50/80 border-t border-slate-100 flex items-center justify-between">
-          <div className="text-xs text-slate-500 truncate max-w-md">
-            <span>✨ 导出成片将生成：</span>
-            <span className="font-semibold text-slate-700 ml-1">{cleanTitle}.mp4</span>
-            {includeCover && (
-              <>
-                <span className="mx-1 text-slate-300">|</span>
-                <span className="font-semibold text-slate-700">{cleanTitle}_cover.jpg</span>
-              </>
-            )}
-            {includeCover && embedCover && (
-              <span className="ml-1 text-[11px] text-indigo-600 font-medium">(含首帧封面)</span>
-            )}
-            {!includeCover && (
-              <span className="ml-1 text-[11px] text-slate-400">(无封面)</span>
-            )}
-            {exportDir && (
-              <span className="ml-2 text-blue-600 font-medium truncate inline-block" title={exportDir}>
-                (另存至: {exportDir.split(/[/\\]/).pop() || exportDir})
-              </span>
-            )}
+        <div className="px-6 py-3.5 bg-slate-50/90 border-t border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex flex-col gap-1 min-w-0 max-w-xl">
+            <div className="flex items-center gap-1.5 text-xs text-slate-600 truncate">
+              <span>✨ 导出成片：</span>
+              <span className="font-semibold text-slate-800">{cleanTitle}.mp4</span>
+              {includeCover && (
+                <>
+                  <span className="text-slate-300">|</span>
+                  <span className="font-semibold text-slate-800">{cleanTitle}_cover.jpg</span>
+                  {embedCover && <span className="ml-1 text-[11px] text-indigo-600 font-medium">(含首帧封面)</span>}
+                </>
+              )}
+            </div>
+
+            {/* 主动且醒目地提示导出位置 */}
+            <div className="flex items-center gap-2 text-xs">
+              <div
+                className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg border font-mono truncate max-w-full text-xs ${
+                  exportDir
+                    ? 'bg-blue-50 border-blue-200 text-blue-900 font-medium'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+                title={exportDir || '未指定文件夹（点击确认导出将主动提示选取）'}
+              >
+                <FolderOpen className={`w-3.5 h-3.5 shrink-0 ${exportDir ? 'text-blue-600' : 'text-amber-600'}`} />
+                <span className="shrink-0 font-sans font-semibold">
+                  {exportDir ? '导出位置:' : '导出位置提示:'}
+                </span>
+                <span className="truncate">
+                  {exportDir || '未选择目标文件夹（确认导出时将主动提示选取）'}
+                </span>
+              </div>
+              {window.electronAPI?.showOpenDialog && (
+                <button
+                  type="button"
+                  onClick={handleSelectExportDir}
+                  disabled={isRendering || isSavingCover}
+                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline shrink-0 font-medium cursor-pointer"
+                >
+                  {exportDir ? '更改位置' : '选取文件夹'}
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
               onClick={onClose}
               disabled={isRendering || isSavingCover}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50 cursor-pointer"
             >
               取消
             </button>
@@ -489,7 +569,8 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
               type="button"
               onClick={handleStartExport}
               disabled={isRendering || isSavingCover}
-              className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 transition-all flex items-center gap-1.5 disabled:opacity-50"
+              className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              title={exportDir ? `确认并导出至: ${exportDir}` : '确认并选取导出文件夹'}
             >
               {isRendering || isSavingCover ? (
                 <>
@@ -499,7 +580,7 @@ export const ExportConfirmModal: React.FC<ExportConfirmModalProps> = ({
               ) : (
                 <>
                   <Sparkles className="w-3.5 h-3.5" />
-                  确认并导出成片
+                  <span>确认并导出成片</span>
                 </>
               )}
             </button>
