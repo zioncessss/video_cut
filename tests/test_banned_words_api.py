@@ -86,3 +86,39 @@ def test_batch_cut_endpoints_accept_filter_banned_words(tmp_path):
         assert items[0]["filter_banned_words"] is True
     finally:
         storage_service.delete_material(th.id)
+
+
+def test_glossary_crud_endpoints():
+    # 1. 查询 ASR 纠偏词库
+    res = client.get("/api/v1/editor/glossary")
+    assert res.status_code == 200
+    data = res.json()
+    assert "corrections" in data
+    assert data["total"] >= 10
+    assert "链车" in data["corrections"]
+    assert data["corrections"]["链车"] == "练车"
+
+    # 2. 添加或更新纠偏映射
+    add_res = client.post(
+        "/api/v1/editor/glossary/corrections",
+        json={"original_word": "科三路考测试错词", "corrected_word": "科目三路考"}
+    )
+    assert add_res.status_code == 200
+    add_data = add_res.json()
+    assert add_data["code"] == 0
+    assert add_data["corrections"]["科三路考测试错词"] == "科目三路考"
+
+    # 3. 删除刚刚添加的映射
+    del_res = client.delete("/api/v1/editor/glossary/corrections/科三路考测试错词")
+    assert del_res.status_code == 200
+    del_data = del_res.json()
+    assert del_data["code"] == 0
+    assert "科三路考测试错词" not in del_data["corrections"]
+
+    # 4. 恢复默认
+    reset_res = client.post("/api/v1/editor/glossary/reset")
+    assert reset_res.status_code == 200
+    reset_data = reset_res.json()
+    assert reset_data["code"] == 0
+    assert "链车" in reset_data["corrections"]
+

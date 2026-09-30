@@ -47,7 +47,7 @@ export const App: React.FC = () => {
     { id: 'library', label: '素材库', icon: Folder },
     { id: 'editor', label: '剪辑工作台', icon: Film },
     { id: 'batch', label: '批量混剪', icon: Layers },
-    { id: 'compliance', label: '合规词库', icon: ShieldCheck },
+    { id: 'compliance', label: '词库管理', icon: ShieldCheck },
     { id: 'settings', label: '设置', icon: SettingsIcon },
   ];
 

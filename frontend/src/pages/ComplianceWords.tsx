@@ -3,11 +3,16 @@ import {
   fetchBannedWords,
   saveBannedWord,
   deleteBannedWord,
-  resetBannedWords
+  resetBannedWords,
+  fetchGlossary,
+  saveGlossaryCorrection,
+  deleteGlossaryCorrection,
+  resetGlossary
 } from '../services/api';
 import { useDialog } from '../components/common/CustomDialog';
 import {
   ShieldCheck,
+  Sparkles,
   Plus,
   RotateCcw,
   Search,
@@ -22,7 +27,11 @@ import {
 export const ComplianceWords: React.FC = () => {
   const { showAlert, showConfirm, showToast } = useDialog();
 
-  const [mappings, setMappings] = useState<Record<string, string>>({});
+  const [activeTab, setActiveTab] = useState<'glossary' | 'banned'>('glossary');
+
+  // 字幕纠偏映射与违禁词映射
+  const [glossaryMappings, setGlossaryMappings] = useState<Record<string, string>>({});
+  const [bannedMappings, setBannedMappings] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -38,10 +47,14 @@ export const ComplianceWords: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      const data = await fetchBannedWords();
-      setMappings(data.mappings || {});
+      const [glossaryRes, bannedRes] = await Promise.all([
+        fetchGlossary().catch(() => ({ corrections: {} as Record<string, string>, total: 0 })),
+        fetchBannedWords().catch(() => ({ mappings: {} as Record<string, string>, total: 0 }))
+      ]);
+      setGlossaryMappings(glossaryRes.corrections || {});
+      setBannedMappings(bannedRes.mappings || {});
     } catch (err: any) {
-      showToast('获取违禁词库失败: ' + (err?.message || '网络异常'), 'error');
+      showToast('获取词库数据失败: ' + (err?.message || '网络异常'), 'error');
     } finally {
       setLoading(false);
     }
@@ -51,33 +64,40 @@ export const ComplianceWords: React.FC = () => {
     loadData();
   }, []);
 
+  const currentMappings = activeTab === 'glossary' ? glossaryMappings : bannedMappings;
+
   // 排序与筛选（长词优先展示，对齐后端规则）
   const displayList = useMemo(() => {
-    let entries = Object.entries(mappings);
+    let entries = Object.entries(currentMappings);
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
       entries = entries.filter(([k, v]) => k.toLowerCase().includes(q) || v.toLowerCase().includes(q));
     }
     return entries.sort((a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]));
-  }, [mappings, searchQuery]);
+  }, [currentMappings, searchQuery]);
 
   const handleAddWord = async (e: React.FormEvent) => {
     e.preventDefault();
     const orig = inputOrig.trim();
     const repl = inputRepl.trim();
     if (!orig) {
-      showAlert({ title: '提示', message: '请输入原词', type: 'warning' });
+      showAlert({ title: '提示', message: activeTab === 'glossary' ? '请输入识别错词' : '请输入原始敏感词', type: 'warning' });
       return;
     }
     if (!repl) {
-      showAlert({ title: '提示', message: '请输入处理后的词', type: 'warning' });
+      showAlert({ title: '提示', message: activeTab === 'glossary' ? '请输入纠偏后的正确词' : '请输入处理后的脱敏词', type: 'warning' });
       return;
     }
 
     setSaving(true);
     try {
-      const data = await saveBannedWord(orig, repl);
-      setMappings(data.mappings || {});
+      if (activeTab === 'glossary') {
+        const res = await saveGlossaryCorrection(orig, repl);
+        setGlossaryMappings(res.corrections || {});
+      } else {
+        const res = await saveBannedWord(orig, repl);
+        setBannedMappings(res.mappings || {});
+      }
       setInputOrig('');
       setInputRepl('');
       showToast(`已添加规则: ${orig} → ${repl}`, 'success');
@@ -100,8 +120,13 @@ export const ComplianceWords: React.FC = () => {
       return;
     }
     try {
-      const data = await saveBannedWord(orig, repl);
-      setMappings(data.mappings || {});
+      if (activeTab === 'glossary') {
+        const res = await saveGlossaryCorrection(orig, repl);
+        setGlossaryMappings(res.corrections || {});
+      } else {
+        const res = await saveBannedWord(orig, repl);
+        setBannedMappings(res.mappings || {});
+      }
       setEditingKey(null);
       showToast(`已更新: ${orig} → ${repl}`, 'success');
     } catch (err: any) {
@@ -119,8 +144,13 @@ export const ComplianceWords: React.FC = () => {
     if (!confirmed) return;
 
     try {
-      const data = await deleteBannedWord(orig);
-      setMappings(data.mappings || {});
+      if (activeTab === 'glossary') {
+        const res = await deleteGlossaryCorrection(orig);
+        setGlossaryMappings(res.corrections || {});
+      } else {
+        const res = await deleteBannedWord(orig);
+        setBannedMappings(res.mappings || {});
+      }
       showToast(`已删除: ${orig}`, 'success');
     } catch (err: any) {
       showAlert({ title: '删除失败', message: err?.response?.data?.detail || err.message, type: 'error' });
@@ -128,18 +158,27 @@ export const ComplianceWords: React.FC = () => {
   };
 
   const handleReset = async () => {
+    const isGlossary = activeTab === 'glossary';
     const confirmed = await showConfirm({
       title: '确认恢复默认',
-      message: '确定要将违禁词库恢复为系统默认配置吗？',
+      message: isGlossary
+        ? '确定要将字幕纠偏词库恢复为系统默认配置吗？'
+        : '确定要将违禁词脱敏词库恢复为系统默认配置吗？',
       isDestructive: true,
-      confirmText: '恢复'
+      confirmText: '恢复默认'
     });
     if (!confirmed) return;
 
     try {
-      const data = await resetBannedWords();
-      setMappings(data.mappings || {});
-      showToast('已恢复默认违禁词库', 'success');
+      if (isGlossary) {
+        const res = await resetGlossary();
+        setGlossaryMappings(res.corrections || {});
+        showToast('已恢复默认字幕纠偏词库', 'success');
+      } else {
+        const res = await resetBannedWords();
+        setBannedMappings(res.mappings || {});
+        showToast('已恢复默认违禁词词库', 'success');
+      }
     } catch (err: any) {
       showAlert({ title: '恢复失败', message: err?.response?.data?.detail || err.message, type: 'error' });
     }
@@ -147,23 +186,57 @@ export const ComplianceWords: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-[#F8FAFC] overflow-y-auto">
-      {/* 顶部标题栏 */}
-      <div className="bg-white border-b border-gray-200/80 px-8 py-4 flex items-center justify-between sticky top-0 z-20 shadow-xs">
-        <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600">
-            <ShieldCheck className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h1 className="text-base font-bold text-gray-900 tracking-tight">违禁词处理</h1>
-              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200/60 font-mono">
-                {Object.keys(mappings).length} 条规则
+      {/* 顶部标题栏与标签切换 */}
+      <div className="bg-white border-b border-gray-200/80 px-8 py-3.5 flex items-center justify-between sticky top-0 z-20 shadow-xs">
+        <div className="flex items-center space-x-6">
+          {/* 选项卡切换 */}
+          <div className="flex items-center space-x-1.5 bg-gray-100 p-1 rounded-xl border border-gray-200/80">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('glossary');
+                setEditingKey(null);
+                setSearchQuery('');
+              }}
+              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'glossary'
+                  ? 'bg-white text-blue-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/60'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>字幕纠偏映射</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-50 text-blue-700 font-mono font-bold">
+                {Object.keys(glossaryMappings).length}
               </span>
-            </div>
-            <p className="text-xs text-gray-500 mt-0.5">
-              左边是原词，右边是处理后的。批量混剪与导出视频时自动执行替换脱敏。
-            </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('banned');
+                setEditingKey(null);
+                setSearchQuery('');
+              }}
+              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'banned'
+                  ? 'bg-white text-rose-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/60'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>违禁词脱敏</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-rose-50 text-rose-700 font-mono font-bold">
+                {Object.keys(bannedMappings).length}
+              </span>
+            </button>
           </div>
+
+          <p className="text-xs text-gray-500 hidden md:block">
+            {activeTab === 'glossary'
+              ? '左边是录音识别错词，右边是纠偏后的正确词。转写与初剪时自动替换。'
+              : '左边是敏感词，右边是处理后的。批量混剪与视频导出时自动替换脱敏。'}
+          </p>
         </div>
 
         <div className="flex items-center space-x-2">
@@ -188,7 +261,7 @@ export const ComplianceWords: React.FC = () => {
       </div>
 
       <div className="p-8 max-w-5xl mx-auto w-full space-y-4">
-        {/* 添加违禁词栏与搜索栏 */}
+        {/* 添加新词栏与搜索栏 */}
         <div className="bg-white rounded-2xl border border-gray-200/80 p-4 shadow-xs flex flex-col md:flex-row items-center justify-between gap-4">
           {/* 添加新词表单 */}
           <form onSubmit={handleAddWord} className="flex items-center space-x-2 w-full md:w-auto flex-1">
@@ -196,21 +269,25 @@ export const ComplianceWords: React.FC = () => {
               type="text"
               value={inputOrig}
               onChange={(e) => setInputOrig(e.target.value)}
-              placeholder="原词 (如: 包过)"
-              className="px-3 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 flex-1 md:w-44"
+              placeholder={activeTab === 'glossary' ? '识别错词 (如: 链车)' : '原词 (如: 包过)'}
+              className="px-3 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 flex-1 md:w-44"
             />
             <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
             <input
               type="text"
               value={inputRepl}
               onChange={(e) => setInputRepl(e.target.value)}
-              placeholder="处理后 (如: 包合格)"
-              className="px-3 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 flex-1 md:w-44"
+              placeholder={activeTab === 'glossary' ? '正确词 (如: 练车)' : '处理后 (如: 包合格)'}
+              className="px-3 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 flex-1 md:w-44"
             />
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center space-x-1 px-4 py-1.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all shadow-xs cursor-pointer flex-shrink-0 disabled:opacity-50"
+              className={`flex items-center space-x-1 px-4 py-1.5 rounded-xl text-xs font-semibold text-white transition-all shadow-xs cursor-pointer flex-shrink-0 disabled:opacity-50 ${
+                activeTab === 'glossary'
+                  ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'
+                  : 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+              }`}
             >
               <Plus className="w-3.5 h-3.5" />
               <span>{saving ? '添加中...' : '添加'}</span>
@@ -225,7 +302,7 @@ export const ComplianceWords: React.FC = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="搜索词条..."
-              className="w-full pl-8 pr-7 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+              className="w-full pl-8 pr-7 py-1.5 text-xs bg-gray-50 rounded-xl border border-gray-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
             />
             {searchQuery && (
               <button
@@ -242,15 +319,19 @@ export const ComplianceWords: React.FC = () => {
         {/* 词库表格卡片 */}
         <div className="bg-white rounded-2xl border border-gray-200/80 shadow-xs overflow-hidden">
           <div className="grid grid-cols-12 px-6 py-3 bg-gray-50/80 border-b border-gray-200 text-xs font-semibold text-gray-600">
-            <div className="col-span-5">原词（左边）</div>
+            <div className="col-span-5">
+              {activeTab === 'glossary' ? '错词（左边）' : '原词（左边）'}
+            </div>
             <div className="col-span-1 text-center"></div>
-            <div className="col-span-5">处理后（右边）</div>
+            <div className="col-span-5">
+              {activeTab === 'glossary' ? '纠偏正确词（右边）' : '处理后（右边）'}
+            </div>
             <div className="col-span-1 text-right">操作</div>
           </div>
 
           {displayList.length === 0 ? (
             <div className="py-12 text-center text-gray-400 text-xs">
-              暂无匹配的违禁词规则
+              暂无匹配的规则
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
@@ -259,7 +340,7 @@ export const ComplianceWords: React.FC = () => {
                   key={orig}
                   className="grid grid-cols-12 px-6 py-3 items-center hover:bg-gray-50/60 transition-colors text-xs"
                 >
-                  {/* 左边：原词 */}
+                  {/* 左边：原词 / 错词 */}
                   <div className="col-span-5 font-semibold text-gray-900 truncate">
                     {orig}
                   </div>
@@ -269,8 +350,8 @@ export const ComplianceWords: React.FC = () => {
                     <ArrowRight className="w-3.5 h-3.5" />
                   </div>
 
-                  {/* 右边：处理后 */}
-                  <div className="col-span-5 text-rose-600 font-medium">
+                  {/* 右边：处理后 / 正确词 */}
+                  <div className={`col-span-5 font-medium ${activeTab === 'glossary' ? 'text-blue-600' : 'text-rose-600'}`}>
                     {editingKey === orig ? (
                       <div className="flex items-center space-x-2">
                         <input
@@ -282,7 +363,11 @@ export const ComplianceWords: React.FC = () => {
                             if (e.key === 'Escape') setEditingKey(null);
                           }}
                           autoFocus
-                          className="px-2 py-1 text-xs bg-white rounded-lg border border-rose-300 focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 w-48 text-rose-600 font-semibold"
+                          className={`px-2 py-1 text-xs bg-white rounded-lg border focus:outline-hidden focus:ring-2 w-48 font-semibold ${
+                            activeTab === 'glossary'
+                              ? 'border-blue-300 focus:ring-blue-500/20 text-blue-600'
+                              : 'border-rose-300 focus:ring-rose-500/20 text-rose-600'
+                          }`}
                         />
                         <button
                           type="button"
@@ -305,7 +390,7 @@ export const ComplianceWords: React.FC = () => {
                       <div
                         onClick={() => handleStartEdit(orig, repl)}
                         className="inline-block cursor-pointer hover:underline"
-                        title="点击直接修改处理后的词"
+                        title="点击直接修改"
                       >
                         {repl}
                       </div>

@@ -23,7 +23,40 @@ def _resolve_safe_storage_dir() -> Path:
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 
+def _heal_and_restore_storage_if_empty(storage_dir: Path) -> None:
+    """
+    更新防御自愈：当当前 storage 目录为空（如应用更新后被安装包抹除），
+    自动从系统安全持久备份区（LOCALAPPDATA/videocut_persistent_storage）恢复用户素材、工程和数据库
+    """
+    db_file = storage_dir / "videocut.db"
+    # 如果数据库文件存在且大于 90KB，说明已有用户真实业务数据，无需恢复
+    if db_file.exists() and db_file.stat().st_size > 90 * 1024:
+        return
+
+    local_app_data = os.getenv("LOCALAPPDATA")
+    candidates = []
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "videocut_persistent_storage")
+
+    for cand in candidates:
+        cand_db = cand / "videocut.db"
+        if cand.exists() and cand_db.exists() and cand_db.stat().st_size > 90 * 1024:
+            try:
+                import shutil
+                print(f"[Config] 检测到当前数据目录为空，自动从持久备份区 {cand} 恢复用户工程与素材...")
+                for item in cand.iterdir():
+                    dst_item = storage_dir / item.name
+                    if item.is_dir():
+                        shutil.copytree(str(item), str(dst_item), dirs_exist_ok=True)
+                    elif item.is_file():
+                        shutil.copy2(str(item), str(dst_item))
+                print(f"[Config] 用户数据恢复成功，杜绝更新后视频消失！")
+                break
+            except Exception as err:
+                print(f"[Config] 恢复备份数据失败: {err}")
+
 STORAGE_DIR = _resolve_safe_storage_dir()
+_heal_and_restore_storage_if_empty(STORAGE_DIR)
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
@@ -294,6 +327,16 @@ def save_glossary(data: dict) -> dict:
     _GLOSSARY_CACHE["mtime"] = None
     _GLOSSARY_CACHE["data"] = None
     return data
+
+def reset_glossary_to_default() -> dict:
+    """重置 glossary.json 为系统默认模板"""
+    glossary_file = _ensure_storage_path(GLOSSARY_FILE)
+    if glossary_file.exists():
+        glossary_file.unlink(missing_ok=True)
+    _seed_default_glossary_if_missing(glossary_file)
+    _GLOSSARY_CACHE["mtime"] = None
+    _GLOSSARY_CACHE["data"] = None
+    return load_glossary()
 
 def get_common_corrections() -> Dict[str, str]:
     """词库纠错映射，错词按长度倒序排列，防止'福州驾校'先被更短的'福州'规则截断替换"""

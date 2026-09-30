@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -104,6 +104,26 @@ export class EngineManager {
     }
     this.storageDir = chosenStorage;
 
+    // 自愈与更新防丢机制：若当前数据目录中数据库为空或缺失（如更新后被抹除），自动从持久备份区恢复用户数据
+    const persistentBackupDir = process.env.LOCALAPPDATA
+      ? resolve(process.env.LOCALAPPDATA, 'videocut_persistent_storage')
+      : '';
+    const currentDb = resolve(this.storageDir, 'videocut.db');
+    const isCurrentDbEmpty = !existsSync(currentDb) || (statSync(currentDb).size <= 90 * 1024);
+
+    if (isCurrentDbEmpty && persistentBackupDir && existsSync(resolve(persistentBackupDir, 'videocut.db'))) {
+      const backupDb = resolve(persistentBackupDir, 'videocut.db');
+      if (statSync(backupDb).size > 90 * 1024) {
+        try {
+          console.log(`[EngineManager] 当前数据目录为空，自动从持久备份区 ${persistentBackupDir} 恢复用户工程与素材...`);
+          cpSync(persistentBackupDir, this.storageDir, { recursive: true });
+          console.log(`[EngineManager] 用户数据自愈恢复完成！`);
+        } catch (e) {
+          console.warn('[EngineManager] 自动恢复备份数据失败:', e);
+        }
+      }
+    }
+
     const env = {
       ...process.env,
       PYTHONUTF8: '1',
@@ -191,6 +211,21 @@ export class EngineManager {
   }
 
   public static stopEngine(): void {
+    if (this.storageDir) {
+      try {
+        const persistentBackupDir = process.env.LOCALAPPDATA
+          ? resolve(process.env.LOCALAPPDATA, 'videocut_persistent_storage')
+          : '';
+        const currentDb = resolve(this.storageDir, 'videocut.db');
+        if (persistentBackupDir && existsSync(currentDb) && statSync(currentDb).size > 90 * 1024) {
+          mkdirSync(persistentBackupDir, { recursive: true });
+          cpSync(this.storageDir, persistentBackupDir, { recursive: true });
+        }
+      } catch (e) {
+        console.warn('[EngineManager] 同步持久备份数据失败:', e);
+      }
+    }
+
     if (this.process && !this.process.killed) {
       console.log('[EngineManager] Gracefully shutting down Python engine...');
       try {

@@ -916,5 +916,39 @@ export const previewBannedWords = async (text: string): Promise<BannedWordsPrevi
   return res.data;
 };
 
+// ==========================================
+// ASR 字幕专词/同音字纠偏词库 API 接口
+// ==========================================
+
+export interface GlossaryResponse {
+  corrections: Record<string, string>;
+  total: number;
+  location?: any;
+  protected_words?: string[];
+}
+
+export const fetchGlossary = async (): Promise<GlossaryResponse> => {
+  const res = await axios.get(`${API_BASE}/projects/glossary`);
+  return res.data;
+};
+
+export const saveGlossaryCorrection = async (original_word: string, corrected_word: string): Promise<GlossaryResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/glossary/corrections`, {
+    original_word,
+    corrected_word
+  });
+  return res.data;
+};
+
+export const deleteGlossaryCorrection = async (original_word: string): Promise<GlossaryResponse> => {
+  const res = await axios.delete(`${API_BASE}/projects/glossary/corrections/${encodeURIComponent(original_word)}`);
+  return res.data;
+};
+
+export const resetGlossary = async (): Promise<GlossaryResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/glossary/reset`);
+  return res.data;
+};
+
 
 

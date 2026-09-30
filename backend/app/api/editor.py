@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections, load_glossary
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections, load_glossary, save_glossary, reset_glossary_to_default
 import time
 from app.models.entities import (
     CutProject,
@@ -1329,6 +1329,102 @@ async def preview_banned_words(req: BannedWordPreviewRequest):
         "sanitized_text": sanitized,
         "matches": report.get("matches", []),
         "total_matches": report.get("total_matches", 0)
+    }
+
+class GlossaryCorrectionRequest(BaseModel):
+    original_word: str
+    corrected_word: str
+
+@router.get("/glossary")
+async def get_glossary_endpoint():
+    """获取当前系统加载的 ASR 专词/同音字纠偏映射字典"""
+    data = load_glossary()
+    corrections = data.get("common_corrections") or {}
+    sorted_corr = {
+        str(k): str(v)
+        for k, v in sorted(corrections.items(), key=lambda kv: len(str(kv[0])), reverse=True)
+        if str(k)
+    }
+    return {
+        "corrections": sorted_corr,
+        "total": len(sorted_corr),
+        "location": data.get("location") or {},
+        "protected_words": data.get("protected_words") or []
+    }
+
+@router.post("/glossary/corrections")
+async def save_glossary_correction(req: GlossaryCorrectionRequest):
+    """添加或修改 ASR 同音字纠偏映射"""
+    orig = req.original_word.strip()
+    corr = req.corrected_word.strip()
+    if not orig:
+        raise HTTPException(status_code=400, detail="原始错词不能为空")
+    if not corr:
+        raise HTTPException(status_code=400, detail="纠偏后词语不能为空")
+
+    data = load_glossary()
+    if "common_corrections" not in data or not isinstance(data["common_corrections"], dict):
+        data["common_corrections"] = {}
+    data["common_corrections"][orig] = corr
+    save_glossary(data)
+
+    corrections = data.get("common_corrections") or {}
+    sorted_corr = {
+        str(k): str(v)
+        for k, v in sorted(corrections.items(), key=lambda kv: len(str(kv[0])), reverse=True)
+        if str(k)
+    }
+    return {
+        "code": 0,
+        "message": f"成功保存纠偏规则: {orig} -> {corr}",
+        "corrections": sorted_corr,
+        "total": len(sorted_corr)
+    }
+
+@router.delete("/glossary/corrections/{original_word}")
+async def delete_glossary_correction(original_word: str):
+    """删除指定的 ASR 同音字纠偏映射"""
+    orig = original_word.strip()
+    if not orig:
+        raise HTTPException(status_code=400, detail="词语不能为空")
+
+    data = load_glossary()
+    corrections = data.get("common_corrections") or {}
+    deleted = False
+    if orig in corrections:
+        del corrections[orig]
+        data["common_corrections"] = corrections
+        save_glossary(data)
+        deleted = True
+
+    sorted_corr = {
+        str(k): str(v)
+        for k, v in sorted(corrections.items(), key=lambda kv: len(str(kv[0])), reverse=True)
+        if str(k)
+    }
+    return {
+        "code": 0,
+        "message": f"成功删除规则: {orig}" if deleted else f"未找到规则: {orig}",
+        "deleted": deleted,
+        "corrections": sorted_corr,
+        "total": len(sorted_corr)
+    }
+
+@router.post("/glossary/reset")
+async def reset_glossary_endpoint():
+    """恢复默认 ASR 同音字纠偏词库"""
+    data = reset_glossary_to_default()
+    corrections = data.get("common_corrections") or {}
+    sorted_corr = {
+        str(k): str(v)
+        for k, v in sorted(corrections.items(), key=lambda kv: len(str(kv[0])), reverse=True)
+        if str(k)
+    }
+    return {
+        "code": 0,
+        "message": "已成功恢复系统默认纠偏词库",
+        "corrections": sorted_corr,
+        "total": len(sorted_corr)
     }
 
 @router.get("/{project_id}", response_model=CutProject)
