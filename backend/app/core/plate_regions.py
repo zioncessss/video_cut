@@ -140,10 +140,10 @@ AMBIGUOUS_DISTRICT_PATTERNS: Dict[str, re.Pattern] = {
 }
 
 
-def deduce_target_region(subtitles_or_text: Any, default_region: Optional[str] = None) -> Optional[str]:
+def deduce_target_region(subtitles_or_text: Any, default_region: Optional[str] = DEFAULT_REGION_CODE) -> Optional[str]:
     """
     根据 ASR 转写字幕或纯文本内容，自动打分推导所属地级市车牌代码。
-    若无明确地名提及，回退到 default_region (默认为 None，不强加城市假定)。
+    若无明确地名提及，回退到 default_region (默认为 DEFAULT_REGION_CODE 即 '浙E·湖州')。
     """
     if not subtitles_or_text:
         return default_region

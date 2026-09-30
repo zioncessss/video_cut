@@ -56,7 +56,9 @@ def test_compose_with_kept_spans_and_anti_pop(tmp_path, monkeypatch):
     # 验证视频切片与音视频联合无损拼接
     assert "[0:v]trim=start=0.2:end=3.5" in fc
     assert "[0:v]trim=start=4.8:end=10.0" in fc
-    assert "concat=n=2:v=1:a=1[v_base][a_base]" in fc
+    assert "concat=n=2:v=1:a=1[v_raw_base][a_base]" in fc
+    assert "[v_raw_base]" in fc
+    assert "[v_base]" in fc
 
 def test_compose_kept_spans_with_broll_overlay(tmp_path, monkeypatch):
     """验证在粗剪紧凑时间轴上，B-roll 通过 overlay 滤镜无缝对齐"""

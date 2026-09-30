@@ -119,7 +119,7 @@ def test_heal_from_disk_restores_highlight_words(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_subtitles_preserves_existing_highlights(tmp_path):
+async def test_update_subtitles_preserves_existing_highlights(tmp_path, monkeypatch):
     """验证客户端提交空高亮词时不冲毁存量高亮词"""
     service = ProjectStorageService(storage_dir=tmp_path / "projects")
     p = CutProject(
@@ -141,7 +141,7 @@ async def test_update_subtitles_preserves_existing_highlights(tmp_path):
     service.save_project(p)
 
     import app.api.editor as editor_mod
-    editor_mod.project_storage_service = service
+    monkeypatch.setattr(editor_mod, "project_storage_service", service)
 
     req = UpdateSubtitlesRequest(
         subtitles=[

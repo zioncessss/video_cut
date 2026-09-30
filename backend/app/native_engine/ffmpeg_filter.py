@@ -686,8 +686,9 @@ class FFmpegFilterComposer:
                 dur = round(max(0.01, et - st), 3)
                 fade = getattr(k, "audio_fade", True) if not isinstance(k, dict) else k.get("audio_fade", True)
 
-                # 视频切片
-                filter_parts.append(f"[0:v]trim=start={st}:end={et},setpts=PTS-STARTPTS,{th_filter}[v_k{i}];")
+                # 视频切片：仅执行时间裁剪，延迟到拼接后统一步骤执行画面重采样与调色锐化滤镜，
+                # 将 O(N*F) 滤镜图暴涨降低为 O(F)，杜绝数十个切片重复实例化 Lanczos/Smartblur/CAS 导致的内存与图调度开销
+                filter_parts.append(f"[0:v]trim=start={st}:end={et},setpts=PTS-STARTPTS[v_k{i}];")
 
                 # 音频切片：首尾注入 15ms afade 平滑淡入淡出，消除硬切直流偏移音爆 (Pop Noise)；
                 # aresample=async=1000 保证音频采样点毫秒级锁定物理时间戳，杜绝多段切片拼接导致的声画累积漂移
@@ -702,11 +703,13 @@ class FFmpegFilterComposer:
                     filter_parts.append(f"[0:a]atrim=start={st}:end={et},asetpts=PTS-STARTPTS,aresample=async=1000[a_k{i}];")
 
             if n_kept == 1:
-                current_v = "[v_k0]"
+                filter_parts.append(f"[v_k0]{th_filter}[v_base];")
+                current_v = "[v_base]"
                 current_a = "[a_k0]"
             else:
                 va_inputs = "".join(f"[v_k{i}][a_k{i}]" for i in range(n_kept))
-                filter_parts.append(f"{va_inputs}concat=n={n_kept}:v=1:a=1[v_base][a_base];")
+                filter_parts.append(f"{va_inputs}concat=n={n_kept}:v=1:a=1[v_raw_base][a_base];")
+                filter_parts.append(f"[v_raw_base]{th_filter}[v_base];")
                 current_v = "[v_base]"
                 current_a = "[a_base]"
 

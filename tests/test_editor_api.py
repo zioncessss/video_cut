@@ -225,11 +225,11 @@ def test_redecide_scenes_dual_layer_api(tmp_path, monkeypatch):
 
     fake_v = tmp_path / "v_mat.mp4"
     fake_v.write_bytes(b"v_mat")
-    mat_v = storage_service.save_material(MaterialCategory.VENUE, "v_mat.mp4", fake_v)
+    mat_v = storage_service.save_material(MaterialCategory.VENUE, "v_mat.mp4", fake_v, plate_region="浙E·湖州")
 
     fake_l = tmp_path / "l_mat.mp4"
     fake_l.write_bytes(b"l_mat")
-    mat_l = storage_service.save_material(MaterialCategory.LESSON, "l_mat.mp4", fake_l)
+    mat_l = storage_service.save_material(MaterialCategory.LESSON, "l_mat.mp4", fake_l, plate_region="浙E·湖州")
 
     try:
         cut_res = client.post(
