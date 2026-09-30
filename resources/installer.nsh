@@ -23,6 +23,7 @@
       CopyFiles /SILENT "$INSTDIR_storage_backup\*.*" "$INSTDIR\storage"
       RMDir /r "$INSTDIR_storage_backup"
     ${endIf}
+  ${endIf}
   # 授予本地标准用户组对 storage 目录的完整修改写权限，杜绝安装在 C:\Program Files 下时的 UAC 权限拒绝与 SQLite unable to open database file
   CreateDirectory "$INSTDIR\storage"
   nsExec::Exec 'cmd /c "icacls \"$INSTDIR\storage\" /grant *S-1-5-32-545:(OI)(CI)M /T /Q >nul 2>&1"'
