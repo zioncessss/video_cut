@@ -14,7 +14,6 @@ import {
   uploadMaterial,
   analyzeAndCutVideo,
   renderProject,
-  openFolder,
   fetchProjectProgress,
   PipelineProgress,
   Material,
@@ -47,9 +46,6 @@ import {
   ListOrdered,
   Database,
   RotateCcw,
-  FolderOpen,
-  Download,
-  Copy,
   Check,
   Film,
   Edit3,
@@ -165,14 +161,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [outputTimestamp, setOutputTimestamp] = useState<number>(Date.now());
   const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('interactive');
   const [isPlayerEnlarged, setIsPlayerEnlarged] = useState<boolean>(false);
-  const [exportInfo, setExportInfo] = useState<{
-    url: string;
-    filename: string;
-    absolutePath: string;
-    sizeMb: number;
-  } | null>(null);
-  const [copiedPath, setCopiedPath] = useState<boolean>(false);
-  const [folderOpened, setFolderOpened] = useState<boolean>(false);
+
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
   const [activeEngine, setActiveEngine] = useState<string>('codex');
   const [activeModel, setActiveModel] = useState<string>('GLM-5.3-Flash');
@@ -939,12 +928,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       const newTs = Date.now();
       setOutputTimestamp(newTs);
       setOutputVideoUrl(mediaUrl);
-      setExportInfo({
-        url: mediaUrl,
-        filename: res.output_filename || res.output_video_path.split('/').pop() || 'output.mp4',
-        absolutePath: res.output_absolute_path || '',
-        sizeMb: res.output_file_size_mb || 0,
-      });
       if (res.cover_image_path) {
         setCoverUrl(getMediaUrl(res.cover_image_path.replace(/^\//, '')));
       }
@@ -1011,39 +994,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
-  const handleOpenFolder = async () => {
-    try {
-      await openFolder(exportInfo?.absolutePath);
-      setFolderOpened(true);
-      setAiFeedback(`已在系统文件管理器中高亮定位：${exportInfo?.filename || '导出目录'}`);
-      setTimeout(() => setFolderOpened(false), 3000);
-    } catch (e) {
-      showToast('打开所在文件夹失败，请检查系统权限', 'error');
-    }
-  };
 
-  const handleCopyPath = () => {
-    if (exportInfo?.absolutePath) {
-      navigator.clipboard.writeText(exportInfo.absolutePath);
-      setCopiedPath(true);
-      setTimeout(() => setCopiedPath(false), 2000);
-    }
-  };
-
-  const handleDownload = () => {
-    if (exportInfo?.url) {
-      const a = document.createElement('a');
-      a.href = exportInfo.url;
-      const cleanTitle = (projectTitle || exportInfo.filename || '成片')
-        .replace(/[\\/*?:"<>|\r\n\t]+/g, '_')
-        .replace(/^[ ._]+|[ ._]+$/g, '')
-        .replace(/\.mp4$/i, '');
-      a.download = `${cleanTitle}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
-  };
 
   const editedTalkingHeads = talkingHeads.filter(t => allProjects.some(p => p.talking_head_id === t.id));
   const uneditedTalkingHeads = talkingHeads.filter(t => !allProjects.some(p => p.talking_head_id === t.id));
@@ -1760,71 +1711,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         </div>
       )}
 
-      {/* 成片导出完成信息与操作卡片 */}
-      {exportInfo && (
-        <div className="mt-1.5 bg-gradient-to-r from-emerald-50 via-teal-50/70 to-emerald-50 border border-emerald-300/80 rounded-xl px-3 py-2 shadow-2xs flex items-center justify-between gap-2 text-xs animate-in fade-in flex-shrink-0">
-          <div className="flex items-center space-x-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center flex-shrink-0 shadow-2xs">
-              <Film className="w-3.5 h-3.5" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-emerald-950 truncate max-w-[220px]" title={exportInfo.filename}>
-                  {exportInfo.filename}
-                </span>
-                {exportInfo.sizeMb > 0 && (
-                  <span className="px-1.5 py-0.5 text-[10px] font-mono bg-emerald-200/80 text-emerald-900 rounded font-semibold">
-                    {exportInfo.sizeMb} MB
-                  </span>
-                )}
-                <span className="text-[10px] text-emerald-700 bg-emerald-100/90 px-1.5 py-0.5 rounded font-medium flex items-center">
-                  <CheckCircle2 className="w-3 h-3 mr-0.5 text-emerald-600" />
-                  CRF 18 高清
-                </span>
-              </div>
-              <div className="flex items-center space-x-1.5 text-[11px] text-gray-500 font-mono mt-0.5">
-                <span className="text-gray-400 flex-shrink-0">导出位置:</span>
-                <span className="truncate max-w-[300px] lg:max-w-[450px] text-gray-700 font-sans" title={exportInfo.absolutePath}>
-                  {exportInfo.absolutePath || 'storage/outputs/' + exportInfo.filename}
-                </span>
-                {exportInfo.absolutePath && (
-                  <button
-                    onClick={handleCopyPath}
-                    title="复制文件绝对路径"
-                    className="text-emerald-700 hover:text-emerald-900 p-0.5 hover:bg-emerald-100 rounded transition-colors flex items-center"
-                  >
-                    {copiedPath ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
 
-          <div className="flex items-center space-x-1.5 flex-shrink-0">
-            <button
-              onClick={handleOpenFolder}
-              className={`flex items-center space-x-1 border font-semibold px-2.5 py-1.5 rounded-lg shadow-2xs transition-colors cursor-pointer ${
-                folderOpened
-                  ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
-                  : 'bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-300'
-              }`}
-              title="在系统资源管理器中定位并选中此视频文件"
-            >
-              <FolderOpen className="w-3.5 h-3.5 text-emerald-700" />
-              <span>{folderOpened ? '✓ 已唤起文件管理器' : '打开所在文件夹'}</span>
-            </button>
-
-            <button
-              onClick={handleDownload}
-              className="flex items-center space-x-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-2.5 py-1.5 rounded-lg shadow-2xs transition-colors"
-              title="在浏览器中直接下载此视频"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>下载成片</span>
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* 视频工程卡片网格选择抽屉/弹窗 */}
       {showProjectPicker && (
