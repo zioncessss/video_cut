@@ -31,6 +31,7 @@ class BatchSubmitRequest(BaseModel):
     aspect_ratio: str = "9:16"
     concurrency: Optional[int] = None  # 用户可指定并发；缺省用硬件推荐值，硬顶 8
     video_speed: float = 1.0
+    filter_banned_words: bool = False
 
 
 def _persist(job: BatchJob) -> None:
@@ -47,7 +48,13 @@ def _count_states(job: BatchJob) -> tuple:
     return job.completed_count, 0
 
 
-async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str, video_speed: float = 1.0) -> None:
+async def _run_one(
+    job: BatchJob,
+    item: BatchJobItem,
+    aspect_ratio: str,
+    video_speed: float = 1.0,
+    filter_banned_words: bool = False
+) -> None:
     """执行单个口播视频的完整剪辑流水线，任何失败如实落库"""
     from app.api.editor import AnalyzeAndCutRequest, analyze_and_cut, render_project, redecide_scenes, SceneDecisionRequest
 
@@ -71,7 +78,10 @@ async def _run_one(job: BatchJob, item: BatchJobItem, aspect_ratio: str, video_s
         await asyncio.sleep(0.05)
 
         # 批量流水线直接进行全量成片压制，保证生成可直接播放、导出的最终 MP4 与封面
-        await render_project(project.id)
+        if filter_banned_words or video_speed != 1.0:
+            await render_project(project.id, video_speed=video_speed, filter_banned_words=filter_banned_words)
+        else:
+            await render_project(project.id)
         item.status = "completed"
         item.progress = 100
         await asyncio.sleep(0.05)
@@ -91,7 +101,8 @@ async def _execute_job(
     job_id: str,
     aspect_ratio: str,
     video_speed: float = 1.0,
-    retry_failed_only: bool = False
+    retry_failed_only: bool = False,
+    filter_banned_words: bool = False
 ) -> None:
     job = _jobs.get(job_id) or BatchJobRepository().get_by_id(job_id)
     if not job:
@@ -121,7 +132,8 @@ async def _execute_job(
                 _persist(job)
                 return
             try:
-                await _run_one(job, item, aspect_ratio, video_speed)
+                eff_banned = getattr(item, "filter_banned_words", False) or filter_banned_words
+                await _run_one(job, item, aspect_ratio, video_speed, filter_banned_words=eff_banned)
             except asyncio.CancelledError:
                 item.status = "canceled"
                 item.error = "任务被主动取消 (Cancelled)"
@@ -164,7 +176,7 @@ async def submit_batch(req: BatchSubmitRequest, bg_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail=f"口播素材不存在: {mid}")
         if material.category != MaterialCategory.TALKING_HEAD:
             raise HTTPException(status_code=400, detail=f"素材 {material.filename} 不是口播分镜，无法批量剪辑")
-        items.append(BatchJobItem(material_id=mid))
+        items.append(BatchJobItem(material_id=mid, filter_banned_words=req.filter_banned_words))
 
     metrics = get_hardware_metrics()
     # 并发：用户指定优先（1~8 硬顶），缺省用硬件推荐值
@@ -180,7 +192,7 @@ async def submit_batch(req: BatchSubmitRequest, bg_tasks: BackgroundTasks):
     _persist(job)
 
     # 响应先返回 job_id，批处理在后台任务中真实执行
-    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed)
+    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed, filter_banned_words=req.filter_banned_words)
 
     return {
         "code": 0,
@@ -198,7 +210,8 @@ async def upload_and_cut(
     files: List[UploadFile] = File(...),
     aspect_ratio: str = Form("9:16"),
     concurrency: Optional[int] = Form(None),
-    video_speed: float = Form(1.0)
+    video_speed: float = Form(1.0),
+    filter_banned_words: bool = Form(False)
 ):
     """批量直接上传口播视频并立即加入智能混剪队列"""
     if not files:
@@ -214,7 +227,7 @@ async def upload_and_cut(
             filename=f.filename or "talking_head.mp4",
             source_path_or_bytes=content
         )
-        items.append(BatchJobItem(material_id=material.id))
+        items.append(BatchJobItem(material_id=material.id, filter_banned_words=filter_banned_words))
 
     if not items:
         raise HTTPException(status_code=400, detail="上传的视频文件均为空文件")
@@ -231,7 +244,7 @@ async def upload_and_cut(
     _jobs[job.id] = job
     _persist(job)
 
-    bg_tasks.add_task(_execute_job, job.id, aspect_ratio, video_speed)
+    bg_tasks.add_task(_execute_job, job.id, aspect_ratio, video_speed, filter_banned_words=filter_banned_words)
 
     return {
         "code": 0,
@@ -248,6 +261,7 @@ class BatchImportRequest(BaseModel):
     aspect_ratio: str = "9:16"
     concurrency: Optional[int] = None
     video_speed: float = 1.0
+    filter_banned_words: bool = False
 
 
 @router.post("/import-and-cut")
@@ -267,7 +281,7 @@ async def import_and_cut(req: BatchImportRequest, bg_tasks: BackgroundTasks):
             filename=p.name,
             source_path_or_bytes=p
         )
-        items.append(BatchJobItem(material_id=material.id))
+        items.append(BatchJobItem(material_id=material.id, filter_banned_words=req.filter_banned_words))
 
     if not items:
         raise HTTPException(status_code=400, detail="指定的本地文件均不存在或无法访问")
@@ -284,7 +298,7 @@ async def import_and_cut(req: BatchImportRequest, bg_tasks: BackgroundTasks):
     _jobs[job.id] = job
     _persist(job)
 
-    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed)
+    bg_tasks.add_task(_execute_job, job.id, req.aspect_ratio, req.video_speed, filter_banned_words=req.filter_banned_words)
 
     return {
         "code": 0,
@@ -449,7 +463,11 @@ async def retry_failed_batch_job(job_id: str, bg_tasks: BackgroundTasks):
                 break
 
     # 启动后台任务重跑失败/未完成项
-    bg_tasks.add_task(_execute_job, job.id, detected_aspect_ratio, detected_video_speed, retry_failed_only=True)
+    any_filter_banned = any(getattr(it, "filter_banned_words", False) for it in target_items)
+    if any_filter_banned:
+        bg_tasks.add_task(_execute_job, job.id, detected_aspect_ratio, detected_video_speed, retry_failed_only=True, filter_banned_words=True)
+    else:
+        bg_tasks.add_task(_execute_job, job.id, detected_aspect_ratio, detected_video_speed, retry_failed_only=True)
 
     return {
         "code": 0,

@@ -39,7 +39,9 @@ import {
   RotateCcw,
   MapPin,
   ChevronRight,
-  ChevronsUpDown
+  ChevronsUpDown,
+  ShieldAlert,
+  ShieldCheck
 } from 'lucide-react';
 
 interface BatchCutProps {
@@ -66,6 +68,23 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   // 批量参数与上传
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [batchAspectRatio, setBatchAspectRatio] = useState<'9:16' | '16:9'>('9:16');
+  const [batchFilterBannedWords, setBatchFilterBannedWords] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('videocut_batch_filter_banned') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleBatchFilterBannedWords = (val?: boolean) => {
+    setBatchFilterBannedWords(prev => {
+      const next = val !== undefined ? val : !prev;
+      try {
+        localStorage.setItem('videocut_batch_filter_banned', String(next));
+      } catch {}
+      return next;
+    });
+  };
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
@@ -118,7 +137,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const handleRenderProject = async (projId: string) => {
     setRenderingProjectIds(prev => ({ ...prev, [projId]: true }));
     try {
-      await renderProject(projId);
+      await renderProject(projId, undefined, batchFilterBannedWords);
       showGlobalToast('成片压制完成！', 'success');
       await loadData();
     } catch (err: any) {
@@ -278,7 +297,8 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
             loadedBytes: loaded,
             percent: pct
           } : null);
-        }
+        },
+        batchFilterBannedWords
       );
       // 3. 上传完成，平滑移除上传进度条并强制刷新最新任务列表
       setUploadingState(null);
@@ -482,7 +502,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
           </div>
         </div>
 
-        {/* 中间：快速策略控制 (画幅比例) */}
+        {/* 中间：快速策略控制 (画幅比例 + 违禁词脱敏) */}
         <div className="flex items-center space-x-2.5 text-xs">
           {/* 画幅比例 */}
           <div className="inline-flex p-0.5 bg-gray-100 rounded-lg border border-gray-200/80">
@@ -505,6 +525,21 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               16:9 横屏
             </button>
           </div>
+
+          {/* 统一违禁词脱敏处理开关 */}
+          <button
+            type="button"
+            onClick={() => toggleBatchFilterBannedWords()}
+            title="开启后，批量剪辑成片压制时将统一对字幕执行违禁词合规脱敏替换（如：驾驶证→加驶正，最快→蕞快）"
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+              batchFilterBannedWords
+                ? 'bg-rose-50 border-rose-200/80 text-rose-700 shadow-xs'
+                : 'bg-gray-100 border-gray-200/80 text-gray-500 hover:text-gray-800'
+            }`}
+          >
+            <ShieldAlert className={`w-3.5 h-3.5 ${batchFilterBannedWords ? 'text-rose-600' : 'text-gray-400'}`} />
+            <span>违禁词脱敏: {batchFilterBannedWords ? '已开启' : '已关闭'}</span>
+          </button>
         </div>
 
         {/* 右侧：智能硬件感知调度状态 + 一键上传动作 */}
@@ -1213,7 +1248,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
             </div>
 
             {/* 策略核准 */}
-            <div className="bg-gray-50 rounded-xl p-3 text-xs space-y-2 border border-gray-100">
+            <div className="bg-gray-50 rounded-xl p-3 text-xs space-y-2.5 border border-gray-100">
               <div className="flex items-center justify-between">
                 <span className="text-gray-500">画幅比例</span>
                 <span className="font-semibold text-gray-800">{batchAspectRatio === '9:16' ? '9:16 竖屏' : '16:9 横屏'}</span>
@@ -1221,6 +1256,28 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
               <div className="flex items-center justify-between">
                 <span className="text-gray-500">并发调度</span>
                 <span className="font-mono text-indigo-700 font-semibold">⚡ {hardware?.recommended_concurrency || 2} 任务自适应并行 (智能调度)</span>
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-gray-200/50">
+                <div className="flex items-start space-x-2 mr-3">
+                  <ShieldAlert className={`w-4 h-4 mt-0.5 flex-shrink-0 ${batchFilterBannedWords ? 'text-rose-600' : 'text-gray-400'}`} />
+                  <div>
+                    <div className="font-medium text-gray-800">违禁词合规脱敏清洗</div>
+                    <div className="text-[10px] text-gray-500 leading-tight">成片字幕自动将违禁词替换为形似字（如：驾驶证→加驶正，最快→蕞快），避免发布限流</div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => toggleBatchFilterBannedWords()}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                    batchFilterBannedWords ? 'bg-rose-600' : 'bg-gray-300'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                      batchFilterBannedWords ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
             </div>
 

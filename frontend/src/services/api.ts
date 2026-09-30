@@ -378,8 +378,20 @@ export interface BatchJobItem {
   duration?: number | null;
 }
 
-export const submitBatch = async (materialIds: string[], aspectRatio: string = '9:16') => {
-  const res = await axios.post(`${API_BASE}/batch/submit`, { material_ids: materialIds, aspect_ratio: aspectRatio });
+export const submitBatch = async (
+  materialIds: string[],
+  aspectRatio: string = '9:16',
+  concurrency?: number,
+  videoSpeed: number = 1.0,
+  filterBannedWords: boolean = false
+) => {
+  const res = await axios.post(`${API_BASE}/batch/submit`, {
+    material_ids: materialIds,
+    aspect_ratio: aspectRatio,
+    concurrency,
+    video_speed: videoSpeed,
+    filter_banned_words: filterBannedWords
+  });
   return res.data.data as { job_id: string; queued: number; concurrency: number };
 };
 
@@ -791,12 +803,14 @@ export const uploadAndBatchCut = async (
   aspectRatio: string = '9:16',
   concurrency?: number,
   videoSpeed: number = 1.0,
-  onProgress?: (progressEvent: any) => void
+  onProgress?: (progressEvent: any) => void,
+  filterBannedWords: boolean = false
 ) => {
   const formData = new FormData();
   files.forEach(f => formData.append('files', f));
   formData.append('aspect_ratio', aspectRatio);
   formData.append('video_speed', String(videoSpeed));
+  formData.append('filter_banned_words', String(filterBannedWords));
   if (concurrency) {
     formData.append('concurrency', String(concurrency));
   }
@@ -811,13 +825,15 @@ export const importAndBatchCut = async (
   filePaths: string[],
   aspectRatio: string = '9:16',
   concurrency?: number,
-  videoSpeed: number = 1.0
+  videoSpeed: number = 1.0,
+  filterBannedWords: boolean = false
 ) => {
   const res = await axios.post(`${API_BASE}/batch/import-and-cut`, {
     file_paths: filePaths,
     aspect_ratio: aspectRatio,
     concurrency,
-    video_speed: videoSpeed
+    video_speed: videoSpeed,
+    filter_banned_words: filterBannedWords
   });
   return res.data.data as { job_id: string; queued: number; concurrency: number };
 };
@@ -848,5 +864,57 @@ export const fetchProjectProgress = async (
   });
   return res.data;
 };
+
+// ==========================================
+// 违禁词合规脱敏 API 接口
+// ==========================================
+
+export interface BannedWordsResponse {
+  mappings: Record<string, string>;
+  total: number;
+  description?: string;
+}
+
+export interface BannedWordsPreviewResponse {
+  original_text: string;
+  sanitized_text: string;
+  matches: Array<{
+    subtitle_index: number;
+    original_word: string;
+    replacement_word: string;
+    original_line: string;
+    sanitized_line: string;
+  }>;
+  total_matches: number;
+}
+
+export const fetchBannedWords = async (): Promise<BannedWordsResponse> => {
+  const res = await axios.get(`${API_BASE}/projects/banned_words`);
+  return res.data;
+};
+
+export const saveBannedWord = async (original_word: string, replacement_word: string): Promise<BannedWordsResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/banned_words`, {
+    original_word,
+    replacement_word
+  });
+  return res.data;
+};
+
+export const deleteBannedWord = async (original_word: string): Promise<BannedWordsResponse> => {
+  const res = await axios.delete(`${API_BASE}/projects/banned_words/${encodeURIComponent(original_word)}`);
+  return res.data;
+};
+
+export const resetBannedWords = async (): Promise<BannedWordsResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/banned_words/reset`);
+  return res.data;
+};
+
+export const previewBannedWords = async (text: string): Promise<BannedWordsPreviewResponse> => {
+  const res = await axios.post(`${API_BASE}/projects/banned_words/preview`, { text });
+  return res.data;
+};
+
 
 

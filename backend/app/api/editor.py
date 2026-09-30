@@ -1255,6 +1255,82 @@ async def get_cover_templates():
         }
     }
 
+class BannedWordSaveRequest(BaseModel):
+    original_word: str
+    replacement_word: str
+
+class BannedWordPreviewRequest(BaseModel):
+    text: str
+
+@router.get("/banned_words")
+async def get_banned_words():
+    """获取当前系统加载的违禁词映射字典与统计信息"""
+    mappings = compliance_sanitizer.get_mappings()
+    return {
+        "mappings": mappings,
+        "total": len(mappings),
+        "description": "抖音短视频合规脱敏映射词库，长词优先自动排序，编辑保存即生效"
+    }
+
+@router.post("/banned_words")
+async def save_banned_word(req: BannedWordSaveRequest):
+    """添加或修改违禁词脱敏替换映射"""
+    orig = req.original_word.strip()
+    repl = req.replacement_word.strip()
+    if not orig:
+        raise HTTPException(status_code=400, detail="原始违禁词不能为空")
+    if not repl:
+        raise HTTPException(status_code=400, detail="替换词不能为空")
+    compliance_sanitizer.add_or_update_mapping(orig, repl)
+    mappings = compliance_sanitizer.get_mappings()
+    return {
+        "code": 0,
+        "message": f"成功保存违禁词脱敏规则: {orig} -> {repl}",
+        "mappings": mappings,
+        "total": len(mappings)
+    }
+
+@router.delete("/banned_words/{original_word}")
+async def delete_banned_word(original_word: str):
+    """删除指定的违禁词脱敏替换映射"""
+    orig = original_word.strip()
+    if not orig:
+        raise HTTPException(status_code=400, detail="违禁词不能为空")
+    deleted = compliance_sanitizer.delete_mapping(orig)
+    mappings = compliance_sanitizer.get_mappings()
+    return {
+        "code": 0,
+        "message": f"成功删除规则: {orig}" if deleted else f"未找到规则: {orig}",
+        "deleted": deleted,
+        "mappings": mappings,
+        "total": len(mappings)
+    }
+
+@router.post("/banned_words/reset")
+async def reset_banned_words():
+    """恢复默认违禁词合规脱敏词库"""
+    compliance_sanitizer.reset_to_default()
+    mappings = compliance_sanitizer.get_mappings()
+    return {
+        "code": 0,
+        "message": "已成功恢复默认合规脱敏词库",
+        "mappings": mappings,
+        "total": len(mappings)
+    }
+
+@router.post("/banned_words/preview")
+async def preview_banned_words(req: BannedWordPreviewRequest):
+    """实时测试文本脱敏效果"""
+    text = req.text or ""
+    sanitized = compliance_sanitizer.sanitize_text(text)
+    report = compliance_sanitizer.detect_banned_words([{"text": text}])
+    return {
+        "original_text": text,
+        "sanitized_text": sanitized,
+        "matches": report.get("matches", []),
+        "total_matches": report.get("total_matches", 0)
+    }
+
 @router.get("/{project_id}", response_model=CutProject)
 async def get_project(project_id: str):
     p = project_storage_service.get_by_project_id(project_id)
@@ -1494,13 +1570,6 @@ async def update_prune_config(project_id: str, req: PruneConfigRequest):
         "total_pruned_seconds": total_pruned_seconds,
         "prune_spans": [s.model_dump() for s in p.prune_spans],
         "compact_subtitles": [s.model_dump() if hasattr(s, "model_dump") else s for s in compact_subs]
-    }
-
-@router.get("/banned_words")
-async def get_banned_words():
-    """获取当前系统加载的违禁词映射字典"""
-    return {
-        "mappings": compliance_sanitizer.get_mappings()
     }
 
 @router.get("/{project_id}/banned_words_check")

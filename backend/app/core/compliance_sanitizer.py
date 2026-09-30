@@ -79,6 +79,41 @@ class ComplianceSanitizer:
                 self._mappings = dict(DEFAULT_MAPPINGS)
                 self._sorted_keys = sorted(self._mappings.keys(), key=len, reverse=True)
 
+    def _save_to_disk(self) -> None:
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "_description": "抖音短视频合规脱敏映射词库，长词优先自动排序，编辑保存即生效",
+            "version": "1.0",
+            "mappings": self._mappings
+        }
+        self.config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._cached_mtime = os.path.getmtime(self.config_path)
+
+    def add_or_update_mapping(self, original_word: str, replacement_word: str) -> None:
+        orig = (original_word or "").strip()
+        repl = (replacement_word or "").strip()
+        if not orig or not repl:
+            raise ValueError("违禁词和替换词均不能为空")
+        self._reload_if_needed()
+        self._mappings[orig] = repl
+        self._sorted_keys = sorted(self._mappings.keys(), key=len, reverse=True)
+        self._save_to_disk()
+
+    def delete_mapping(self, original_word: str) -> bool:
+        orig = (original_word or "").strip()
+        self._reload_if_needed()
+        if orig in self._mappings:
+            del self._mappings[orig]
+            self._sorted_keys = sorted(self._mappings.keys(), key=len, reverse=True)
+            self._save_to_disk()
+            return True
+        return False
+
+    def reset_to_default(self) -> None:
+        self._mappings = dict(DEFAULT_MAPPINGS)
+        self._sorted_keys = sorted(self._mappings.keys(), key=len, reverse=True)
+        self._save_to_disk()
+
     def get_mappings(self) -> Dict[str, str]:
         self._reload_if_needed()
         return dict(self._mappings)
@@ -141,7 +176,9 @@ class ComplianceSanitizer:
         matches = []
         for idx, sub in enumerate(subtitles, start=1):
             if isinstance(sub, dict):
-                text = sub.get("corrected_text") or sub.get("raw_text") or ""
+                text = sub.get("corrected_text") or sub.get("raw_text") or sub.get("text") or ""
+            elif isinstance(sub, str):
+                text = sub
             elif hasattr(sub, "corrected_text"):
                 text = sub.corrected_text or sub.raw_text or ""
             else:

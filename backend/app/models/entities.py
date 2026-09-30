@@ -318,6 +318,7 @@ class BatchJobItem(BaseModel):
     cover_image_path: Optional[str] = None
     filename: Optional[str] = None
     duration: Optional[float] = None
+    filter_banned_words: bool = False
 
 class BatchJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

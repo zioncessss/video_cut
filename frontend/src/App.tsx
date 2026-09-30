@@ -2,13 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { AssetLibrary } from './pages/AssetLibrary';
 import { VideoEditor } from './pages/VideoEditor';
 import { BatchCut } from './pages/BatchCut';
+import { ComplianceWords } from './pages/ComplianceWords';
 import { Settings } from './pages/Settings';
 import { DialogProvider } from './components/common/CustomDialog';
 import appLogo from './assets/icon.png';
-import { Folder, Film, Layers, Settings as SettingsIcon, Minus, Square, Copy, X } from 'lucide-react';
+import { Folder, Film, Layers, ShieldCheck, Settings as SettingsIcon, Minus, Square, Copy, X } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'settings'>('library');
+  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'compliance' | 'settings'>('library');
   const [selectedTalkingHeadId, setSelectedTalkingHeadId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
@@ -46,6 +47,7 @@ export const App: React.FC = () => {
     { id: 'library', label: '素材库', icon: Folder },
     { id: 'editor', label: '剪辑工作台', icon: Film },
     { id: 'batch', label: '批量混剪', icon: Layers },
+    { id: 'compliance', label: '合规词库', icon: ShieldCheck },
     { id: 'settings', label: '设置', icon: SettingsIcon },
   ];
 
@@ -170,6 +172,9 @@ export const App: React.FC = () => {
               setCurrentTab('editor');
             }}
           />
+        </div>
+        <div className={`h-full w-full overflow-auto ${currentTab === 'compliance' ? '' : 'hidden'}`}>
+          <ComplianceWords />
         </div>
         <div className={`h-full w-full overflow-auto ${currentTab === 'settings' ? '' : 'hidden'}`}>
           <Settings />

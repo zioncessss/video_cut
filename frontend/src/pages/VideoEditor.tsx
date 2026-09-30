@@ -261,16 +261,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
           setOutputTimestamp(Date.now());
-          setExportInfo({
-            url: mediaUrl,
-            filename: proj.output_filename || proj.output_video_path.split('/').pop() || 'output.mp4',
-            absolutePath: proj.output_absolute_path || '',
-            sizeMb: proj.output_file_size_mb || 0,
-          });
           setPreviewMode('rendered');
         } else {
           setOutputVideoUrl('');
-          setExportInfo(null);
           setPreviewMode('interactive');
         }
         setIsCachedProject(true);
@@ -326,16 +319,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
           setOutputTimestamp(Date.now());
-          setExportInfo({
-            url: mediaUrl,
-            filename: proj.output_filename || proj.output_video_path.split('/').pop() || 'output.mp4',
-            absolutePath: proj.output_absolute_path || '',
-            sizeMb: proj.output_file_size_mb || 0,
-          });
           setPreviewMode('rendered');
         } else {
           setOutputVideoUrl('');
-          setExportInfo(null);
           setPreviewMode('interactive');
         }
         setIsCachedProject(true);
@@ -357,7 +343,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setBrolls([]);
       setOutputVideoUrl('');
       setCoverUrl('');
-      setExportInfo(null);
       setPreviewMode('interactive');
       setIsCachedProject(false);
     } finally {
@@ -556,12 +541,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         const mediaUrl = getMediaUrl(res.output_video_path);
         setOutputVideoUrl(mediaUrl);
         setOutputTimestamp(Date.now());
-        setExportInfo({
-          url: mediaUrl,
-          filename: res.output_filename || res.output_video_path.split('/').pop() || 'output.mp4',
-          absolutePath: res.output_absolute_path || '',
-          sizeMb: res.output_file_size_mb || 0,
-        });
         setPreviewMode('rendered');
       } else {
         setPreviewMode('interactive');
