@@ -248,6 +248,7 @@ class FFmpegFilterComposer:
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
         self._has_cas: Optional[bool] = None
         self._cached_encode_args: Optional[List[str]] = None
+        self._hdr_cache: Dict[str, bool] = {}
 
     def get_video_encode_args(self) -> List[str]:
         """
@@ -394,9 +395,21 @@ class FFmpegFilterComposer:
     def is_hdr_video(self, video_path: Path) -> bool:
         """
         精准探测视频是否为 HDR / 宽色域格式（iPhone HLG arib-std-b67, HDR10 smpte2084, 杜比视界, BT.2020 色域）
+        具备文件 mtime 级持久化内存缓存，杜绝重复调用外部 ffprobe 子进程
         """
         if not self.has_ffmpeg or not video_path.exists():
             return False
+
+        cache_key = None
+        try:
+            resolved_p = str(video_path.resolve())
+            mtime = video_path.stat().st_mtime
+            cache_key = f"{resolved_p}_{mtime}"
+            if cache_key in self._hdr_cache:
+                return self._hdr_cache[cache_key]
+        except Exception:
+            cache_key = None
+
         try:
             cmd = [
                 "ffprobe", "-v", "error",
@@ -408,7 +421,10 @@ class FFmpegFilterComposer:
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             stdout = res.stdout if isinstance(res.stdout, str) else (res.stdout.decode("utf-8", errors="ignore") if res.stdout else "")
             out = stdout.lower()
-            return any(t in out for t in ("arib-std-b67", "smpte2084", "bt2020", "dovi"))
+            is_hdr = any(t in out for t in ("arib-std-b67", "smpte2084", "bt2020", "dovi"))
+            if cache_key:
+                self._hdr_cache[cache_key] = is_hdr
+            return is_hdr
         except Exception:
             return False
 
@@ -645,15 +661,7 @@ class FFmpegFilterComposer:
         speed = max(0.5, min(3.0, float(strat.get("video_speed") or 1.0)))
         is_sped = abs(speed - 1.0) >= 0.01
 
-        hdr_cache: Dict[str, bool] = {}
-
-        def _check_hdr(p: Path) -> bool:
-            sp = str(p)
-            if sp not in hdr_cache:
-                hdr_cache[sp] = self.is_hdr_video(p)
-            return hdr_cache[sp]
-
-        th_is_hdr = _check_hdr(talking_head_path)
+        th_is_hdr = self.is_hdr_video(talking_head_path)
         filter_preset = strat.get("filter_preset") or "clean_natural"
         filter_strength = float(strat.get("filter_strength") if strat.get("filter_strength") is not None else 1.0)
         th_filter = self.build_color_normalize_filter(
@@ -740,8 +748,8 @@ class FFmpegFilterComposer:
                         if b_dur > 0.05:
                             b_idx = next_input_idx
                             next_input_idx += 1
-                            inputs.extend(["-stream_loop", "-1", "-i", str(broll_file)])
-                            b_hdr = _check_hdr(Path(broll_file))
+                            inputs.extend(["-i", str(broll_file)])
+                            b_hdr = self.is_hdr_video(Path(broll_file))
                             b_norm = self.build_color_normalize_filter(b_hdr, target_w, target_h, filter_preset="original")
                             b_source_st = round(float(b.get("source_start_time", 0.0) or 0.0), 3)
                             fade_filter = ""
@@ -749,7 +757,7 @@ class FFmpegFilterComposer:
                                 trans = min(0.5, float(b["transition"]), b_dur / 3.0)
                                 fade_filter = f",fade=t=in:st=0:d={trans:.3f}:alpha=1,fade=t=out:st={round(b_dur - trans, 3):.3f}:d={trans:.3f}:alpha=1"
                             filter_parts.append(f"[{b_idx}:v]trim=start={b_source_st:.3f}:duration={b_dur:.3f},setpts=PTS-STARTPTS+{b_st:.3f}/TB,{b_norm}{fade_filter}[b_seg{i}];")
-                            filter_parts.append(f"{current_v}[b_seg{i}]overlay=0:0:enable='between(t,{b_st:.3f},{b_et:.3f})'[v_over{i}];")
+                            filter_parts.append(f"{current_v}[b_seg{i}]overlay=0:0:enable='between(t,{b_st:.3f},{b_et:.3f})':eof_action=repeat[v_over{i}];")
                             current_v = f"[v_over{i}]"
 
             # 烧录 ASS 字幕
@@ -938,10 +946,9 @@ class FFmpegFilterComposer:
             if seg["kind"] == "broll":
                 seg["input_idx"] = next_input_idx
                 next_input_idx += 1
-                # -stream_loop -1：空镜素材短于窗口时长时循环补齐（trim duration 封顶），
-                # 杜绝素材过短导致该段提前 EOF、视频轨缩短与音画错位
-                inputs.extend(["-stream_loop", "-1", "-i", seg["path"]])
-                broll_is_hdr = _check_hdr(Path(seg["path"]))
+                # 消除全局无限循环解码 (-stream_loop -1)，按需载入素材
+                inputs.extend(["-i", seg["path"]])
+                broll_is_hdr = self.is_hdr_video(Path(seg["path"]))
                 broll_filter = self.build_color_normalize_filter(broll_is_hdr, target_w, target_h)
                 filter_parts.append(
                     f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{broll_filter}[v_seg{i}];"

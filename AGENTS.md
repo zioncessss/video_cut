@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/017-recompose-speed-and-orphan-prune-fix/plan.md
+at specs/018-recompose-pipeline-acceleration/plan.md
 <!-- SPECKIT END -->
 
 ## 🚨 严禁测试函数替代真实运行准则 (Real Execution & Anti-Mock Rules)

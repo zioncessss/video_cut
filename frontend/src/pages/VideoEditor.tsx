@@ -1142,8 +1142,10 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
       setStrategy(stratToSave);
       latestStrategyRef.current = stratToSave;
 
-      await updateProjectSubtitles(projectId, subsToSave);
-      await updateProjectStrategy(projectId, stratToSave);
+      await Promise.all([
+        updateProjectSubtitles(projectId, subsToSave),
+        updateProjectStrategy(projectId, stratToSave)
+      ]);
       setSaveStatus('saved');
       setLastSavedAt(Date.now());
 

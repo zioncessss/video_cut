@@ -2500,7 +2500,11 @@ async def render_project(
             else:
                 embed_status = "preserved_original_due_to_concat_mismatch"
                 output_path.unlink(missing_ok=True)
-                shutil.copyfile(str(base_comp_path), str(output_path))
+                try:
+                    import os
+                    os.link(str(base_comp_path), str(output_path))
+                except Exception:
+                    shutil.copyfile(str(base_comp_path), str(output_path))
 
             try:
                 cover_clip.unlink(missing_ok=True)
@@ -2510,7 +2514,11 @@ async def render_project(
         except Exception as e:
             embed_status = "failed: " + str(e)[:120]
             if not output_path.exists():
-                shutil.copyfile(str(base_comp_path), str(output_path))
+                try:
+                    import os
+                    os.link(str(base_comp_path), str(output_path))
+                except Exception:
+                    shutil.copyfile(str(base_comp_path), str(output_path))
         p.pipeline_notes = {**(p.pipeline_notes or {}), "embed_cover_first_frame": embed_status}
     else:
         # 无需压入封面首帧，直接将底包成片同步为输出产物
