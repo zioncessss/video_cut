@@ -101,6 +101,7 @@ class BrollReplacement(BaseModel):
     material_id: str
     material_category: MaterialCategory
     playback_mode: str = "fit"  # "fit", "loop", "slow"
+    source_start_time: float = 0.0  # 素材自身截取开始时间 In 点 (秒)
 
 class EditingStrategy(BaseModel):
     subtitle_theme: str = "glow_gold"   # glow_gold, glass_clean, cinema_shadow, tech_emerald, viral_gold, marker_pen

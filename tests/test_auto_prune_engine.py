@@ -251,3 +251,78 @@ def test_retake_reverse_fluency_prefers_earlier_fluent_sentence():
     assert retake_spans[0].source_subtitle_id == "sub_next"
     assert retake_spans[0].target_subtitle_id == "sub_prev"
 
+
+def test_mid_silence_guard_against_broken_words():
+    """验证语义完整性卫兵：当两句之间切断了不可分词（如'想要了'与'解的可以评论区留言哦'）或句尾未完，严禁做中段静音剪切"""
+    subs = [
+        SubtitleSegment(id="s1", start_time=1.0, end_time=2.5, raw_text="想要了", corrected_text="想要了"),
+        # 停顿 1.5 秒
+        SubtitleSegment(id="s2", start_time=4.0, end_time=6.5, raw_text="解的可以评论区留言哦", corrected_text="解的可以评论区留言哦")
+    ]
+    duration = 8.0
+
+    prune_spans, _ = auto_prune_engine.analyze_and_prune(
+        subtitles=subs,
+        video_duration=duration,
+        config={
+            "enable_head_prune": False,
+            "enable_tail_prune": False,
+            "enable_retake_prune": False,
+            "enable_mid_silence_prune": True,
+            "mid_silence_threshold": 0.90,
+        }
+    )
+
+    silence_spans = [s for s in prune_spans if s.reason == PruneReason.MID_SILENCE.value]
+    # 核心断言：'了解'被两句跨界腰斩，严禁生成 MID_SILENCE 剪切区间！
+    assert len(silence_spans) == 0, f"不可分词被腰斩时不应切除静音！实际生成了: {silence_spans}"
+
+
+def test_ghost_clip_elimination_and_bridge():
+    """
+    真实驾考口播复现：连续删除前置两句废话（从今年九月份开始啊 0.80~2.24s 与 湖州驾校 2.76~3.54s），
+    验证：
+    1. 中间 0.52s 换气间隙被自动闭包桥接；
+    2. Head Idle 严格锚定真正保留的第一句有效台词（3.54s），不会遗留 2.24~2.76 幽灵片段；
+    3. 紧凑时间轴重投影后，第一句有效字幕从 0.0s 左右开始，绝对不出现 0.52s 的动作跳动。
+    """
+    subs = [
+        SubtitleSegment(id="s0", start_time=0.80, end_time=2.24, raw_text="从今年九月份开始啊", corrected_text="从今年九月份开始啊", is_pruned=True, prune_reason=PruneReason.MANUAL.value),
+        SubtitleSegment(id="s1", start_time=2.76, end_time=3.54, raw_text="湖州驾校", corrected_text="湖州驾校", is_pruned=True, prune_reason=PruneReason.MANUAL.value),
+        SubtitleSegment(id="s2", start_time=3.54, end_time=5.10, raw_text="从今年九月份开始", corrected_text="从今年九月份开始", is_pruned=False),
+        SubtitleSegment(id="s3", start_time=5.12, end_time=6.80, raw_text="湖州驾校迎来大改革", corrected_text="湖州驾校迎来大改革", is_pruned=False),
+    ]
+    video_dur = 10.0
+
+    prune_spans, _ = auto_prune_engine.analyze_and_prune(
+        subtitles=subs,
+        video_duration=video_dur,
+        config={
+            "enable_head_prune": True,
+            "enable_tail_prune": False,
+            "enable_retake_prune": False,
+            "enable_mid_silence_prune": False,
+            "head_padding_seconds": 0.10,
+        }
+    )
+
+    # 手动添加两句被删除字幕的剪切区间（与 API 行为一致）
+    prune_spans.append(PruneSpan(start_time=0.80, end_time=2.24, reason=PruneReason.MANUAL.value, is_active=True))
+    prune_spans.append(PruneSpan(start_time=2.76, end_time=3.54, reason=PruneReason.MANUAL.value, is_active=True))
+
+    kept = auto_prune_engine.compute_kept_spans(video_dur, prune_spans, subtitles=subs)
+
+    # 核心断言 1: 绝对不存在 2.24 -> 2.76 (0.52s) 幽灵碎片！
+    has_ghost = any(abs(k.start_time - 2.24) < 0.05 and abs(k.duration - 0.52) < 0.05 for k in kept)
+    assert not has_ghost, f"依然残留了 2.24~2.76 幽灵废动作！实际保留块: {kept}"
+
+    # 核心断言 2: 保留的第一块直接起始于有效句起点 3.54s，前置所有口误废镜头全部剪尽
+    assert len(kept) == 1
+    assert abs(kept[0].start_time - 3.54) < 0.05
+
+    # 核心断言 3: 重投影紧凑字幕，第一句字幕紧凑时间从 0.00s 开始，彻底消灭 0.52s 动作跳动！
+    compact_subs = auto_prune_engine.reproject_subtitles_to_compact(subs, kept)
+    active_compact = [s for s in compact_subs if not s.is_pruned]
+    assert len(active_compact) == 2
+    assert abs(active_compact[0].start_time - 0.00) < 0.05, f"第一句字幕起止时间不正确: {active_compact[0].start_time}"
+

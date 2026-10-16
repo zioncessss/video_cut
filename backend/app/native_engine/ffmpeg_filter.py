@@ -266,14 +266,14 @@ class FFmpegFilterComposer:
         try:
             test_cmd = [
                 "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
-                "-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20",
+                "-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20",
                 "-f", "null", "-"
             ]
             res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if res.returncode == 0:
                 self._cached_encode_args = [
                     "-c:v", "h264_amf",
-                    "-quality", "quality",
+                    "-quality", "balanced",
                     "-rc", "cqp",
                     "-qp_i", "18",
                     "-qp_p", "20",
@@ -386,10 +386,10 @@ class FFmpegFilterComposer:
         return self._has_cas
 
     def build_scale_filter(self, aspect_ratio: str = "9:16") -> str:
-        """根据目标比例构建归一化缩放与无裁剪填充滤镜（采用 Lanczos 重采样高保真保持画面清晰度）"""
+        """根据目标比例构建归一化缩放与无裁剪填充滤镜（采用高吞吐 Bicubic 重采样兼顾高画质与极致压制速度）"""
         if aspect_ratio == "9:16":
-            return "scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
-        return "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"
+            return "scale=1080:1920:force_original_aspect_ratio=decrease:flags=bicubic+accurate_rnd,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+        return "scale=1920:1080:force_original_aspect_ratio=decrease:flags=bicubic+accurate_rnd,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"
 
     def is_hdr_video(self, video_path: Path) -> bool:
         """
@@ -428,9 +428,9 @@ class FFmpegFilterComposer:
         2. 针对真人出镜口播进行三阶微调（微平滑净肤 -> 通透提亮暖肤色 -> CAS 对比度自适应微锐化）。
            【黑边防灰铁律】：滤镜必须在 scale 之后、pad 补黑边之前执行，严禁将纯黑边变灰！
         3. 若输入为常规 SDR：强制统一像素格式为 yuv420p 并打标 bt709，杜绝多素材拼接时色彩空间冲突。
-        4. 配合 Lanczos 缩放与居中黑边补齐，输出严丝合缝的 1080P/720P 画面。
+        4. 配合高吞吐 Bicubic 缩放与居中黑边补齐，释放 GPU 编码器最大吞吐。
         """
-        scale = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd"
+        scale = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=bicubic+accurate_rnd"
         pad = f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
         portrait_chain = build_portrait_filter_chain(filter_preset, filter_strength, has_cas=self.check_has_cas())
 
@@ -742,12 +742,13 @@ class FFmpegFilterComposer:
                             next_input_idx += 1
                             inputs.extend(["-stream_loop", "-1", "-i", str(broll_file)])
                             b_hdr = _check_hdr(Path(broll_file))
-                            b_norm = self.build_color_normalize_filter(b_hdr, target_w, target_h)
+                            b_norm = self.build_color_normalize_filter(b_hdr, target_w, target_h, filter_preset="original")
+                            b_source_st = round(float(b.get("source_start_time", 0.0) or 0.0), 3)
                             fade_filter = ""
                             if fade_mode and float(b.get("transition", 0.0)) > 0:
                                 trans = min(0.5, float(b["transition"]), b_dur / 3.0)
                                 fade_filter = f",fade=t=in:st=0:d={trans:.3f}:alpha=1,fade=t=out:st={round(b_dur - trans, 3):.3f}:d={trans:.3f}:alpha=1"
-                            filter_parts.append(f"[{b_idx}:v]trim=start=0:duration={b_dur:.3f},setpts=PTS-STARTPTS+{b_st:.3f}/TB,{b_norm}{fade_filter}[b_seg{i}];")
+                            filter_parts.append(f"[{b_idx}:v]trim=start={b_source_st:.3f}:duration={b_dur:.3f},setpts=PTS-STARTPTS+{b_st:.3f}/TB,{b_norm}{fade_filter}[b_seg{i}];")
                             filter_parts.append(f"{current_v}[b_seg{i}]overlay=0:0:enable='between(t,{b_st:.3f},{b_et:.3f})'[v_over{i}];")
                             current_v = f"[v_over{i}]"
 
@@ -901,7 +902,8 @@ class FFmpegFilterComposer:
             if broll_file and Path(broll_file).exists():
                 segs.append({
                     "kind": "broll", "input_idx": None,
-                    "trim_start": 0.0, "base_dur": end - start,
+                    "trim_start": round(float(cut.get("source_start_time", 0.0) or 0.0), 3),
+                    "base_dur": end - start,
                     "transition": max(0.0, min(0.5, float(cut.get("transition") or 0.0))),
                     "path": str(broll_file),
                 })
@@ -1038,6 +1040,109 @@ class FFmpegFilterComposer:
                 print(f"[FFmpegFilterComposer] Complex render exception: {e}")
                 raise
             shutil.copyfile(str(talking_head_path), str(output_path))
+            return True
+        finally:
+            overlay_png_path.unlink(missing_ok=True)
+
+    def compose_clean_base(
+        self,
+        talking_head_path: Path,
+        broll_cuts: List[Dict[str, Any]],
+        output_path: Path,
+        aspect_ratio: str = "9:16",
+        total_duration: float = 15.0,
+        strategy: Optional[Dict[str, Any]] = None,
+        kept_spans: Optional[List[Any]] = None
+    ) -> bool:
+        """
+        合成无字幕、无横幅水印的高清底包（含粗剪有效片段拼接、防爆音 afade、画质增强滤镜与 B-roll 空镜平替）：
+        作为分层重合成的权威底包缓存，避免修改字幕时重复进行昂贵的切片与磨皮重编码。
+        """
+        clean_strat = dict(strategy or {})
+        clean_strat["show_subtitles"] = False
+        clean_strat["enable_banner"] = False
+        clean_strat["enable_watermark"] = False
+        return self.compose_jl_cut(
+            talking_head_path=talking_head_path,
+            broll_cuts=broll_cuts,
+            output_path=output_path,
+            aspect_ratio=aspect_ratio,
+            total_duration=total_duration,
+            ass_subtitle_path=None,
+            strategy=clean_strat,
+            kept_spans=kept_spans
+        )
+
+    def burn_subtitles_and_overlay_fast(
+        self,
+        clean_base_path: Path,
+        output_path: Path,
+        ass_subtitle_path: Optional[Path] = None,
+        strategy: Optional[Dict[str, Any]] = None,
+        aspect_ratio: str = "9:16"
+    ) -> bool:
+        """
+        极速烧录字幕与动态横幅/水印图层（针对分层底包复用场景）：
+        输入已预渲染好的无字幕无横幅高清底包 (_clean_base.mp4)，
+        直接将 ASS 字幕滤镜与透明 PNG 叠加在视频流上，音频轨执行 -c:a copy 零重编码，
+        耗时从 40~60s 骤降至 1~2s。
+        """
+        if not self.has_ffmpeg:
+            raise RuntimeError("FFmpeg 未安装或不可用，无法执行极速烧录")
+        if not clean_base_path.exists() or clean_base_path.stat().st_size == 0:
+            raise FileNotFoundError(f"底包视频文件不存在或为空: {clean_base_path}")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        is_916 = aspect_ratio == "9:16"
+        target_w = 1080 if is_916 else 1920
+        target_h = 1920 if is_916 else 1080
+        strat = strategy or {}
+
+        overlay_png_path = output_path.parent / f"{output_path.stem}_fast_overlay.png"
+        has_overlay = bool(self.generate_overlay_canvas(target_w, target_h, strat, overlay_png_path))
+
+        inputs = ["-i", str(clean_base_path)]
+        filter_parts = []
+        current_v = "[0:v]"
+
+        if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
+            escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
+            filter_parts.append(f"{current_v}ass='{escaped_ass}'[v_sub]")
+            current_v = "[v_sub]"
+
+        if has_overlay:
+            overlay_idx = len(inputs) // 2
+            inputs.extend(["-i", str(overlay_png_path)])
+            filter_parts.append(f"{current_v}[{overlay_idx}:v]overlay=0:0[v_out]")
+            current_v = "[v_out]"
+
+        cmd = ["ffmpeg", "-y", "-threads", "0", "-filter_threads", "0", *inputs]
+        if filter_parts:
+            cmd.extend(["-filter_complex", ";".join(filter_parts), "-map", current_v])
+        else:
+            cmd.extend(["-map", "0:v"])
+
+        cmd.extend([
+            "-map", "0:a?",
+            *self.get_video_encode_args(),
+            "-c:a", "copy",
+            "-pix_fmt", "yuv420p",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
+            "-movflags", "+faststart",
+            str(output_path)
+        ])
+
+        try:
+            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=120)
+            if res.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+                return True
+            err_str = res.stderr.decode("utf-8", errors="replace")
+            print(f"[FFmpegFilterComposer] Fast burn failed (exit {res.returncode}): {err_str[-300:]}")
+            if clean_base_path.stat().st_size > 10240:
+                raise RuntimeError(f"FFmpeg 极速烧录失败 (exit {res.returncode}): {err_str[-200:]}")
+            shutil.copyfile(str(clean_base_path), str(output_path))
             return True
         finally:
             overlay_png_path.unlink(missing_ok=True)

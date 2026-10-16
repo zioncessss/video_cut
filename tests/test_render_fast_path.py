@@ -92,9 +92,9 @@ def test_fast_path_cover_caching_and_splicing(tmp_path, monkeypatch):
         assert compose_call_count == 1, f"仅加封面时必须复用底包缓存，严禁重新全片编码！调用次数: {compose_call_count}"
         assert cost_seconds < 2.0, f"仅加封面必须毫秒级响应，实际耗时: {cost_seconds:.2f}s"
 
-        # --- 轮次 3: 修改字幕内容，再次触发渲染 ---
+        # --- 轮次 3: 修改视频主体属性（画幅/倍速），再次触发渲染 ---
         proj_updated2 = project_storage_service.get_by_project_id(proj.id)
-        proj_updated2.subtitles[0].corrected_text = "内容被修改了，指纹必须失效"
+        proj_updated2.aspect_ratio = "16:9"
         project_storage_service.save_project(proj_updated2)
 
         res3 = client.post(f"/api/v1/projects/{proj.id}/render?include_cover=true&embed_cover_as_first_frame=false")
@@ -105,3 +105,55 @@ def test_fast_path_cover_caching_and_splicing(tmp_path, monkeypatch):
     finally:
         project_storage_service.delete_project_by_material(th.id)
         storage_service.delete_material(th.id)
+
+
+def test_single_pass_direct_render_without_double_encode(tmp_path, monkeypatch):
+    """
+    验证底包未命中时的单次直出优化：
+    底包未命中时，系统直接调用一次 compose_jl_cut 一体化完成切片、空镜、调色与 ASS 字幕压制，
+    绝不先调用 compose_clean_base 再调用 burn_subtitles_and_overlay_fast 造成两次全量重编码。
+    """
+    th_file = tmp_path / "th_singlepass.mp4"
+    th_file.write_bytes(b"stream_th_singlepass_bytes")
+    th = storage_service.save_material(MaterialCategory.TALKING_HEAD, "th_singlepass.mp4", th_file)
+
+    proj = CutProject(
+        id="proj_singlepass_test",
+        title="单次直出渲染测试",
+        talking_head_id=th.id,
+        status=CutProjectStatus.DRAFT,
+        subtitles=[
+            SubtitleSegment(start_time=0.0, end_time=2.0, raw_text="测试单次极速合成", corrected_text="测试单次极速合成"),
+        ],
+        strategy=EditingStrategy(embed_cover_as_first_frame=False)
+    )
+    project_storage_service.save_project(proj)
+
+    calls = {"jl_cut": 0, "fast_burn": 0}
+
+    def mock_compose(*args, **kwargs):
+        calls["jl_cut"] += 1
+        # 断言直接传入了 ass 字幕路径，证实是一次性单次全流程压制！
+        assert kwargs.get("ass_subtitle_path") is not None, "单次直出必须直接带入 ass_subtitle_path！"
+        out_p = kwargs["output_path"]
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_bytes(b"fake_single_pass_mp4_bytes")
+        return True
+
+    def mock_burn(*args, **kwargs):
+        calls["fast_burn"] += 1
+        return True
+
+    monkeypatch.setattr(composer, "compose_jl_cut", mock_compose)
+    monkeypatch.setattr(composer, "burn_subtitles_and_overlay_fast", mock_burn)
+
+    try:
+        res = client.post(f"/api/v1/projects/{proj.id}/render?include_cover=false")
+        assert res.status_code == 200
+        # 核心断言：必须仅调用 1 次 compose_jl_cut 直出，绝不额外调用 fast_burn 进行二次重编码！
+        assert calls["jl_cut"] == 1, f"单次直出必须刚好调用 1 次 compose_jl_cut，实际: {calls['jl_cut']}"
+        assert calls["fast_burn"] == 0, f"底包失效时不应触发二次 fast_burn，实际调用了: {calls['fast_burn']}"
+    finally:
+        project_storage_service.delete_project_by_material(th.id)
+        storage_service.delete_material(th.id)
+

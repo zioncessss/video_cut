@@ -26,34 +26,62 @@ def _resolve_safe_storage_dir() -> Path:
 def _heal_and_restore_storage_if_empty(storage_dir: Path) -> None:
     """
     更新防御自愈：当当前 storage 目录为空（如应用更新后被安装包抹除），
-    自动从系统安全持久备份区（LOCALAPPDATA/videocut_persistent_storage）恢复用户素材、工程和数据库
+    自动从系统安全持久备份区或开发工程目录恢复用户素材、工程和数据库
     """
     db_file = storage_dir / "videocut.db"
     # 如果数据库文件存在且大于 90KB，说明已有用户真实业务数据，无需恢复
     if db_file.exists() and db_file.stat().st_size > 90 * 1024:
         return
 
+    candidates: List[Path] = []
     local_app_data = os.getenv("LOCALAPPDATA")
-    candidates = []
     if local_app_data:
         candidates.append(Path(local_app_data) / "videocut_persistent_storage")
+    candidates.append(Path(r"D:\project\video_cut\storage"))
+    candidates.append(ROOT_DIR / "storage")
+    app_data = os.getenv("APPDATA")
+    if app_data:
+        candidates.append(Path(app_data) / "videocut" / "storage")
+
+    best_candidate: Path | None = None
+    max_size = 90 * 1024
 
     for cand in candidates:
+        if not cand.exists() or cand.resolve() == storage_dir.resolve():
+            continue
         cand_db = cand / "videocut.db"
-        if cand.exists() and cand_db.exists() and cand_db.stat().st_size > 90 * 1024:
-            try:
-                import shutil
-                print(f"[Config] 检测到当前数据目录为空，自动从持久备份区 {cand} 恢复用户工程与素材...")
-                for item in cand.iterdir():
-                    dst_item = storage_dir / item.name
-                    if item.is_dir():
-                        shutil.copytree(str(item), str(dst_item), dirs_exist_ok=True)
-                    elif item.is_file():
-                        shutil.copy2(str(item), str(dst_item))
-                print(f"[Config] 用户数据恢复成功，杜绝更新后视频消失！")
-                break
-            except Exception as err:
-                print(f"[Config] 恢复备份数据失败: {err}")
+        if cand_db.exists():
+            s = cand_db.stat().st_size
+            if s > max_size:
+                max_size = s
+                best_candidate = cand
+
+    if best_candidate:
+        try:
+            import shutil
+            print(f"[Config] 检测到当前数据目录为空，自动从数据源 {best_candidate} (DB大小: {max_size//1024}KB) 恢复用户工程与素材...")
+            for item in best_candidate.iterdir():
+                dst_item = storage_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(str(item), str(dst_item), dirs_exist_ok=True)
+                elif item.is_file():
+                    shutil.copy2(str(item), str(dst_item))
+            print(f"[Config] 用户数据恢复成功，杜绝更新后视频消失！")
+
+            # 同时也同步一份至独立持久区建立双重保险
+            if local_app_data:
+                persistent = Path(local_app_data) / "videocut_persistent_storage"
+                if best_candidate.resolve() != persistent.resolve():
+                    persistent.mkdir(parents=True, exist_ok=True)
+                    for item in best_candidate.iterdir():
+                        dst_item = persistent / item.name
+                        if item.is_dir():
+                            shutil.copytree(str(item), str(dst_item), dirs_exist_ok=True)
+                        elif item.is_file():
+                            shutil.copy2(str(item), str(dst_item))
+                    print(f"[Config] 已同步写入持久备份区 {persistent}")
+        except Exception as err:
+            print(f"[Config] 恢复备份数据失败: {err}")
 
 STORAGE_DIR = _resolve_safe_storage_dir()
 _heal_and_restore_storage_if_empty(STORAGE_DIR)

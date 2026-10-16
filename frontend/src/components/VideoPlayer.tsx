@@ -208,7 +208,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // 将播放器原生时间转换为紧凑时间轴时间（用于未渲染跳播模式下对齐紧凑分镜）
   const getCompactTime = useCallback((rawTime: number) => {
-    if (!pruneSpans || pruneSpans.length === 0) return rawTime;
+    if (isRendered || !pruneSpans || pruneSpans.length === 0) return rawTime;
     let prunedBefore = 0;
     for (const span of pruneSpans) {
       if (!span.is_active) continue;
@@ -219,14 +219,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
     }
     return Math.max(0, rawTime - prunedBefore);
-  }, [pruneSpans]);
+  }, [isRendered, pruneSpans]);
 
-  // 实时分镜探测：判断当前播放时间点是否落在某段 B-roll 空镜窗口内
+  // 将紧凑时间轴时间映射回原始视频绝对时间戳
+  const getRawTime = useCallback((compactTime: number) => {
+    if (isRendered || !pruneSpans || pruneSpans.length === 0) return compactTime;
+    const activeSpans = pruneSpans
+      .filter(s => s.is_active)
+      .sort((a, b) => a.start_time - b.start_time);
+    if (activeSpans.length === 0) return compactTime;
+
+    let accumulatedCompact = 0;
+    let prevRawEnd = 0;
+
+    for (const span of activeSpans) {
+      const keptDur = span.start_time - prevRawEnd;
+      if (keptDur > 0) {
+        if (compactTime <= accumulatedCompact + keptDur) {
+          return prevRawEnd + (compactTime - accumulatedCompact);
+        }
+        accumulatedCompact += keptDur;
+      }
+      prevRawEnd = span.end_time;
+    }
+
+    return prevRawEnd + (compactTime - accumulatedCompact);
+  }, [isRendered, pruneSpans]);
+
+  // 计算成片/剪裁后的有效持续总时长
+  const effectiveDuration = React.useMemo(() => {
+    if (isRendered) return duration || 0;
+    if (!pruneSpans || pruneSpans.length === 0) return duration || 0;
+    const activeSpans = pruneSpans.filter(s => s.is_active);
+    if (activeSpans.length === 0) return duration || 0;
+    let prunedTotal = 0;
+    for (const span of activeSpans) {
+      prunedTotal += (span.end_time - span.start_time);
+    }
+    return Math.max(0, (duration || 0) - prunedTotal);
+  }, [isRendered, duration, pruneSpans]);
+
+  // 实时分镜探测：判断当前紧凑播放时间点是否落在某段 B-roll 空镜窗口内
   const findActiveBroll = useCallback((time: number) => {
     if (isRendered || !brolls || brolls.length === 0) return null;
-    const checkTime = getCompactTime(time);
-    return brolls.find(b => checkTime >= b.start_time && checkTime < b.end_time) || null;
-  }, [isRendered, brolls, getCompactTime]);
+    return brolls.find(b => time >= b.start_time && time < b.end_time) || null;
+  }, [isRendered, brolls]);
 
   // 高精 60fps 逐帧监听机制 (基于 requestAnimationFrame)
   // 彻底打破 Chromium 原生 timeupdate 250ms 一次的迟钝更新，将显示延迟降低至 0~16ms
@@ -284,10 +321,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   useEffect(() => {
     if (!brollVideoRef.current || !activeBroll) return;
     const brollEl = brollVideoRef.current;
-    const checkTime = isRendered ? currentTime : getCompactTime(currentTime);
-    const offset = Math.max(0, checkTime - activeBroll.start_time);
+    const sourceStart = Number(activeBroll.source_start_time || 0);
+    const offset = Math.max(0, currentTime - activeBroll.start_time);
     const bDur = brollEl.duration || activeBrollMaterial?.duration || 10;
-    const target = bDur > 0 ? (offset % bDur) : offset;
+    const target = bDur > 0 ? ((sourceStart + offset) % bDur) : (sourceStart + offset);
 
     if (Math.abs(brollEl.currentTime - target) > 0.35) {
       brollEl.currentTime = target;
@@ -409,19 +446,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         );
         if (activeSpan) {
           videoRef.current.currentTime = activeSpan.end_time;
-          onTimeUpdate(activeSpan.end_time);
+          const compactAfterJump = getCompactTime(activeSpan.end_time);
+          onTimeUpdate(compactAfterJump);
           return;
         }
       }
-      onTimeUpdate(cur);
+      const compactCur = isRendered ? cur : getCompactTime(cur);
+      onTimeUpdate(compactCur);
     }
   };
 
   useEffect(() => {
-    if (!isSeeking && videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.35) {
-      videoRef.current.currentTime = currentTime;
+    if (!isSeeking && videoRef.current) {
+      const targetRaw = isRendered ? currentTime : getRawTime(currentTime);
+      if (Math.abs(videoRef.current.currentTime - targetRaw) > 0.25) {
+        videoRef.current.currentTime = targetRaw;
+      }
     }
-  }, [currentTime, isSeeking]);
+  }, [currentTime, isSeeking, isRendered, getRawTime]);
 
   // 当 videoUrl 发生变更（如生成成片后携带新时间戳），主动调用 load() 破除浏览器视频解码缓存并维护待恢复时间
   useEffect(() => {
@@ -441,10 +483,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const d = videoRef.current.duration;
       setDuration(isNaN(d) ? 0 : d);
       if (pendingSeekTimeRef.current !== null && pendingSeekTimeRef.current > 0) {
-        videoRef.current.currentTime = pendingSeekTimeRef.current;
+        const initRaw = isRendered ? pendingSeekTimeRef.current : getRawTime(pendingSeekTimeRef.current);
+        videoRef.current.currentTime = initRaw;
         pendingSeekTimeRef.current = null;
       } else if (currentTime > 0) {
-        videoRef.current.currentTime = currentTime;
+        const initRaw = isRendered ? currentTime : getRawTime(currentTime);
+        videoRef.current.currentTime = initRaw;
       }
       if (videoRef.current.videoWidth && videoRef.current.videoHeight) {
         const vw = videoRef.current.videoWidth;
@@ -472,14 +516,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const target = parseFloat(e.target.value);
     setSeekTime(target);
     if (videoRef.current) {
-      videoRef.current.currentTime = target;
+      const targetRaw = isRendered ? target : getRawTime(target);
+      videoRef.current.currentTime = targetRaw;
     }
   };
 
   // 进度条拖拽释放提交
   const handleSeekPointerUp = () => {
     if (videoRef.current) {
-      videoRef.current.currentTime = seekTime;
+      const targetRaw = isRendered ? seekTime : getRawTime(seekTime);
+      videoRef.current.currentTime = targetRaw;
     }
     onTimeUpdate(seekTime);
     setIsSeeking(false);
@@ -490,7 +536,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (!isSeeking) return;
     const handleGlobalPointerUp = () => {
       if (videoRef.current) {
-        videoRef.current.currentTime = seekTime;
+        const targetRaw = isRendered ? seekTime : getRawTime(seekTime);
+        videoRef.current.currentTime = targetRaw;
       }
       onTimeUpdate(seekTime);
       setIsSeeking(false);
@@ -501,20 +548,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('mouseup', handleGlobalPointerUp);
     };
-  }, [isSeeking, seekTime]);
+  }, [isSeeking, seekTime, isRendered, getRawTime, onTimeUpdate]);
 
   // 快进 / 快退步进
   const stepTime = (deltaSeconds: number) => {
-    if (!videoRef.current) return;
-    const nextTime = Math.max(0, Math.min(duration || 100, (videoRef.current.currentTime || 0) + deltaSeconds));
-    videoRef.current.currentTime = nextTime;
-    onTimeUpdate(nextTime);
+    const nextCompact = Math.max(0, Math.min(effectiveDuration || 100, currentTime + deltaSeconds));
+    if (videoRef.current) {
+      const targetRaw = isRendered ? nextCompact : getRawTime(nextCompact);
+      videoRef.current.currentTime = targetRaw;
+    }
+    onTimeUpdate(nextCompact);
   };
 
-  const formatTime = (secs: number) => {
+  const formatExactTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) secs = 0;
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const s = Math.floor(secs % 60).toString().padStart(2, '0');
+    const s = (secs % 60).toFixed(2).padStart(5, '0');
     return `${m}:${s}`;
   };
 
@@ -976,7 +1025,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               {is169 ? '16:9 横屏' : '9:16 竖屏'}
             </span>
             <span className="text-xs font-medium text-white/70">
-              {isRendered ? '成片预览' : '实时编辑'}
+              {isRendered ? '成片预览' : '原始素材'}
             </span>
           </div>
           <button
@@ -1273,10 +1322,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           +5s
         </button>
 
-        <span className={`font-mono text-[11px] min-w-[34px] text-right select-none ${
+        <span className={`font-mono text-[11px] min-w-[50px] text-right select-none ${
           isEnlarged ? 'text-white/80' : 'text-gray-600'
         }`}>
-          {formatTime(isSeeking ? seekTime : currentTime)}
+          {formatExactTime(isSeeking ? seekTime : currentTime)}
         </span>
 
         {/* 进度拖拽条：带 pointerDown/Up 与即时 scrub 保护，纯净无留红渲染 */}
@@ -1284,7 +1333,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <input
             type="range"
             min="0"
-            max={duration || 100}
+            max={effectiveDuration || 100}
             step="0.05"
             value={isSeeking ? seekTime : currentTime}
             onPointerDown={handleSeekPointerDown}
@@ -1300,10 +1349,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           />
         </div>
 
-        <span className={`font-mono text-[11px] min-w-[34px] select-none ${
+        <span className={`font-mono text-[11px] min-w-[50px] select-none ${
           isEnlarged ? 'text-white/50' : 'text-gray-400'
         }`}>
-          {formatTime(duration)}
+          {formatExactTime(effectiveDuration)}
         </span>
 
         <button

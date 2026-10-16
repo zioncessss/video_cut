@@ -109,20 +109,42 @@ class AutoPruneEngine:
                 is_retake = False
 
                 if cur_text and next_text:
+                    cur_core = re.sub(r"[啊呀呢吧哦啦哈哒呀嘛]+$", "", cur_text)
+                    next_core = re.sub(r"[啊呀呢吧哦啦哈哒呀嘛]+$", "", next_text)
                     ratio = difflib.SequenceMatcher(None, cur_text, next_text).ratio()
                     lcs_len = _longest_common_substring_len(cur_text, next_text)
                     min_len = min(len(cur_text), len(next_text))
                     
-                    is_substring_included = (cur_text in next_text) or (next_text in cur_text)
+                    is_substring_included = (
+                        (cur_text in next_text)
+                        or (next_text in cur_text)
+                        or (cur_core and cur_core in next_text)
+                        or (next_core and next_core in cur_text)
+                    )
                     lcs_coverage = (lcs_len / min_len) if min_len > 0 else 0.0
 
-                    # 判定条件：
-                    # 1. 停顿属于口误卡壳区间 (gap >= retake_pause_min 或包含关系时 gap >= 0.15) 且 gap <= 3.5s
-                    # 2. 文本重合度高 (ratio >= retake_similarity_min 或 lcs_coverage >= 0.7 且公共字数 >= 3)
-                    if (gap >= retake_pause_min or (gap >= 0.15 and is_substring_included)) and gap <= 3.5:
-                        if ratio >= retake_similarity_min or (lcs_coverage >= 0.70 and lcs_len >= 3):
-                            # 防排比修辞：排比通常两句字数完全一致且语调短促 (gap < 0.25)
-                            if not (cur_text == next_text and gap < 0.25):
+                    # 1. 前缀重叠比对 (Prefix Overlap Ratio)：解决短前缀口误被后置长句稀释问题
+                    prefix_similarity = 0.0
+                    if min_len >= 2:
+                        prefix_similarity = difflib.SequenceMatcher(
+                            None, cur_text[:min_len], next_text[:min_len]
+                        ).ratio()
+
+                    # 2. 三重防误剪安全网：
+                    # - 安全网 A：极速排比连读保护 (极短连读 gap < 0.15s 且非明显子串重说，或字句完全相同且 gap < 0.20s)
+                    is_rhetorical_fast = (gap < 0.15 and not is_substring_included) or (cur_text == next_text and gap < 0.20)
+                    # - 安全网 B：独立完整长句保护 (核心语义 >= 9 字且无互相包含，为独立语义句)
+                    is_long_independent = len(cur_core) >= 9 and not is_substring_included
+
+                    # 3. 判定条件：
+                    if not is_rhetorical_fast and not is_long_independent:
+                        if (gap >= retake_pause_min or (gap >= 0.15 and is_substring_included)) and gap <= 3.5:
+                            if (
+                                ratio >= retake_similarity_min
+                                or (lcs_coverage >= 0.70 and lcs_len >= 2)
+                                or (prefix_similarity >= 0.75 and min_len >= 2 and gap >= retake_pause_min)
+                                or is_substring_included
+                            ):
                                 is_retake = True
 
                 if is_retake:
@@ -183,7 +205,8 @@ class AutoPruneEngine:
         if enable_head:
             first_active_sub = None
             for idx, sub in enumerate(subtitles):
-                if idx not in retake_marked_indices:
+                is_sub_pruned = bool(_get_val(sub, "is_pruned", False))
+                if idx not in retake_marked_indices and not is_sub_pruned:
                     first_active_sub = sub
                     break
             if first_active_sub is not None:
@@ -203,12 +226,23 @@ class AutoPruneEngine:
         # 3. 中段单纯长停顿气口压缩 (Mid-Silence Compression)
         if enable_mid_silence and n >= 2:
             half_breath = round(mid_silence_breath_gap / 2.0, 3)
-            active_indices = [idx for idx in range(n) if idx not in retake_marked_indices]
+            active_indices = [
+                idx for idx in range(n)
+                if idx not in retake_marked_indices and not bool(_get_val(subtitles[idx], "is_pruned", False))
+            ]
             for k in range(len(active_indices) - 1):
                 idx_cur = active_indices[k]
                 idx_nxt = active_indices[k + 1]
                 cur_sub = subtitles[idx_cur]
                 next_sub = subtitles[idx_nxt]
+
+                cur_text = _clean_text(_get_val(cur_sub, "corrected_text") or _get_val(cur_sub, "raw_text", ""))
+                next_text = _clean_text(_get_val(next_sub, "corrected_text") or _get_val(next_sub, "raw_text", ""))
+
+                # 语义完整性卫兵：严禁在不可分词中间或未完句尾实施中段静音剪切（彻底杜绝"想要了  解"被裁开）
+                from app.native_engine.asr_runner import is_breaking_inseparable_word, is_incomplete_tail
+                if is_breaking_inseparable_word(cur_text, next_text) or is_incomplete_tail(cur_text):
+                    continue
 
                 cur_end = float(_get_val(cur_sub, "end_time", 0.0))
                 next_start = float(_get_val(next_sub, "start_time", 0.0))
@@ -231,8 +265,10 @@ class AutoPruneEngine:
         if enable_tail:
             last_active_sub = None
             for idx in range(n - 1, -1, -1):
-                if idx not in retake_marked_indices:
-                    last_active_sub = subtitles[idx]
+                sub = subtitles[idx]
+                is_sub_pruned = bool(_get_val(sub, "is_pruned", False))
+                if idx not in retake_marked_indices and not is_sub_pruned:
+                    last_active_sub = sub
                     break
             if last_active_sub is not None:
                 last_active_end = float(_get_val(last_active_sub, "end_time", 0.0))
@@ -248,12 +284,32 @@ class AutoPruneEngine:
                         )
                         prune_spans.append(span)
 
+        # 4.5 连续删除字幕全间隙桥接 (Bridge Consecutive Pruned Subtitles Gap)
+        # 当相邻的字幕均处于被剔除状态时，中间的无声换气/动作间隙绝不可作为有效画面残留
+        for idx in range(n - 1):
+            s_cur = subtitles[idx]
+            s_nxt = subtitles[idx + 1]
+            is_cur_pruned = (idx in retake_marked_indices) or bool(_get_val(s_cur, "is_pruned", False))
+            is_nxt_pruned = (idx + 1 in retake_marked_indices) or bool(_get_val(s_nxt, "is_pruned", False))
+            if is_cur_pruned and is_nxt_pruned:
+                gap_start = float(_get_val(s_cur, "end_time", 0.0))
+                gap_end = float(_get_val(s_nxt, "start_time", 0.0))
+                if gap_end > gap_start:
+                    bridge_span = PruneSpan(
+                        start_time=round(gap_start, 3),
+                        end_time=round(gap_end, 3),
+                        reason=PruneReason.MANUAL.value if bool(_get_val(s_cur, "is_pruned", False)) else PruneReason.RETAKE_DISCARD.value,
+                        duration=round(gap_end - gap_start, 3),
+                        is_active=True
+                    )
+                    prune_spans.append(bridge_span)
+
         # 5. 区间合并与消除微小杂音碎片
         merged_spans = self._merge_and_sort_spans(prune_spans)
         return merged_spans, pruned_sub_ids
 
     def _merge_and_sort_spans(self, spans: List[PruneSpan]) -> List[PruneSpan]:
-        """合并重叠或微小相邻的剔除区间，消除 <0.35s 的杂音/吸气孤岛，保证单调递增无冲突"""
+        """合并重叠或微小相邻的剔除区间，消除 <0.65s 的杂音/吸气孤岛，保证单调递增无冲突"""
         if not spans:
             return []
         sorted_spans = sorted(spans, key=lambda s: s.start_time)
@@ -264,8 +320,8 @@ class AutoPruneEngine:
                 merged.append(s)
                 continue
             prev = merged[-1]
-            # 若两区间重叠，或两区间之间的保留间距小于 0.35 秒（微小杂音/吸气孤岛碎片），自动连片合并
-            if s.start_time <= prev.end_time + 0.35:
+            # 若两区间重叠，或两区间之间的保留间距小于 0.65 秒（微小杂音/吸气孤岛碎片），自动连片合并
+            if s.start_time <= prev.end_time + 0.65:
                 new_end = max(prev.end_time, s.end_time)
                 prev.end_time = round(new_end, 3)
                 prev.duration = round(prev.end_time - prev.start_time, 3)
@@ -282,11 +338,14 @@ class AutoPruneEngine:
     def compute_kept_spans(
         self,
         video_duration: float,
-        prune_spans: List[PruneSpan]
+        prune_spans: List[PruneSpan],
+        subtitles: Optional[List[Any]] = None
     ) -> List[KeptSpan]:
         """
         反向计算最终有效发音/画面的保留时间区间 (KeptSpans)。
         用于驱动前端虚拟跳播映射与 FFmpeg 多切片无损拼接。
+        若提供 subtitles，自动激活幽灵碎片扫描守卫（Ghost Clip Scrubber），
+        彻底清除无字幕覆盖且 <0.60s 的孤岛废画面。
         """
         if video_duration <= 0:
             return []
@@ -318,7 +377,29 @@ class AutoPruneEngine:
                 audio_fade=True
             ))
 
+        # 幽灵碎片清理卫兵 (Ghost Clip Scrubber)
+        def _get_val(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        if subtitles:
+            active_subs = [s for s in subtitles if not bool(_get_val(s, "is_pruned", False))]
+            clean_kept: List[KeptSpan] = []
+            for ks in kept:
+                # 检查此保留区间上是否有有效字幕交集
+                has_active_sub = any(
+                    float(_get_val(asub, "start_time", 0.0)) < ks.end_time and
+                    float(_get_val(asub, "end_time", 0.0)) > ks.start_time
+                    for asub in active_subs
+                )
+                if not has_active_sub and ks.duration < 0.60:
+                    continue
+                clean_kept.append(ks)
+            return clean_kept
+
         return kept
+
 
     def map_interval_to_compact(
         self,

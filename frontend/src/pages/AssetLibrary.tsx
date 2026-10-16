@@ -8,14 +8,16 @@ const CATEGORIES = [
   { key: 'venue', label: '场地空镜', desc: '训练场、校区、考场等实景画面', icon: MapPin, color: 'text-emerald-600 bg-emerald-50' },
   { key: 'experience', label: '体验空镜', desc: '报名咨询、体检拍照、试学体验、拿证记录', icon: Activity, color: 'text-amber-600 bg-amber-50' },
   { key: 'lesson', label: '教学学车空镜', desc: '倒车入库、侧方停车、科目二/三实操练车', icon: Award, color: 'text-indigo-600 bg-indigo-50' },
+  { key: 'talking_head', label: '口播主视频', desc: '教练与学员口播主素材，可直接推送到工作台剪辑', icon: Film, color: 'text-blue-600 bg-blue-50' },
 ];
 
 interface AssetLibraryProps {
   onSelectForEditor?: (materialId: string) => void;
+  onNavigateToBatch?: () => void;
   isActive?: boolean;
 }
 
-export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, isActive = true }) => {
+export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, onNavigateToBatch, isActive = true }) => {
   const { showAlert, showConfirm, showToast } = useDialog();
   const [activeTab, setActiveTab] = useState<string>('venue');
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -405,7 +407,7 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
         </p>
       </div>
 
-      {/* 纯化素材库提示引导横幅 */}
+      {/* 素材库提示引导横幅 */}
       <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50 border border-blue-200/70 shadow-xs flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center flex-shrink-0 shadow-sm">
@@ -413,17 +415,27 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
           </div>
           <div>
             <h3 className="text-xs font-bold text-gray-800">
-              口播主视频已全面升级至【批量混剪】与【剪辑工作台】
+              口播主视频已全面支持一键推送剪辑与【批量混剪】
             </h3>
             <p className="text-[11px] text-gray-600 mt-0.5">
-              待剪辑口播视频上传时系统将自动分配独立任务目录（日期+时间）。素材库已纯化为三大纯空镜素材库（场地、体验、教学），供 AI 剪辑引擎智能平替切入。
+              本库支持场地、体验、教学三大空镜素材与口播原片管理。上传的口播主视频可一键推送到剪辑工作台，或在【批量混剪】进行多段智能合成。
             </p>
           </div>
         </div>
+        {onNavigateToBatch && (
+          <button
+            type="button"
+            onClick={onNavigateToBatch}
+            className="ml-4 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors shadow-xs flex items-center space-x-1 flex-shrink-0 cursor-pointer"
+          >
+            <span>前往批量混剪</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
-      {/* 三大空镜分类切换卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+      {/* 四大素材分类切换卡片 */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {CATEGORIES.map(c => {
           const Icon = c.icon;
           const isSelected = activeTab === c.key;
@@ -674,13 +686,26 @@ export const AssetLibrary: React.FC<AssetLibraryProps> = ({ onSelectForEditor, i
                     <span className="text-[11px] text-gray-400 font-mono">
                       {m.width}x{m.height} · {m.fps} FPS
                     </span>
-                    <button
-                      onClick={() => setPreviewMaterial(m)}
-                      className="flex items-center space-x-1 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100/80 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <Play className="w-3 h-3 fill-current" />
-                      <span>播放预览</span>
-                    </button>
+                    <div className="flex items-center space-x-1.5">
+                      {m.category === 'talking_head' && onSelectForEditor && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectForEditor(m.id)}
+                          className="flex items-center space-x-1 text-xs font-medium text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100/80 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                          title="使用此口播原片去剪辑工作台进行剪辑"
+                        >
+                          <Film className="w-3 h-3" />
+                          <span>去剪辑</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setPreviewMaterial(m)}
+                        className="flex items-center space-x-1 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100/80 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        <span>播放预览</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

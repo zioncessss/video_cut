@@ -9,7 +9,7 @@ import appLogo from './assets/icon.png';
 import { Folder, Film, Layers, ShieldCheck, Settings as SettingsIcon, Minus, Square, Copy, X } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'compliance' | 'settings'>('library');
+  const [currentTab, setCurrentTab] = useState<'library' | 'editor' | 'batch' | 'compliance' | 'settings'>('editor');
   const [selectedTalkingHeadId, setSelectedTalkingHeadId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
@@ -153,6 +153,7 @@ export const App: React.FC = () => {
               setActiveProjectId(null);
               setCurrentTab('editor');
             }}
+            onNavigateToBatch={() => setCurrentTab('batch')}
           />
         </div>
         <div className={`h-full w-full overflow-hidden ${currentTab === 'editor' ? '' : 'hidden'}`}>

@@ -331,6 +331,7 @@ export interface BrollReplacement {
   material_id: string;
   material_category: 'venue' | 'experience' | 'lesson';
   playback_mode?: string;
+  source_start_time?: number;
 }
 
 export const updateProjectStrategy = async (
@@ -602,12 +603,15 @@ export const updateProjectTitle = async (projectId: string, title: string) => {
 export const updateProjectSubtitles = async (
   projectId: string,
   subtitles: any[],
-  brollReplacements?: any[]
+  brollReplacements?: any[],
+  pruneSpans?: any[]
 ) => {
-  const res = await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, {
+  const payload: any = {
     subtitles,
-    broll_replacements: brollReplacements,
-  });
+  };
+  if (brollReplacements !== undefined) payload.broll_replacements = brollReplacements;
+  if (pruneSpans !== undefined) payload.prune_spans = pruneSpans;
+  const res = await axios.put(`${API_BASE}/projects/${projectId}/subtitles`, payload);
   return res.data;
 };
 
@@ -751,6 +755,39 @@ export const toggleSubtitlePrune = async (
   const res = await axios.post(`${API_BASE}/projects/${projectId}/subtitles/${subtitleId}/toggle-prune`, {
     is_pruned: isPruned
   });
+  return res.data;
+};
+
+export const splitSubtitle = async (
+  projectId: string,
+  subtitleId: string,
+  data?: {
+    split_index?: number;
+    split_time?: number;
+    part1_text?: string;
+    part2_text?: string;
+    is_compact_time?: boolean;
+  }
+): Promise<{
+  success: boolean;
+  split_subtitles: any[];
+  subtitles: any[];
+  compact_subtitles: any[];
+}> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/subtitles/${subtitleId}/split`, data || {});
+  return res.data;
+};
+
+export const mergeNextSubtitle = async (
+  projectId: string,
+  subtitleId: string
+): Promise<{
+  success: boolean;
+  merged_subtitle: any;
+  subtitles: any[];
+  compact_subtitles: any[];
+}> => {
+  const res = await axios.post(`${API_BASE}/projects/${projectId}/subtitles/${subtitleId}/merge-next`);
   return res.data;
 };
 

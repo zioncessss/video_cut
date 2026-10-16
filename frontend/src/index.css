@@ -20,3 +20,73 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* ============================================================
+   全局极简精致滚动条规范 (Slim, Overlay & Auto-Hiding Scrollbar)
+   平时隐形透明，悬停/滚动时呈现精致圆角窄条，杜绝粗大色块与箭头
+   ============================================================ */
+
+/* Firefox 规范 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+/* WebKit / Chromium / Electron 统一极简窄条规范 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.25s ease-in-out;
+}
+
+/* 容器处于悬停状态或正在滚动时，拇指条柔和浮现 */
+*:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.35);
+}
+
+/* 鼠标直接移至滚动条拇指条时加深反馈 */
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.65);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(71, 85, 105, 0.85);
+}
+
+/* 彻底隐藏顶部/底部的粗大箭头按钮 */
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 辅助类：强行隐藏滚动条 */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 辅助类：超薄微型滚动条 */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}

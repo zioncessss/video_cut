@@ -10,41 +10,108 @@ import re
 
 _asr_concurrency_lock = threading.BoundedSemaphore(2)
 INSEPARABLE_WORDS = {
-    "咱们", "我们", "你们", "他们", "大家", "可以", "这种", "三种", "很多", "后期", "前期", "隐形", "消费", "之前", "之后",
-    "一直", "答应", "体验", "下降", "上升", "后续", "套路", "承诺", "外地", "本地", "考试", "比较", "时间", "而且", "如果",
-    "首先", "靠谱", "不妨", "红心", "关注", "做了", "服务", "滴滴", "一下", "学车", "驾校", "教练", "学员", "踩坑", "避雷",
-    "便宜", "报名", "怎么样", "加急费", "模拟费", "体检费", "补考费", "收费", "现在", "找到", "觉得", "合适", "原因", "什么",
-    "知道", "看到", "听到", "比如", "还有", "另外", "特别是", "可以说", "也就是", "百分之百", "离谱", "正常", "两三个月",
-    "拿证", "一个", "一种"
+    # 短视频互动导流与CTA核心词（杜绝如"想要了/解"、"评论区/留言"被拆散）
+    "了解", "想要了解", "评论区", "留言", "评论区留言", "私信", "咨询", "关注", "点赞", "收藏", "联系",
+    "为了", "除了", "明白", "清楚", "记得", "不仅是", "不仅有",
+    # 驾考专有科目与操作
+    "科目一", "科目二", "科目三", "科目四", "科一", "科二", "科三", "科四",
+    "倒车入库", "侧方停车", "半坡起步", "曲线行驶", "直角转弯", "坡道起步",
+    "后视镜", "反光镜", "转向灯", "安全带", "离合器", "离合", "刹车", "手刹", "油门",
+    "方向盘", "挡位", "一挡", "二挡", "倒挡", "空挡", "自动挡", "手动挡",
+    "控制线", "打死", "回正", "点位", "看点", "压线", "打左转向灯", "打右转向灯", "鸣笛",
+    "训练场", "练车", "考场", "模拟机", "遮阳大棚", "空调", "冷暖空调", "打转向灯",
+    "自动挡模拟机",
+    # 费用与模式
+    "全包班", "基础班", "直通班", "快班",
+    "模拟费", "补考费", "加急费", "体检费", "工本费", "打证费", "学时费", "额外费用", "隐形消费", "乱收费",
+    "吃拿卡要", "随到随学", "一对一", "手把手", "包过", "拿证", "领证", "收费模式",
+    "一次性", "中途", "前期", "后期", "合同", "退费", "两千八百八十元",
+    # 常用口语高频词与搭配
+    "咱们", "我们", "你们", "他们", "大家", "可以", "这种", "三种", "很多",
+    "之前", "之后", "一直", "答应", "体验", "下降", "上升", "后续", "套路", "承诺",
+    "外地", "本地", "外地学员", "本地学员", "考试", "比较", "时间", "而且", "如果",
+    "首先", "靠谱", "不妨", "红心", "做了", "服务", "滴滴", "一下", "学车",
+    "驾校", "教练", "学员", "踩坑", "避雷", "便宜", "报名", "怎么样", "收费",
+    "现在", "找到", "觉得", "合适", "原因", "什么", "知道", "看到", "听到",
+    "比如", "还有", "另外", "特别是", "可以说", "也就是", "百分之百", "离谱", "正常",
+    "两三个月", "一个", "一种", "总担心", "担心", "害怕", "紧张", "零基础",
+    "通过率", "合格率", "抓紧了", "抓紧", "回家过年", "下个月", "下周", "练车时间",
+    "省心省力", "感受到", "感受", "明显", "抖动", "慢抬", "慢松", "稳住", "切记",
+    "而且还有", "所有的", "全部包含", "包含在内", "自由预约", "免费练习",
+    "的时候", "的人", "练车的人"
 }
 
 CLAUSE_STARTERS = (
-    "咱们", "我们", "你们", "他们", "大家", "还", "而且", "并且", "但是", "或者",
-    "然后", "如果", "因为", "所以", "比如", "还有", "另外", "特别是", "甚至",
-    "手把手", "可以", "千万", "一定要", "首先", "其实", "只要", "不要", "哪怕",
-    "可以说是", "也就是", "等你", "你会", "他是", "他就",
-    "第一", "第二", "第三", "真的没有", "真的"
+    # 序号引导
+    "第一", "第二", "第三", "第四", "首先", "其次", "最后",
+    # 强转折与递进连词
+    "但是", "可是", "不过", "然而", "而且还有", "而且", "并且还有", "并且",
+    "然后", "如果", "因为", "所以", "或者", "另外", "特别是", "尤其是",
+    "甚至", "不如", "其实咱们", "其实", "哪怕", "只要", "只要你", "不仅有", "不仅",
+    # 范围与介词短语引导
+    "从科目一", "从科一", "从", "在", "为了", "关于",
+    # 人称与呼吁
+    "咱们", "我们", "你们", "他们", "大家", "不妨在", "不妨", "建议", "切记",
+    # 动作与重点引导
+    "一定要", "千万要", "千万", "手把手", "可以", "不用", "绝不", "直接", "不需要",
+    "现在报名", "现在", "下周就能", "下周", "下个月直接", "下个月",
+    "上车先", "调整后视镜", "踩离合", "看后视镜", "鸣笛", "松手刹", "打左转向灯", "打右转向灯",
+    "可以说", "也就是", "也就是说", "真的没有", "真的", "等你", "你会", "他是", "他就",
+    "收费特别多", "全部包含在内"
 )
 
-# 挂尾禁绝词库：严禁以弱连词、介词或从属引词作为前半句句尾（彻底杜绝"我们都有老师和"挂连词现象）
-DANGLING_CONJUNCTIONS = (
-    "和", "与", "跟", "及", "同", "在", "从", "到", "向", "由", "把", "被", "让",
-    "并且", "而且", "或者", "还是"
+# 未完句尾禁绝库：连词、介词、开放性弱动词与从属修饰语（彻底杜绝"我们都有老师和"或"想要了/解"挂尾）
+INCOMPLETE_TAIL_WORDS = (
+    # 弱连词
+    "和", "与", "跟", "及", "同", "并且", "而且", "或者", "还是", "甚至", "但", "但是", "因为", "所以", "如果",
+    # 介词
+    "在", "从", "由", "把", "被", "让", "到", "向",
+    # 悬挂动词与弱从属限定语
+    "来", "去", "给", "找", "所有的", "全部的"
 )
+
+SAFE_TAIL_EXCEPTIONS = {
+    "向": ("方向", "反向", "正向", "导向", "走向"),
+    "到": ("看到", "听到", "遇到", "学到", "拿到", "周到", "办到", "做到", "找到", "感到", "随到随学", "领到", "报到")
+}
 
 CLAUSE_ENDERS = (
     "呢", "吧", "啊", "吗", "呀", "啦", "哒", "哦", "哈", "了", "的", "过",
-    "后", "之后", "便宜", "怎么样", "的时候", "之前"
+    "的时候", "之后", "之前", "以后", "以前", "当时",
+    "抓紧了", "便宜", "怎么样", "靠谱吗", "很多", "回家过年", "随到随学", "省心省力",
+    "包含在内", "全部包含", "额外费用", "隐形消费", "乱收费", "大棚", "后视镜",
+    "安全带", "起步", "打死", "回正", "慢抬", "慢松刹车", "手刹", "练车", "拿证",
+    "吃拿卡要", "避雷", "免费练习", "特别多", "两千八百八十元", "学车"
 )
+
+PUNCTUATION_CHARS = set("，, 。. !！ ?？ ;； 、")
 
 
 def is_breaking_inseparable_word(left_text: str, right_text: str) -> bool:
+    """判定两段文本的接缝处是否正好腰斩了一个不可分词汇"""
+    if not left_text or not right_text:
+        return False
+    l_tail = left_text[-10:]
+    r_head = right_text[:10]
     for w in INSEPARABLE_WORDS:
         for cut in range(1, len(w)):
             prefix = w[:cut]
             suffix = w[cut:]
-            if left_text.endswith(prefix) and right_text.startswith(suffix):
+            if l_tail.endswith(prefix) and r_head.startswith(suffix):
                 return True
+    return False
+
+
+def is_incomplete_tail(left_text: str) -> bool:
+    """判定前半句结尾是否处于未完成语义断裂态（连词、介词或悬挂动词）"""
+    if not left_text:
+        return False
+    for tail in INCOMPLETE_TAIL_WORDS:
+        if left_text.endswith(tail):
+            if tail in SAFE_TAIL_EXCEPTIONS:
+                if any(left_text.endswith(exc) for exc in SAFE_TAIL_EXCEPTIONS[tail]):
+                    continue
+            return True
     return False
 
 
@@ -55,7 +122,12 @@ def find_best_split_point(
     soft_max: int = 15
 ) -> int:
     total_len = sum(len(w.get("word", "")) for w in words)
-    ideal_left = min(max_chars, max(min_chunk, total_len // 2))
+    if total_len <= soft_max:
+        return -1
+
+    # 黄金阅读区间：口播短视频每行 8 ~ 13 字最佳，根据总字数自适应分段
+    ideal_k = max(2, round(total_len / 11.5))
+    ideal_left = max(min_chunk, min(max_chars, round(total_len / ideal_k)))
 
     best_idx = -1
     best_score = -999999.0
@@ -71,34 +143,54 @@ def find_best_split_point(
         left_text = "".join(w.get("word", "") for w in words[:i + 1])
         right_text = "".join(w.get("word", "") for w in words[i + 1:])
 
+        # 绝对防线 1：严禁拆解专有名词与固定搭配（如"了解"、"科目二"）
         if is_breaking_inseparable_word(left_text, right_text):
             continue
 
-        # 核心防线 1：禁止以弱连词/介词作为前半句句尾（彻底杜绝连词挂尾与语义断裂）
-        if any(left_text.endswith(d) for d in DANGLING_CONJUNCTIONS):
+        # 绝对防线 2：严禁未完句尾（弱连词/介词/悬挂动词如"和"、"在"、"来"）
+        if is_incomplete_tail(left_text):
             continue
 
         w_curr = words[i]
         w_next = words[i + 1]
         gap = max(0.0, float(w_next.get("start", 0.0)) - float(w_curr.get("end", 0.0)))
 
-        score = 100.0 - 4.0 * abs(curr_len - ideal_left)
+        # 基础长度得分：越接近黄金目标字数得分越高
+        score = 100.0 - 2.5 * abs(curr_len - ideal_left)
 
-        if any(right_text.startswith(st) for st in CLAUSE_STARTERS):
-            score += 50.0
-        if any(left_text.endswith(ed) for ed in CLAUSE_ENDERS):
+        # 黄金意群字数区间 [8, 13] 给予强力鼓励
+        if 8 <= curr_len <= 13:
+            score += 35.0
+        elif 6 <= curr_len <= 14:
             score += 20.0
+        elif curr_len <= max_chars:
+            score += 10.0
+
+        # 自然标点断句奖励（标点符号是最高优先级断句点）
+        if any(p in w_curr.get("word", "") for p in PUNCTUATION_CHARS):
+            score += 500.0
+
+        # 语法意群前缀与句尾奖励
+        if any(right_text.startswith(st) for st in CLAUSE_STARTERS):
+            score += 70.0
+        if any(left_text.endswith(ed) for ed in CLAUSE_ENDERS):
+            score += 50.0
 
         # 声学停顿优先加分：短视频停顿 >= 0.25s 意味着极其明确的停顿断句点
         score += min(60.0, gap * 200.0)
-        if gap >= 0.3:
+        if gap >= 0.25:
             score += 40.0
 
-        if curr_len <= max_chars and rem_len <= soft_max:
-            score += 40.0
+        # 边界与超长约束
         if curr_len > max_chars:
-            score -= 50.0 * (curr_len - max_chars)
-        if rem_len > soft_max:
+            score -= 100.0 * (curr_len - max_chars)
+
+        # 剩余长度规划：若剩余长度能够再次健康切分（>= 12），不进行严厉惩罚
+        if rem_len <= soft_max:
+            score += 25.0
+        elif rem_len >= min_chunk * 2:
+            score += 15.0
+        else:
             score -= 20.0 * (rem_len - soft_max)
 
         if score > best_score:
@@ -122,7 +214,16 @@ def split_words_to_safe_chunks(
     if idx == -1:
         idx = find_best_split_point(words, min_chunk=2, max_chars=max_chars, soft_max=soft_max)
         if idx == -1:
-            return [words]
+            # 兜底硬保 max_chars 安全防线，避免折行
+            curr_acc = 0
+            best_fallback_idx = 0
+            for wi, w in enumerate(words):
+                curr_acc += len(w.get("word", ""))
+                if curr_acc <= max_chars:
+                    best_fallback_idx = wi
+                else:
+                    break
+            idx = max(0, best_fallback_idx)
 
     left_words = words[:idx + 1]
     right_words = words[idx + 1:]
@@ -240,13 +341,6 @@ class ASRRunner:
         if soft_max is None:
             soft_max = max(max_chars + 2, 18) if max_chars >= 18 else max_chars
 
-        CONJ_PATTERN = re.compile(r'^(还|而且|并且|但是|或者|然后|如果|因为|所以|比如|还有|另外|特别是|像|在|从|到|让|可以说是|也就是|大家)')
-        # 中文自然意群切分正则：在语气词后、或在自然引词/连词前断句（防御性负向前瞻避免拆开"像我们在"等）
-        split_pattern = re.compile(
-            r'(?<=[呢吧啊吗呀哒哦哈])|'
-            r'(?<!像)(?=(?:我们在|像我们在|像我们|我们|你们|他们|真的没有|真的|其实|大家|如果|但是|而且|然后|只要|不要|因为|所以|比如|另外|可以说是|特别|还跟你说|还跟|还有|或者是))'
-        )
-
         for seg in segments:
             text = (seg.get("corrected_text") or seg.get("raw_text", "")).strip()
             start = seg.get("start_time", 0.0)
@@ -276,71 +370,53 @@ class ASRRunner:
                     refined_segments.append(sub)
                 continue
 
-            # 方案 B：无词级时间戳，采用自然语法意群与标点智能切分（彻底废除 chunk_len=10 机械截断）
+            # 方案 B：无词级时间戳，采用自然语法意群与标点智能切分
             raw_clauses = [c.strip() for c in re.split(r'[,，;；!！?？。、\s]+', text) if c.strip()]
-            final_sub_chunks = []
-            for clause in raw_clauses:
+            if not raw_clauses:
+                raw_clauses = [text]
+
+            total_clean_chars = sum(len(c) for c in raw_clauses)
+            cur_clause_start = start
+
+            for c_idx, clause in enumerate(raw_clauses):
+                clause_dur = duration * (len(clause) / max(1, total_clean_chars))
+                clause_end = end if c_idx == len(raw_clauses) - 1 else round(cur_clause_start + clause_dur, 3)
+
                 if len(clause) <= soft_max:
-                    final_sub_chunks.append(clause)
+                    sub_seg = dict(seg)
+                    sub_seg["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                    sub_seg["start_time"] = round(cur_clause_start, 3)
+                    sub_seg["end_time"] = round(clause_end, 3)
+                    sub_seg["raw_text"] = clause
+                    sub_seg["corrected_text"] = clause
+                    refined_segments.append(sub_seg)
                 else:
-                    parts = [p.strip() for p in split_pattern.split(clause) if p and p.strip()]
-                    expanded_parts = []
-                    for p in parts:
-                        if len(p) <= soft_max:
-                            expanded_parts.append(p)
-                        else:
-                            # 尝试按常见助词/介词切分
-                            sub_pieces = [sp for sp in re.split(r'(?<=[的了在和与到去及以从向])', p) if sp]
-                            temp = ""
-                            for sp in sub_pieces:
-                                if not temp:
-                                    temp = sp
-                                elif len(temp) + len(sp) <= max_chars:
-                                    temp += sp
-                                else:
-                                    expanded_parts.append(temp)
-                                    temp = sp
-                            if temp:
-                                expanded_parts.append(temp)
-                    final_parts = []
-                    for ep in expanded_parts:
-                        while len(ep) > max_chars + 2:
-                            split_idx = max_chars
-                            final_parts.append(ep[:split_idx])
-                            ep = ep[split_idx:]
-                        if ep:
-                            final_parts.append(ep)
+                    # 子分句超长，合成字符级词时间戳，统一复用不可分词与防连词挂尾保护的安全切分算法
+                    clean_chars = list(clause)
+                    dur_c = max(0.2, clause_end - cur_clause_start)
+                    step = dur_c / max(1, len(clean_chars))
+                    cur_t = cur_clause_start
+                    synth_words = []
+                    for ch in clean_chars:
+                        tok_end = round(cur_t + step, 3)
+                        synth_words.append({"word": ch, "start": round(cur_t, 3), "end": tok_end})
+                        cur_t = tok_end
 
-                    curr = ""
-                    for p in final_parts:
-                        if not curr:
-                            curr = p
-                        elif len(curr) + len(p) <= max_chars:
-                            curr += p
-                        else:
-                            final_sub_chunks.append(curr)
-                            curr = p
-                    if curr:
-                        final_sub_chunks.append(curr)
+                    word_chunks = split_words_to_safe_chunks(synth_words, min_chunk=min_chunk, max_chars=max_chars, soft_max=soft_max)
+                    for c_words in word_chunks:
+                        w_text = "".join(x.get("word", "") for x in c_words).strip()
+                        if not w_text:
+                            continue
+                        sub = dict(seg)
+                        sub["id"] = f"{seg.get('id', 'seg')}_{len(refined_segments)}"
+                        sub["start_time"] = round(float(c_words[0].get("start", cur_clause_start)), 3)
+                        sub["end_time"] = round(float(c_words[-1].get("end", clause_end)), 3)
+                        sub["raw_text"] = w_text
+                        sub["corrected_text"] = w_text
+                        sub["words"] = list(c_words)
+                        refined_segments.append(sub)
 
-            if not final_sub_chunks:
-                refined_segments.append(seg)
-                continue
-
-            total_chars = sum(len(c) for c in final_sub_chunks)
-            curr_time = start
-            for i, chunk in enumerate(final_sub_chunks):
-                chunk_dur = duration * (len(chunk) / max(1, total_chars))
-                chunk_end = end if i == len(final_sub_chunks) - 1 else curr_time + chunk_dur
-
-                sub_seg = dict(seg)
-                sub_seg["id"] = f"{seg.get('id', 'seg')}_{i}"
-                sub_seg["start_time"] = round(curr_time, 3)
-                sub_seg["end_time"] = round(chunk_end, 3)
-                sub_seg["raw_text"] = chunk
-                sub_seg["corrected_text"] = chunk
-                refined_segments.append(sub_seg)
-                curr_time = chunk_end
+                cur_clause_start = clause_end
 
         # 拆分后紧接着执行短句碎片平滑合并（保护连续呼吁词如"评论区找我聊一下吧"）
         return self.merge_short_segments(refined_segments, max_chars=max_chars)
@@ -370,6 +446,20 @@ class ASRRunner:
             dur = s.get("end_time", 0.0) - s.get("start_time", 0.0)
             return len(s.get("raw_text", "").strip()) <= min_chars or dur < min_duration
 
+        def is_retake_guard(text1: str, text2: str) -> bool:
+            clean1 = re.sub(r'[^\w\u4e00-\u9fa5]', '', text1)
+            clean2 = re.sub(r'[^\w\u4e00-\u9fa5]', '', text2)
+            if not clean1 or not clean2:
+                return False
+            min_l = min(len(clean1), len(clean2))
+            if min_l >= 2:
+                check_len = min(min_l, 4)
+                if clean1[:check_len] == clean2[:check_len]:
+                    return True
+                if clean2.startswith(clean1) or clean1.startswith(clean2):
+                    return True
+            return False
+
         # 第一轮：短片段优先向后连续吸收相邻短片段
         pass1: List[Dict[str, Any]] = []
         i = 0
@@ -380,6 +470,11 @@ class ASRRunner:
             while i + 1 < len(segments):
                 nxt = segments[i + 1]
                 nxt_text = nxt.get("raw_text", "").strip()
+
+                # 重读阻断守卫：前缀重复疑似口误重读时，严禁粘联合并，保持独立切片交由粗剪引擎判断
+                if is_retake_guard(curr_text, nxt_text):
+                    break
+
                 gap = round(nxt.get("start_time", 0.0) - curr.get("end_time", 0.0), 3)
                 prev_ended = bool(re.search(r'[。？！?!]$', curr_text))
 
@@ -391,10 +486,14 @@ class ASRRunner:
                 is_curr_short = len(curr_text) <= min_chars or dur_curr < min_duration
                 is_nxt_short = len(nxt_text) <= min_chars or dur_nxt < min_duration
 
-                if not prev_ended and 0 <= gap <= max_gap and combined_len <= max_chars and combined_dur <= max_duration:
-                    if is_curr_short or is_nxt_short:
-                        # 如果当前已是字数时长健康的完整句子(>=8字且>=1.5s)，且后续连续皆为短片段，留给后续短片段自主聚合
-                        if not is_curr_short and i + 2 < len(segments) and is_nxt_short and is_short(segments[i + 2]):
+                is_broken = is_breaking_inseparable_word(curr_text, nxt_text) or is_incomplete_tail(curr_text)
+                allowed_len = max_chars + 2 if is_broken else max_chars
+                allowed_gap = 1.0 if is_broken else max_gap
+
+                if not prev_ended and 0 <= gap <= allowed_gap and combined_len <= allowed_len and combined_dur <= max_duration:
+                    if is_curr_short or is_nxt_short or is_broken:
+                        # 如果当前已是字数时长健康的完整句子且后续连续皆为短片段，留给后续短片段自主聚合
+                        if not is_broken and not is_curr_short and i + 2 < len(segments) and is_nxt_short and is_short(segments[i + 2]):
                             break
 
                         curr["end_time"] = nxt.get("end_time", curr["end_time"])
@@ -432,6 +531,12 @@ class ASRRunner:
             prev = pass2[-1]
             prev_text = prev.get("raw_text", "").strip()
             curr_text = s.get("raw_text", "").strip()
+
+            # 重读阻断守卫：前缀重复时避免被前句逆向吸附
+            if is_retake_guard(prev_text, curr_text):
+                pass2.append(dict(s))
+                continue
+
             gap = round(s.get("start_time", 0.0) - prev.get("end_time", 0.0), 3)
             prev_ended = bool(re.search(r'[。？！?!]$', prev_text))
             combined_len = len(prev_text) + len(curr_text)
@@ -439,10 +544,12 @@ class ASRRunner:
 
             dur = s.get("end_time", 0.0) - s.get("start_time", 0.0)
             is_lone_micro = len(curr_text) <= min_chars or dur < min_duration
+            is_broken = is_breaking_inseparable_word(prev_text, curr_text) or is_incomplete_tail(prev_text)
 
-            # 为孤立微碎片词设置微弹性字数上限 (max_chars + 2，如 20 字)，确保诸如 18 + 1 的孤儿能被强力吸附
-            micro_limit = max_chars + 2 if is_lone_micro else max_chars
-            if not prev_ended and 0 <= gap <= max_gap and combined_len <= micro_limit and combined_dur <= max_duration and is_lone_micro:
+            # 为孤立微碎片词或被切断词设置弹性字数上限与停顿放宽
+            micro_limit = max_chars + 2 if (is_lone_micro or is_broken) else max_chars
+            allowed_gap = 1.0 if is_broken else max_gap
+            if not prev_ended and 0 <= gap <= allowed_gap and combined_len <= micro_limit and combined_dur <= max_duration and (is_lone_micro or is_broken):
                 prev["end_time"] = s.get("end_time", prev["end_time"])
                 prev["raw_text"] = prev_text + curr_text
                 prev["corrected_text"] = prev.get("corrected_text", prev_text) + s.get("corrected_text", curr_text)
@@ -580,14 +687,22 @@ class ASRRunner:
             gap = max(0.0, next_start - end)
             curr_len = sum(len(x["word"]) for x in current_words)
 
-            # 语义断句：优先基于标点（纯标点或词尾附带标点）、明显声学停顿（>=0.28s）、语气词停顿
+            # 语义断句：优先基于标点（纯标点或词尾附带标点）、明显声学停顿（>=0.40s 且 >=8字）、语气词停顿
             # 彻底废除 curr_len >= 14 的机械硬切，超长句交由 split_into_readable_segments 按语法意群切分
             should_break = (
                 is_pure_punct or
                 has_trailing_punct or
-                (gap >= 0.28 and curr_len >= 5) or
-                (curr_len >= 6 and ((gap >= 0.15 and text[-1:] in "呢吧啊吗呀啦哒哦哈") or (clean_word and clean_word[-1:] in "呢吧啊吗呀啦哒哦哈" and gap >= 0.12)))
+                (gap >= 0.40 and curr_len >= 8) or
+                (curr_len >= 6 and gap >= 0.20 and (text[-1:] in "呢吧啊吗呀啦哒哦哈" or (clean_word and clean_word[-1:] in "呢吧啊吗呀啦哒哦哈")))
             )
+
+            # 语义完整性守卫：严禁在不可分词中间就地断开（如"想要了/解"），避免碎片化
+            if should_break and idx + 1 < len(flat_segments):
+                next_tok = flat_segments[idx + 1].get("text", "")
+                next_clean = re.sub(r'[,，;；!！?？。、\s]', '', next_tok)
+                curr_tail = "".join(x["word"] for x in current_words)
+                if is_breaking_inseparable_word(curr_tail, next_clean):
+                    should_break = False
             if should_break and current_words:
                 clause_text = "".join(x["word"] for x in current_words).strip()
                 clause_text = re.sub(r'[,，;；!！?？。、\s]+$', '', clause_text).strip()

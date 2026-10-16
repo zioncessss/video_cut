@@ -111,13 +111,45 @@ export class EngineManager {
     const currentDb = resolve(this.storageDir, 'videocut.db');
     const isCurrentDbEmpty = !existsSync(currentDb) || (statSync(currentDb).size <= 90 * 1024);
 
-    if (isCurrentDbEmpty && persistentBackupDir && existsSync(resolve(persistentBackupDir, 'videocut.db'))) {
-      const backupDb = resolve(persistentBackupDir, 'videocut.db');
-      if (statSync(backupDb).size > 90 * 1024) {
+    if (isCurrentDbEmpty) {
+      // 多路径自动探查候选数据源：
+      // 1. 系统独立持久存储区 (%LOCALAPPDATA%\videocut_persistent_storage)
+      // 2. 本地开发/已有工程目录 (D:\project\video_cut\storage 或 resolve(projectRoot, '../../storage'))
+      // 3. 用户数据目录 (app.getPath('userData')/storage)
+      const candidateDirs: string[] = [];
+      if (persistentBackupDir) candidateDirs.push(persistentBackupDir);
+      candidateDirs.push('D:\\project\\video_cut\\storage');
+      try {
+        candidateDirs.push(resolve(projectRoot, '../../storage'));
+        candidateDirs.push(resolve(app.getPath('userData'), 'storage'));
+      } catch {}
+
+      let bestCandidate: string | null = null;
+      let maxDbSize = 90 * 1024;
+      for (const cand of candidateDirs) {
+        if (!existsSync(cand)) continue;
+        if (resolve(cand) === resolve(this.storageDir)) continue;
+        const candDb = resolve(cand, 'videocut.db');
+        if (existsSync(candDb)) {
+          const s = statSync(candDb).size;
+          if (s > maxDbSize) {
+            maxDbSize = s;
+            bestCandidate = cand;
+          }
+        }
+      }
+
+      if (bestCandidate) {
         try {
-          console.log(`[EngineManager] 当前数据目录为空，自动从持久备份区 ${persistentBackupDir} 恢复用户工程与素材...`);
-          cpSync(persistentBackupDir, this.storageDir, { recursive: true });
+          console.log(`[EngineManager] 当前数据目录为空，自动从数据源 ${bestCandidate} (DB大小: ${(maxDbSize / 1024).toFixed(1)}KB) 自愈恢复用户工程与素材...`);
+          cpSync(bestCandidate, this.storageDir, { recursive: true });
           console.log(`[EngineManager] 用户数据自愈恢复完成！`);
+          // 同时备份到持久备份区，建立金牌安全存档
+          if (persistentBackupDir && resolve(bestCandidate) !== resolve(persistentBackupDir)) {
+            mkdirSync(persistentBackupDir, { recursive: true });
+            cpSync(bestCandidate, persistentBackupDir, { recursive: true });
+            console.log(`[EngineManager] 已同步写入持久备份区 ${persistentBackupDir}`);
+          }
         } catch (e) {
           console.warn('[EngineManager] 自动恢复备份数据失败:', e);
         }

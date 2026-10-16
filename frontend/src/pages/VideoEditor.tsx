@@ -34,7 +34,9 @@ import {
   CoverDesignConfig,
   SuggestedCoverTitle,
   deleteMaterial,
-  deleteProjectByMaterial
+  deleteProjectByMaterial,
+  splitSubtitle,
+  mergeNextSubtitle
 } from '../services/api';
 import { ExportConfirmModal } from '../components/ExportConfirmModal';
 import { formatRegionBadge } from '../constants/regions';
@@ -159,7 +161,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
   const [settingCover, setSettingCover] = useState<boolean>(false);
   const coverFileInputRef = useRef<HTMLInputElement>(null);
   const [outputTimestamp, setOutputTimestamp] = useState<number>(Date.now());
-  const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('interactive');
+  const [previewMode, setPreviewMode] = useState<'interactive' | 'rendered'>('rendered');
   const [isPlayerEnlarged, setIsPlayerEnlarged] = useState<boolean>(false);
 
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
@@ -261,11 +263,10 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
           setOutputTimestamp(Date.now());
-          setPreviewMode('rendered');
         } else {
           setOutputVideoUrl('');
-          setPreviewMode('interactive');
         }
+        setPreviewMode('rendered');
         setIsCachedProject(true);
         setAiFeedback(`已秒级载入工程 ${proj.title}（共 ${proj.subtitles?.length || 0} 句字幕，${proj.broll_replacements?.length || 0} 处分镜）`);
       }
@@ -319,11 +320,10 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           const mediaUrl = getMediaUrl(proj.output_video_path);
           setOutputVideoUrl(mediaUrl);
           setOutputTimestamp(Date.now());
-          setPreviewMode('rendered');
         } else {
           setOutputVideoUrl('');
-          setPreviewMode('interactive');
         }
+        setPreviewMode('rendered');
         setIsCachedProject(true);
         setAiFeedback(`已秒级载入工程磁盘缓存（共 ${proj.subtitles?.length || 0} 句字幕，${proj.broll_replacements?.length || 0} 处分镜）`);
         return;
@@ -541,10 +541,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         const mediaUrl = getMediaUrl(res.output_video_path);
         setOutputVideoUrl(mediaUrl);
         setOutputTimestamp(Date.now());
-        setPreviewMode('rendered');
-      } else {
-        setPreviewMode('interactive');
       }
+      setPreviewMode('rendered');
       setIsCachedProject(true);
 
       if (res.last_engine_used) {
@@ -614,7 +612,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         const costStr = res.data.latency_ms ? `，耗时 ${Math.round(res.data.latency_ms)}ms` : '';
         setAiFeedback(`智能分镜编排完成！已通过 ${res.data.engine_used} 匹配 ${res.data.broll_replacements?.length || 0} 个空镜分镜（约 65% 黄金覆盖率${costStr}）。`);
       }
-      setPreviewMode('interactive');
+      setPreviewMode('rendered');
+      setHasUnrenderedChanges(true);
     } catch (err: any) {
       showAlert({
         title: '分镜编排失败',
@@ -662,16 +661,43 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
+  // 将紧凑时间轴时间反向映射到原始素材绝对时间戳
+  const mapCompactToRawTime = (compactTime: number, spans: PruneSpan[]): number => {
+    const activeSpans = (spans || []).filter(s => s.is_active).sort((a, b) => a.start_time - b.start_time);
+    if (activeSpans.length === 0) return compactTime;
+
+    let accumulatedCompact = 0;
+    let prevRawEnd = 0;
+
+    for (const span of activeSpans) {
+      const keptDur = span.start_time - prevRawEnd;
+      if (keptDur > 0) {
+        if (compactTime <= accumulatedCompact + keptDur) {
+          return Number((prevRawEnd + (compactTime - accumulatedCompact)).toFixed(2));
+        }
+        accumulatedCompact += keptDur;
+      }
+      prevRawEnd = span.end_time;
+    }
+
+    return Number((prevRawEnd + (compactTime - accumulatedCompact)).toFixed(2));
+  };
+
   // 单句文本不可变更新 + 500ms 防抖提交
   const handleTextChange = (idx: number, newText: string) => {
     if (previewMode === 'rendered') {
       setHasUnrenderedChanges(true);
     }
+    const targetSub = subtitles[idx];
     const updated = subtitles.map((s, i) =>
       i === idx ? { ...s, corrected_text: newText, is_manual_edited: true } : s
     );
+    const updatedCompact = compactSubtitles.map(cs =>
+      cs.id === targetSub?.id ? { ...cs, corrected_text: newText, is_manual_edited: true } : cs
+    );
     latestSubtitlesRef.current = updated;
     setSubtitles(updated);
+    setCompactSubtitles(updatedCompact);
     setSaveStatus('dirty');
     setHasUnrenderedChanges(true);
 
@@ -689,11 +715,16 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     if (previewMode === 'rendered') {
       setHasUnrenderedChanges(true);
     }
+    const targetSub = subtitles[idx];
     const updated = subtitles.map((s, i) =>
       i === idx ? { ...s, highlight_words: words as any, is_manual_edited: true } : s
     );
+    const updatedCompact = compactSubtitles.map(cs =>
+      cs.id === targetSub?.id ? { ...cs, highlight_words: words as any, is_manual_edited: true } : cs
+    );
     latestSubtitlesRef.current = updated;
     setSubtitles(updated);
+    setCompactSubtitles(updatedCompact);
     setSaveStatus('dirty');
     setHasUnrenderedChanges(true);
 
@@ -727,10 +758,232 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
           setCompactSubtitles(res.compact_subtitles);
         }
         setHasUnrenderedChanges(true);
-        showToast(res.is_pruned ? '已标记剔除该片段' : '已恢复该片段', 'info');
+        showToast(res.is_pruned ? '已标记剔除该片段（已从时间轴移除）' : '已恢复该片段至成片时间轴', 'info');
       }
     } catch (e: any) {
       showAlert('切换剔除状态失败: ' + (e.message || '网络异常'));
+    }
+  };
+
+  // T013: 字幕起止时间微调（接收紧凑成片时间，双轴无缝转换落库）
+  const handleTimeRangeChange = (index: number, start: number, end: number) => {
+    if (previewMode === 'rendered') {
+      setHasUnrenderedChanges(true);
+    }
+    const rawStart = mapCompactToRawTime(start, pruneSpans);
+    const rawEnd = mapCompactToRawTime(end, pruneSpans);
+
+    const targetSub = subtitles[index];
+    const updated = subtitles.map((s, i) =>
+      i === index ? { ...s, start_time: rawStart, end_time: rawEnd, is_manual_edited: true } : s
+    );
+    const updatedCompact = compactSubtitles.map((cs) =>
+      cs.id === targetSub?.id ? { ...cs, start_time: start, end_time: end, is_manual_edited: true } : cs
+    );
+
+    latestSubtitlesRef.current = updated;
+    setSubtitles(updated);
+    setCompactSubtitles(updatedCompact);
+    setSaveStatus('dirty');
+    setHasUnrenderedChanges(true);
+
+    if (!projectId) return;
+    if (subtitleSaveTimeoutRef.current) {
+      clearTimeout(subtitleSaveTimeoutRef.current);
+    }
+    subtitleSaveTimeoutRef.current = setTimeout(async () => {
+      await commitSubtitlesSave(updated);
+    }, 500);
+  };
+
+  // T013: 任意时间段插入新字幕
+  const handleAddSubtitle = (insertAfterIndex: number) => {
+    if (previewMode === 'rendered') {
+      setHasUnrenderedChanges(true);
+    }
+    let start = Number(currentTime.toFixed(2));
+    let end = Number((start + 2.0).toFixed(2));
+
+    const activeSubs = subtitles.filter(s => !s.is_pruned);
+    if (insertAfterIndex >= 0 && insertAfterIndex < activeSubs.length) {
+      const prevSub = activeSubs[insertAfterIndex];
+      const prevCompact = compactSubtitles.find(cs => cs.id === prevSub.id);
+      const nextSub = activeSubs[insertAfterIndex + 1];
+      const nextCompact = nextSub ? compactSubtitles.find(cs => cs.id === nextSub.id) : null;
+      const prevEnd = prevCompact ? prevCompact.end_time : prevSub.end_time;
+      start = Number((prevEnd + 0.05).toFixed(2));
+      const nextStart = nextCompact ? nextCompact.start_time : (nextSub ? nextSub.start_time : start + 2.0);
+      const availableGap = nextStart - start;
+      if (availableGap >= 0.8) {
+        end = Number(Math.min(nextStart - 0.05, start + 2.0).toFixed(2));
+      } else {
+        // 当间隙不足 0.8s 时，保证新增字幕至少具有 1.2s 时长，避免产生 0.04s 极短碎片段
+        end = Number((start + 1.20).toFixed(2));
+      }
+    }
+
+    const rawStart = mapCompactToRawTime(start, pruneSpans);
+    const rawEnd = mapCompactToRawTime(end, pruneSpans);
+    const newId = 'sub_' + Date.now();
+
+    const newRawSub: SubtitleItem = {
+      id: newId,
+      start_time: rawStart,
+      end_time: rawEnd,
+      raw_text: '',
+      corrected_text: '新字幕文本',
+      matched_keywords: [],
+      highlight_words: [],
+      is_manual_edited: true,
+      is_pruned: false,
+    };
+
+    const newCompactSub: SubtitleItem = {
+      ...newRawSub,
+      start_time: start,
+      end_time: end,
+    };
+
+    let updatedSubtitles: SubtitleItem[] = [];
+    if (insertAfterIndex >= 0 && insertAfterIndex < subtitles.length) {
+      updatedSubtitles = [
+        ...subtitles.slice(0, insertAfterIndex + 1),
+        newRawSub,
+        ...subtitles.slice(insertAfterIndex + 1),
+      ];
+    } else {
+      updatedSubtitles = [...subtitles, newRawSub].sort((a, b) => a.start_time - b.start_time);
+    }
+
+    const updatedCompact = [...compactSubtitles, newCompactSub].sort((a, b) => a.start_time - b.start_time);
+
+    latestSubtitlesRef.current = updatedSubtitles;
+    setSubtitles(updatedSubtitles);
+    setCompactSubtitles(updatedCompact);
+    setSaveStatus('dirty');
+    setHasUnrenderedChanges(true);
+
+    if (!projectId) return;
+    if (subtitleSaveTimeoutRef.current) {
+      clearTimeout(subtitleSaveTimeoutRef.current);
+    }
+    subtitleSaveTimeoutRef.current = setTimeout(async () => {
+      await commitSubtitlesSave(updatedSubtitles);
+    }, 500);
+  };
+
+  // 字幕智能拆分处理：调用后端拆分端点，落库权威 SQLite 并同步刷新紧凑时间轴
+  const handleSplitSubtitle = async (
+    index: number,
+    sub: SubtitleItem,
+    splitData?: { part1Text?: string; part2Text?: string; splitTime?: number }
+  ) => {
+    if (!projectId || !sub.id) return;
+    if (previewMode === 'rendered') {
+      setHasUnrenderedChanges(true);
+    }
+    try {
+      const res = await splitSubtitle(projectId, sub.id, {
+        part1_text: splitData?.part1Text,
+        part2_text: splitData?.part2Text,
+        split_time: splitData?.splitTime,
+        is_compact_time: true
+      });
+      if (res && res.success) {
+        latestSubtitlesRef.current = res.subtitles;
+        setSubtitles(res.subtitles);
+        if (res.compact_subtitles) {
+          setCompactSubtitles(res.compact_subtitles);
+        }
+        setSaveStatus('saved');
+        setHasUnrenderedChanges(true);
+        showAlert({
+          title: '拆分成功',
+          message: '已成功将字幕拆分为 2 段（时间戳连续且高亮词无损继承）',
+          type: 'success'
+        });
+      }
+    } catch (e: any) {
+      console.error('Split subtitle error:', e);
+      showAlert({
+        title: '拆分失败',
+        message: '拆分字幕失败: ' + (e?.response?.data?.detail || e.message || '网络异常'),
+        type: 'error'
+      });
+    }
+  };
+
+  // 字幕无缝合并处理：将当前句与下一句合并为单句
+  const handleMergeNextSubtitle = async (index: number, sub: SubtitleItem) => {
+    if (!projectId || !sub.id) return;
+    if (previewMode === 'rendered') {
+      setHasUnrenderedChanges(true);
+    }
+    try {
+      const res = await mergeNextSubtitle(projectId, sub.id);
+      if (res && res.success) {
+        latestSubtitlesRef.current = res.subtitles;
+        setSubtitles(res.subtitles);
+        if (res.compact_subtitles) {
+          setCompactSubtitles(res.compact_subtitles);
+        }
+        setSaveStatus('saved');
+        setHasUnrenderedChanges(true);
+        showAlert({
+          title: '合并成功',
+          message: '已成功将当前字幕与下一句合并为单句',
+          type: 'success'
+        });
+      }
+    } catch (e: any) {
+      showAlert({
+        title: '合并失败',
+        message: '合并字幕失败: ' + (e?.response?.data?.detail || e.message || '网络异常'),
+        type: 'error'
+      });
+    }
+  };
+
+  // T012: 分镜空镜关联与截取调整
+  const handleBrollChange = async (newBroll: BrollReplacement | null, subId: string) => {
+    if (previewMode === 'rendered') {
+      setHasUnrenderedChanges(true);
+    }
+    let updatedBrolls = [...brolls];
+    if (!newBroll) {
+      const sub = subtitles.find(s => s.id === subId);
+      updatedBrolls = updatedBrolls.filter(b => b.id !== sub?.broll_material_id && b.material_id !== sub?.broll_material_id && !(sub && Math.abs(b.start_time - sub.start_time) < 0.15));
+    } else {
+      const idx = updatedBrolls.findIndex(b => b.id === newBroll.id || Math.abs(b.start_time - newBroll.start_time) < 0.15);
+      if (idx >= 0) {
+        updatedBrolls[idx] = newBroll;
+      } else {
+        updatedBrolls.push(newBroll);
+      }
+    }
+    setBrolls(updatedBrolls);
+
+    const updatedSubs = subtitles.map(s =>
+      s.id === subId ? { ...s, broll_material_id: newBroll ? newBroll.material_id : null } : s
+    );
+    latestSubtitlesRef.current = updatedSubs;
+    setSubtitles(updatedSubs);
+    setSaveStatus('dirty');
+    setHasUnrenderedChanges(true);
+
+    if (!projectId) return;
+    try {
+      setSaveStatus('saving');
+      await updateProjectSubtitles(projectId, updatedSubs, updatedBrolls, pruneSpans);
+      setSaveStatus('saved');
+      setLastSavedAt(Date.now());
+      if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+      saveStatusTimerRef.current = setTimeout(() => {
+        setSaveStatus(prev => (prev === 'saved' ? 'idle' : prev));
+      }, 3000);
+    } catch (e) {
+      console.error('Failed to save broll update', e);
+      setSaveStatus('error');
     }
   };
 
@@ -853,9 +1106,9 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
     }
   };
 
-  // 重新合成：仅作为剪辑台调整字幕/策略/分镜时的日常预览压制，绝对不做违禁词处理，不弹窗打扰
+  // 重新合成：仅作为剪辑台调整字幕/策略/分镜时的日常预览压制，绝对不做违禁词处理，不弹窗打扰，不重复压入封面
   const handleRecompose = () => {
-    handleExecuteRender(false);
+    handleExecuteRender(false, undefined, undefined, false, false);
   };
 
   const handleExecuteRender = async (
@@ -1467,35 +1720,17 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
         <div className="col-span-5 h-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
           {/* 极简模式切换与封面工具栏 */}
           <div className="w-full flex items-center justify-between px-1 pb-1.5 text-xs flex-shrink-0">
-            {/* Segmented Switch: 实时编辑 | 成片预览 */}
-            <div className="inline-flex p-0.5 bg-gray-100 rounded-lg border border-gray-200/80">
-              <button
-                type="button"
-                onClick={() => setPreviewMode('interactive')}
-                className={`px-3 py-1 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
-                  previewMode === 'interactive'
-                    ? 'bg-white text-gray-900 shadow-xs font-semibold'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                实时编辑
-              </button>
-              <button
-                type="button"
-                disabled={!outputVideoUrl}
-                onClick={() => setPreviewMode('rendered')}
-                className={`px-3 py-1 rounded-md text-[11px] font-medium transition-all cursor-pointer flex items-center space-x-1 ${
-                  previewMode === 'rendered'
-                    ? 'bg-white text-indigo-600 shadow-xs font-semibold'
-                    : outputVideoUrl
-                    ? 'text-gray-500 hover:text-gray-800'
-                    : 'text-gray-300 cursor-not-allowed'
-                }`}
-                title={outputVideoUrl ? '查看已压制成片' : '尚未导出成片'}
-              >
-                <span>成片预览</span>
-                {outputVideoUrl && <span className="w-1.5 h-1.5 rounded-full bg-indigo-600"></span>}
-              </button>
+            {/* 播放器状态标识 */}
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold text-gray-800">
+                {outputVideoUrl ? '视频成片' : '原始素材'}
+              </span>
+              {outputVideoUrl && (
+                <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  <span>高清压制</span>
+                </span>
+              )}
             </div>
 
             {/* 封面操作与缩略图 */}
@@ -1572,20 +1807,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             </div>
           </div>
 
-          {/* 成片模式下内容已修改告警条 */}
-          {previewMode === 'rendered' && hasUnrenderedChanges && (
+          {/* 内容已修改提醒条 */}
+          {hasUnrenderedChanges && (
             <div className="w-full mb-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300/80 rounded-xl flex items-center justify-between text-[11px] text-amber-900 shadow-xs animate-in fade-in flex-shrink-0">
               <div className="flex items-center space-x-1.5 truncate mr-2">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
-                <span className="truncate font-medium">字幕或策略已修改，当前画面仍为上一版成片</span>
+                <span className="truncate font-medium">字幕或策略已修改，成片尚未同步</span>
               </div>
               <div className="flex items-center space-x-1.5 flex-shrink-0">
-                <button
-                  onClick={() => setPreviewMode('interactive')}
-                  className="px-2 py-0.5 bg-white border border-amber-300 rounded-lg text-amber-800 hover:bg-amber-100 font-medium transition-all cursor-pointer"
-                >
-                  实时预览
-                </button>
                 <button
                   onClick={handleRecompose}
                   disabled={rendering}
@@ -1601,7 +1830,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             videoUrl={currentPreviewUrl}
             brolls={brolls}
             materialsMap={materialsMap}
-            subtitles={previewMode === 'rendered' ? (compactSubtitles && compactSubtitles.length > 0 ? compactSubtitles : subtitles) : subtitles}
+            subtitles={compactSubtitles && compactSubtitles.length > 0 ? compactSubtitles : subtitles}
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
             aspectRatio={aspectRatio}
@@ -1609,7 +1838,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
             strategy={strategy}
             onStrategyChange={handleStrategyChange}
             onStrategyCommit={handleStrategyCommit}
-            isRendered={previewMode === 'rendered'}
+            isRendered={true}
             isActive={isActive}
             pruneSpans={pruneSpans}
             isEnlarged={isPlayerEnlarged}
@@ -1655,16 +1884,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({
               <SubtitleList
                 subtitles={subtitles}
                 compactSubtitles={compactSubtitles}
-                isCompactMode={previewMode === 'rendered'}
+                isCompactMode={true}
                 currentTime={currentTime}
                 saveStatus={saveStatus}
                 lastSavedAt={lastSavedAt}
+                materialsMap={materialsMap}
+                brolls={brolls}
+                totalDuration={talkingHeads.find(t => t.id === selectedThId)?.duration || (subtitles.length > 0 ? subtitles[subtitles.length - 1].end_time : 0)}
                 onSelectTime={setCurrentTime}
                 onTextChange={handleTextChange}
                 onTextBlur={handleTextBlur}
                 onHighlightWordsChange={handleHighlightWordsChange}
                 onRetrySave={() => commitSubtitlesSave(latestSubtitlesRef.current)}
                 onTogglePrune={handleTogglePrune}
+                onTimeRangeChange={handleTimeRangeChange}
+                onAddSubtitle={handleAddSubtitle}
+                onSplitSubtitle={handleSplitSubtitle}
+                onMergeNextSubtitle={handleMergeNextSubtitle}
+                onBrollChange={handleBrollChange}
               />
             ) : (
               <StrategyStudio
