@@ -135,24 +135,42 @@ def test_single_pass_direct_render_without_double_encode(tmp_path, monkeypatch):
         calls["jl_cut"] += 1
         # 断言直接传入了 ass 字幕路径，证实是一次性单次全流程压制！
         assert kwargs.get("ass_subtitle_path") is not None, "单次直出必须直接带入 ass_subtitle_path！"
+        assert kwargs.get("clean_base_output_path") is not None, "单次直出必须同时输出 clean_base_output_path 以备后续字幕极速烧录！"
         out_p = kwargs["output_path"]
         out_p.parent.mkdir(parents=True, exist_ok=True)
         out_p.write_bytes(b"fake_single_pass_mp4_bytes")
+        clean_p = kwargs["clean_base_output_path"]
+        clean_p.parent.mkdir(parents=True, exist_ok=True)
+        clean_p.write_bytes(b"fake_clean_base_mp4_bytes")
         return True
 
     def mock_burn(*args, **kwargs):
         calls["fast_burn"] += 1
+        out_p = kwargs["output_path"]
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_bytes(b"fake_fast_burned_mp4_bytes")
         return True
 
     monkeypatch.setattr(composer, "compose_jl_cut", mock_compose)
     monkeypatch.setattr(composer, "burn_subtitles_and_overlay_fast", mock_burn)
 
     try:
+        # 1. 首次渲染：单次全流程直出，同时生成 _clean_base.mp4 与成片
         res = client.post(f"/api/v1/projects/{proj.id}/render?include_cover=false")
         assert res.status_code == 200
-        # 核心断言：必须仅调用 1 次 compose_jl_cut 直出，绝不额外调用 fast_burn 进行二次重编码！
         assert calls["jl_cut"] == 1, f"单次直出必须刚好调用 1 次 compose_jl_cut，实际: {calls['jl_cut']}"
         assert calls["fast_burn"] == 0, f"底包失效时不应触发二次 fast_burn，实际调用了: {calls['fast_burn']}"
+
+        # 2. 修改字幕文本：再次重新合成
+        proj_updated = project_storage_service.get_by_project_id(proj.id)
+        proj_updated.subtitles[0].corrected_text = "第二版全新修改后的字幕"
+        project_storage_service.save_project(proj_updated)
+
+        res2 = client.post(f"/api/v1/projects/{proj.id}/render?include_cover=false")
+        assert res2.status_code == 200
+        # 核心断言：改动字幕时，必须命中 _clean_base.mp4 缓存，仅触发 fast_burn（1~2s），不再全量重编码！
+        assert calls["jl_cut"] == 1, f"改动字幕时严禁重新调用 compose_jl_cut！实际: {calls['jl_cut']}"
+        assert calls["fast_burn"] == 1, f"改动字幕时必须触发极速字幕烧录 fast_burn！实际: {calls['fast_burn']}"
     finally:
         project_storage_service.delete_project_by_material(th.id)
         storage_service.delete_material(th.id)

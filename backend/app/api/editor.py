@@ -2247,12 +2247,19 @@ async def render_project(
                     total_duration=eff_total_dur,
                     ass_subtitle_path=ass_path,
                     strategy=p.strategy.model_dump(),
-                    kept_spans=kept_spans
+                    kept_spans=kept_spans,
+                    clean_base_output_path=clean_base_path
                 )
                 render_cost = round((time.time() - render_start) * 1000, 1)
                 print(f"[render_project] 单次直出完成，耗时: {render_cost}ms")
                 if not direct_ok or not target_burn_output.exists() or target_burn_output.stat().st_size < min_comp_size:
                     raise RuntimeError("单次直出合成产物无效或文件过小")
+
+                if clean_base_path.exists() and clean_base_path.stat().st_size >= min_comp_size:
+                    clean_base_meta_path.write_text(
+                        _json.dumps({"clean_base_fingerprint": clean_base_fp, "rendered_at": time.time()}),
+                        encoding="utf-8"
+                    )
             else:
                 # 命中无字幕底包缓存，继续走极速字幕烧录通道 (1~2s)
                 print(f"[render_project] 命中无字幕高清底包缓存 (fp={clean_base_fp[:10]}), 执行极速字幕分层烧录...")

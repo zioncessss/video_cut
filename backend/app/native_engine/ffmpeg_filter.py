@@ -644,7 +644,8 @@ class FFmpegFilterComposer:
         total_duration: float = 15.0,
         ass_subtitle_path: Optional[Path] = None,
         strategy: Optional[Dict[str, Any]] = None,
-        kept_spans: Optional[List[Any]] = None
+        kept_spans: Optional[List[Any]] = None,
+        clean_base_output_path: Optional[Path] = None
     ) -> bool:
         """
         组装 FFmpeg filter_complex 管道：
@@ -760,6 +761,19 @@ class FFmpegFilterComposer:
                             filter_parts.append(f"{current_v}[b_seg{i}]overlay=0:0:enable='between(t,{b_st:.3f},{b_et:.3f})':eof_action=repeat[v_over{i}];")
                             current_v = f"[v_over{i}]"
 
+            clean_v_tag = None
+            clean_a_map = ["-map", current_a]
+            sub_a_map = ["-map", current_a]
+
+            if clean_base_output_path:
+                clean_base_output_path.parent.mkdir(parents=True, exist_ok=True)
+                clean_v_tag = "[v_clean_export]"
+                filter_parts.append(f"{current_v}split=2{clean_v_tag}[v_for_sub];")
+                filter_parts.append(f"{current_a}asplit=2[a_clean_export][a_sub_export];")
+                current_v = "[v_for_sub]"
+                clean_a_map = ["-map", "[a_clean_export]"]
+                sub_a_map = ["-map", "[a_sub_export]"]
+
             # 烧录 ASS 字幕
             if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
                 escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
@@ -775,15 +789,32 @@ class FFmpegFilterComposer:
                 current_v = "[v_out]"
 
             full_filter = "".join(filter_parts).rstrip(";")
-            audio_maps = ["-map", current_a]
 
             cmd = [
                 "ffmpeg", "-y",
                 "-threads", "0", "-filter_threads", "0",
                 *inputs,
                 "-filter_complex", full_filter,
+            ]
+
+            if clean_base_output_path and clean_v_tag:
+                cmd.extend([
+                    "-map", clean_v_tag,
+                    *clean_a_map,
+                    *self.get_video_encode_args(),
+                    "-c:a", "aac",
+                    "-b:a", "320k",
+                    "-pix_fmt", "yuv420p",
+                    "-color_primaries", "bt709",
+                    "-color_trc", "bt709",
+                    "-colorspace", "bt709",
+                    "-movflags", "+faststart",
+                    str(clean_base_output_path)
+                ])
+
+            cmd.extend([
                 "-map", current_v,
-                *audio_maps,
+                *sub_a_map,
                 *self.get_video_encode_args(),
                 "-c:a", "aac",
                 "-b:a", "320k",
@@ -793,7 +824,7 @@ class FFmpegFilterComposer:
                 "-colorspace", "bt709",
                 "-movflags", "+faststart",
                 str(output_path)
-            ]
+            ])
 
             try:
                 res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
@@ -817,16 +848,29 @@ class FFmpegFilterComposer:
         # 单一视频流快速高清转码管道 (无空镜平替时)
         if not broll_cuts:
             inputs = ["-i", str(talking_head_path)]
+            filter_chain = []
             if not is_sped:
-                filter_chain = [f"[0:v]{th_filter}[v_scaled]"]
-                audio_maps = ["-map", "0:a?"]
+                filter_chain.append(f"[0:v]{th_filter}[v_scaled]")
+                clean_a_map = ["-map", "0:a?"]
+                sub_a_map = ["-map", "0:a?"]
             else:
-                filter_chain = [
-                    f"[0:v]setpts=(1.0/{speed})*PTS,{th_filter}[v_scaled]",
-                    f"[0:a]{_build_atempo_chain(speed)}[a_sped]"
-                ]
-                audio_maps = ["-map", "[a_sped]"]
+                filter_chain.append(f"[0:v]setpts=(1.0/{speed})*PTS,{th_filter}[v_scaled]")
+                if clean_base_output_path:
+                    filter_chain.append(f"[0:a]{_build_atempo_chain(speed)},asplit=2[a_clean_export][a_sub_export]")
+                    clean_a_map = ["-map", "[a_clean_export]"]
+                    sub_a_map = ["-map", "[a_sub_export]"]
+                else:
+                    filter_chain.append(f"[0:a]{_build_atempo_chain(speed)}[a_sped]")
+                    clean_a_map = ["-map", "[a_sped]"]
+                    sub_a_map = ["-map", "[a_sped]"]
             current_v = "[v_scaled]"
+
+            clean_v_tag = None
+            if clean_base_output_path:
+                clean_base_output_path.parent.mkdir(parents=True, exist_ok=True)
+                clean_v_tag = "[v_clean_export]"
+                filter_chain.append(f"{current_v}split=2{clean_v_tag}[v_for_sub]")
+                current_v = "[v_for_sub]"
 
             if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
                 escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
@@ -843,8 +887,26 @@ class FFmpegFilterComposer:
                 "-threads", "0", "-filter_threads", "0",
                 *inputs,
                 "-filter_complex", ";".join(filter_chain),
+            ]
+
+            if clean_base_output_path and clean_v_tag:
+                cmd.extend([
+                    "-map", clean_v_tag,
+                    *clean_a_map,
+                    *self.get_video_encode_args(),
+                    "-c:a", "aac",
+                    "-b:a", "320k",
+                    "-pix_fmt", "yuv420p",
+                    "-color_primaries", "bt709",
+                    "-color_trc", "bt709",
+                    "-colorspace", "bt709",
+                    "-movflags", "+faststart",
+                    str(clean_base_output_path)
+                ])
+
+            cmd.extend([
                 "-map", current_v,
-                *audio_maps,
+                *sub_a_map,
                 *self.get_video_encode_args(),
                 "-c:a", "aac",
                 "-b:a", "320k",
@@ -854,7 +916,7 @@ class FFmpegFilterComposer:
                 "-colorspace", "bt709",
                 "-movflags", "+faststart",
                 str(output_path)
-            ]
+            ])
 
             try:
                 res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=90)
@@ -995,6 +1057,13 @@ class FFmpegFilterComposer:
             current_v = "[v_concat]"
             full_filter = "".join(filter_parts).rstrip(";")
 
+        clean_v_tag = None
+        if clean_base_output_path:
+            clean_base_output_path.parent.mkdir(parents=True, exist_ok=True)
+            clean_v_tag = "[v_clean_export]"
+            full_filter += f";{current_v}split=2{clean_v_tag}[v_for_sub]"
+            current_v = "[v_for_sub]"
+
         if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
             escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
             full_filter += f";{current_v}ass='{escaped_ass}'[v_sub]"
@@ -1007,19 +1076,43 @@ class FFmpegFilterComposer:
             full_filter += f";{current_v}[{overlay_idx}:v]overlay=0:0[v_out]"
             current_v = "[v_out]"
 
+        clean_a_map = ["-map", "0:a"]
+        sub_a_map = ["-map", "0:a"]
         if is_sped:
-            full_filter += f";[0:a]{_build_atempo_chain(speed)}[a_sped]"
-            audio_maps = ["-map", "[a_sped]"]
-        else:
-            audio_maps = ["-map", "0:a"]
+            if clean_base_output_path and clean_v_tag:
+                full_filter += f";[0:a]{_build_atempo_chain(speed)},asplit=2[a_clean_export][a_sub_export]"
+                clean_a_map = ["-map", "[a_clean_export]"]
+                sub_a_map = ["-map", "[a_sub_export]"]
+            else:
+                full_filter += f";[0:a]{_build_atempo_chain(speed)}[a_sped]"
+                clean_a_map = ["-map", "[a_sped]"]
+                sub_a_map = ["-map", "[a_sped]"]
 
         cmd = [
             "ffmpeg", "-y",
             "-threads", "0", "-filter_threads", "0",
             *inputs,
             "-filter_complex", full_filter,
+        ]
+
+        if clean_base_output_path and clean_v_tag:
+            cmd.extend([
+                "-map", clean_v_tag,
+                *clean_a_map,
+                *self.get_video_encode_args(),
+                "-c:a", "aac",
+                "-b:a", "320k",
+                "-pix_fmt", "yuv420p",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                "-colorspace", "bt709",
+                "-movflags", "+faststart",
+                str(clean_base_output_path)
+            ])
+
+        cmd.extend([
             "-map", current_v,
-            *audio_maps,
+            *sub_a_map,
             *self.get_video_encode_args(),
             "-c:a", "aac",
             "-b:a", "320k",
@@ -1029,7 +1122,7 @@ class FFmpegFilterComposer:
             "-colorspace", "bt709",
             "-movflags", "+faststart",
             str(output_path)
-        ]
+        ])
 
         try:
             res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
