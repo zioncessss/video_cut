@@ -25,7 +25,7 @@ jobs:
             arch: arm64
             target: mac-arm64
             name: macOS-AppleSilicon-arm64
-          - os: macos-latest
+          - os: macos-13
             arch: x64
             target: mac-x64
             name: macOS-Intel-x64
@@ -66,6 +66,7 @@ jobs:
           curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffmpeg
           curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffprobe
           chmod +x resources/engine/bin/*
+          chmod +x scripts/*.command resources/*.command 2>/dev/null || true
           echo "FFmpeg binary architecture:"
           file resources/engine/bin/ffmpeg
           file resources/engine/bin/ffprobe
@@ -92,11 +93,20 @@ jobs:
             --hidden-import app.api.materials \
             --hidden-import app.api.editor \
             --hidden-import app.api.batch \
+            --hidden-import app.api.instruction \
+            --hidden-import app.api.system \
+            --hidden-import app.api.settings \
+            --hidden-import app.api.chat \
+            --hidden-import app.harness_bridge.factory \
+            --hidden-import app.harness_bridge.api_engine \
+            --hidden-import app.harness_bridge.codex \
+            --hidden-import app.harness_bridge.zcode \
+            --hidden-import app.harness_bridge.embedded \
             --add-data "$SCHEMA_SRC:app/db" \
             backend/engine_main.py \
             --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
           cp -r build_engine/dist/videocut-engine resources/engine/
-          chmod +x resources/engine/videocut-engine/videocut-engine
+          chmod -R +x resources/engine/videocut-engine
           echo "videocut-engine binary architecture:"
           file resources/engine/videocut-engine/videocut-engine
 
@@ -130,6 +140,15 @@ jobs:
             --hidden-import app.api.materials `
             --hidden-import app.api.editor `
             --hidden-import app.api.batch `
+            --hidden-import app.api.instruction `
+            --hidden-import app.api.system `
+            --hidden-import app.api.settings `
+            --hidden-import app.api.chat `
+            --hidden-import app.harness_bridge.factory `
+            --hidden-import app.harness_bridge.api_engine `
+            --hidden-import app.harness_bridge.codex `
+            --hidden-import app.harness_bridge.zcode `
+            --hidden-import app.harness_bridge.embedded `
             --add-data "$SchemaSrc`;app/db" `
             backend/engine_main.py `
             --distpath build_engine/dist --workpath build_engine/work --specpath build_engine

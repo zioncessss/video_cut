@@ -2480,8 +2480,10 @@ async def render_project(
                         clip_valid = False
 
             if clip_valid:
+                cover_posix = cover_clip.resolve().as_posix().replace("'", "\\'")
+                base_posix = base_comp_path.resolve().as_posix().replace("'", "\\'")
                 concat_list.write_text(
-                    f"file '{cover_clip.resolve().as_posix()}'\nfile '{base_comp_path.resolve().as_posix()}'\n",
+                    f"file '{cover_posix}'\nfile '{base_posix}'\n",
                     encoding="utf-8"
                 )
                 c_concat = subprocess.run([

@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import re
+import sys
 
 def format_timestamp_srt(seconds: float) -> str:
     hrs = int(seconds // 3600)
@@ -179,18 +180,29 @@ def generate_ass_file(
         sub_w_percent = 100
     margin_h = max(24, min(400, int(1080 * (100 - sub_w_percent) / 200)))
 
-    # 字体映射表 (针对 Windows 与跨平台 FFmpeg libass 渲染引擎)
-    # notoserif 选用 Windows 原生高品质中粗宋体 STZhongsong (华文中宋)，彻底解决可变字体 NotoSerifSC-VF.ttf 在 libass 下被回退为 ExtraLight 极细体的缺陷
-    font_family_map = {
-        "notoserif": "STZhongsong",   # 华文中宋 (电影首选，横细竖粗，解决可变字体 ExtraLight Bug)
-        "fangsong": "FangSong",       # 清雅仿宋 (文学剧本文风，挺拔清秀)
-        "songti": "SimSun",           # 经典宋体 (端庄书卷感)
-        "kaiti": "KaiTi",             # 书法楷体 (原图同款 · 叙事温润)
-        "yahei": "Microsoft YaHei",   # 现代清晰黑体
-        "hei": "SimHei",              # 经典黑体
-    }
+    # 字体映射表 (针对 Windows 与 macOS 原生中文字体体系)
+    # Windows 原生选用华文中宋/微软雅黑，macOS 原生选用苹方/宋体/楷体，彻底杜绝缺少系统字体导致回退英文或乱码
     raw_font = str(strat.get("subtitle_font_family") or "notoserif").lower()
-    chosen_font_name = font_family_map.get(raw_font, "STZhongsong")
+    if sys.platform == "darwin":
+        mac_font_family_map = {
+            "notoserif": "Songti SC",
+            "fangsong": "STFangsong",
+            "songti": "Songti SC",
+            "kaiti": "Kaiti SC",
+            "yahei": "PingFang SC",
+            "hei": "PingFang SC",
+        }
+        chosen_font_name = mac_font_family_map.get(raw_font, "PingFang SC")
+    else:
+        font_family_map = {
+            "notoserif": "STZhongsong",   # 华文中宋 (电影首选，横细竖粗，解决可变字体 ExtraLight Bug)
+            "fangsong": "FangSong",       # 清雅仿宋 (文学剧本文风，挺拔清秀)
+            "songti": "SimSun",           # 经典宋体 (端庄书卷感)
+            "kaiti": "KaiTi",             # 书法楷体 (原图同款 · 叙事温润)
+            "yahei": "Microsoft YaHei",   # 现代清晰黑体
+            "hei": "SimHei",              # 经典黑体
+        }
+        chosen_font_name = font_family_map.get(raw_font, "STZhongsong")
 
     enable_hl = strat.get("enable_highlight", True)
     hl_color_hex = strat.get("highlight_color", "#FBBF24")

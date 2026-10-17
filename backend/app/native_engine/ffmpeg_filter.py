@@ -1,6 +1,7 @@
 import subprocess
 import shutil
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -263,6 +264,24 @@ class FFmpegFilterComposer:
             self._cached_encode_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", "0"]
             return list(self._cached_encode_args)
 
+        # 0. 尝试 Apple VideoToolbox (macOS 专属原生硬件加速引擎，极速低功耗)
+        if sys.platform == "darwin":
+            try:
+                test_cmd = [
+                    "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                    "-c:v", "h264_videotoolbox", "-q:v", "65",
+                    "-f", "null", "-"
+                ]
+                res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                if res.returncode == 0:
+                    self._cached_encode_args = [
+                        "-c:v", "h264_videotoolbox",
+                        "-q:v", "65",
+                    ]
+                    return list(self._cached_encode_args)
+            except Exception:
+                pass
+
         # 1. 尝试 AMD AMF (如 AMD Radeon 显卡)
         try:
             test_cmd = [
@@ -341,7 +360,7 @@ class FFmpegFilterComposer:
         if res.returncode == 0:
             return res
 
-        hw_codecs = ("h264_amf", "h264_nvenc", "h264_qsv")
+        hw_codecs = ("h264_amf", "h264_nvenc", "h264_qsv", "h264_videotoolbox")
         used_hw = any(codec in cmd for codec in hw_codecs)
         if used_hw:
             err_str = res.stderr.decode("utf-8", errors="replace")
@@ -363,7 +382,7 @@ class FFmpegFilterComposer:
                     cpu_cmd.extend(self._cached_encode_args)
                     skip = 1
                     for ahead_i in range(idx + 2, min(idx + 12, len(cmd))):
-                        if cmd[ahead_i] in ("-quality", "-rc", "-qp_i", "-qp_p", "-preset", "-cq", "-global_quality"):
+                        if cmd[ahead_i] in ("-quality", "-rc", "-qp_i", "-qp_p", "-preset", "-cq", "-global_quality", "-q:v", "-b:v"):
                             skip += 2
                     continue
                 cpu_cmd.append(arg)

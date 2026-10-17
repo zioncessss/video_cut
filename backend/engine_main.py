@@ -19,16 +19,37 @@ try:
 except Exception as e:
     print(f"[engine_main] multipart import note: {e}")
 
-# 静态导入核心图像/计算依赖与 API 路由，确保 PyInstaller 依赖追踪期无一遗漏
+# 静态导入核心图像/计算依赖与 API 路由、Harness 桥接器，确保 PyInstaller 依赖追踪期无一遗漏
 try:
     import PIL
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
     import cv2
     import numpy
-    from app.api import materials, editor, batch, instruction, system
+    from app.api import materials, editor, batch, instruction, system, settings, chat
+    from app.harness_bridge import factory, api_engine, codex, zcode, embedded
 except Exception as e:
     # 模块缺失直接打印告警
     print(f"[engine_main] Pre-import verification error: {e}")
+
+# macOS / Linux 环境变量与随包 FFmpeg 路径防御强化
+import sys
+from pathlib import Path
+
+if sys.platform == "darwin":
+    mac_paths = ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".cargo" / "bin")]
+    current_path = os.environ.get("PATH", "")
+    for p in mac_paths:
+        if p not in current_path.split(":") and os.path.exists(p):
+            os.environ["PATH"] = f"{p}:{current_path}"
+            current_path = os.environ["PATH"]
+
+# 若从 PyInstaller 冻结目录启动，探查随包 engine/bin 并加入 PATH 头部
+if getattr(sys, "frozen", False):
+    exe_dir = Path(sys.executable).parent
+    bundled_bin = exe_dir.parent / "bin"
+    if bundled_bin.exists():
+        path_sep = ";" if sys.platform == "win32" else ":"
+        os.environ["PATH"] = f"{bundled_bin}{path_sep}{os.environ.get('PATH', '')}"
 
 
 def main() -> None:

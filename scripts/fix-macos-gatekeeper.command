@@ -31,13 +31,20 @@ if [ -d "$APP_PATH" ]; then
     echo "📍 发现应用路径: $APP_PATH (当前 Mac 芯片架构: $CHIP_ARCH)"
     echo ""
     
-    # 架构适配检查：防御 Intel Mac 误下载 arm64 架构安装包
+    # 架构适配检查：防御 Intel 与 Apple Silicon 芯片架构误配
     if [ "$CHIP_ARCH" = "x86_64" ] && [ -f "$APP_PATH/Contents/MacOS/VideoCut" ]; then
         BIN_INFO=$(file "$APP_PATH/Contents/MacOS/VideoCut" 2>/dev/null || true)
         if echo "$BIN_INFO" | grep -q "arm64" && ! echo "$BIN_INFO" | grep -q "x86_64"; then
             echo "❌【严重警告】架构不匹配："
             echo "   您当前使用的是 Intel 芯片 Mac ($CHIP_ARCH)，但下载的是 Apple Silicon (arm64) 版本的 VideoCut！"
             echo "   Intel 芯片无法执行 arm64 程序，请前往 GitHub 下载专属的「x64-mac.dmg」版本！"
+            echo ""
+        fi
+    elif [ "$CHIP_ARCH" = "arm64" ] && [ -f "$APP_PATH/Contents/MacOS/VideoCut" ]; then
+        BIN_INFO=$(file "$APP_PATH/Contents/MacOS/VideoCut" 2>/dev/null || true)
+        if echo "$BIN_INFO" | grep -q "x86_64" && ! echo "$BIN_INFO" | grep -q "arm64"; then
+            echo "💡【温馨提示】您当前使用的是 Apple Silicon (M系列芯片) Mac，但当前应用为 Intel (x64) 版本："
+            echo "   虽然 macOS 可通过 Rosetta 转译运行，但强烈推荐前往 GitHub 下载专属的「arm64-mac.dmg」版本获得原生极致速度！"
             echo ""
         fi
     fi

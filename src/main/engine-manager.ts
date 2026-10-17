@@ -248,6 +248,17 @@ export class EngineManager {
       env.PATH = `${engineBin}${pathSep}${env.PATH ?? ''}`;
     }
 
+    if (process.platform === 'darwin') {
+      // macOS GUI 应用默认 PATH 缺少 Homebrew 与系统工具目录，补齐以防 codex/node/ffmpeg 探测失败
+      const macBinPaths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+      const pathSep = ':';
+      const currentPath = env.PATH || '';
+      const toAdd = macBinPaths.filter((p) => !currentPath.split(':').includes(p) && existsSync(p));
+      if (toAdd.length > 0) {
+        env.PATH = `${currentPath}${currentPath ? pathSep : ''}${toAdd.join(pathSep)}`;
+      }
+    }
+
     this.process = spawn(
       pythonExecutable,
       uvicornArgs,
@@ -309,7 +320,15 @@ export class EngineManager {
         if (process.platform === 'win32' && this.process.pid) {
           spawn('taskkill', ['/pid', String(this.process.pid), '/T', '/F']);
         } else {
-          this.process.kill('SIGTERM');
+          const proc = this.process;
+          proc.kill('SIGTERM');
+          setTimeout(() => {
+            try {
+              if (proc.pid && !proc.killed) {
+                process.kill(proc.pid, 'SIGKILL');
+              }
+            } catch {}
+          }, 1500);
         }
       } catch (err) {
         console.error('[EngineManager] Failed to terminate engine process:', err);

@@ -42,6 +42,10 @@ def _heal_and_restore_storage_if_empty(storage_dir: Path) -> None:
     app_data = os.getenv("APPDATA")
     if app_data:
         candidates.append(Path(app_data) / "videocut" / "storage")
+    import sys
+    if sys.platform == "darwin":
+        candidates.append(Path.home() / "Library" / "Application Support" / "videocut" / "storage")
+        candidates.append(Path.home() / ".videocut" / "storage")
 
     best_candidate: Path | None = None
     max_size = 90 * 1024
@@ -126,11 +130,23 @@ SERVER_PORT = int(os.getenv("VIDEOCUT_PORT", "18888"))
 ZCODE_CLI_PATH = Path(os.getenv("ZCODE_CLI_PATH", r"D:\Program Files\ZCode\resources\glm\zcode.cjs"))
 SETTINGS_FILE = STORAGE_DIR / "settings.json"
 
+def _ensure_mac_tool_paths():
+    import sys
+    if sys.platform == "darwin":
+        mac_paths = ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".cargo" / "bin")]
+        current = os.environ.get("PATH", "")
+        for p in mac_paths:
+            if p not in current.split(":") and os.path.exists(p):
+                os.environ["PATH"] = f"{p}:{current}"
+                current = os.environ["PATH"]
+
 def has_zcode_available() -> bool:
+    _ensure_mac_tool_paths()
     import shutil
     return ZCODE_CLI_PATH.exists() and bool(shutil.which("node"))
 
 def has_codex_available() -> bool:
+    _ensure_mac_tool_paths()
     import shutil
     return bool(shutil.which("codex"))
 

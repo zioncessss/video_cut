@@ -49,7 +49,10 @@ function getAppIcon(): Electron.NativeImage {
 
 function createTray(): void {
   try {
-    const icon = getAppIcon();
+    let icon = getAppIcon();
+    if (process.platform === 'darwin') {
+      icon = icon.resize({ width: 18, height: 18 });
+    }
     tray = new Tray(icon);
     tray.setToolTip('VideoCut 智能剪辑');
     const menu = Menu.buildFromTemplate([
@@ -135,7 +138,67 @@ function createWindow(): void {
   }
 }
 
+function setupApplicationMenu(): void {
+  if (process.platform === 'darwin') {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' }
+        ]
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'selectAll' }
+        ]
+      },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'forceReload' },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' }
+        ]
+      },
+      {
+        label: 'Window',
+        submenu: [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { type: 'separator' },
+          { role: 'front' },
+          { type: 'separator' },
+          { role: 'close' }
+        ]
+      }
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  }
+}
+
 app.whenReady().then(async () => {
+  setupApplicationMenu();
   const projectRoot = app.isPackaged
     ? resolve(process.resourcesPath, '..')
     : resolve(__dirname, '../../');
@@ -153,16 +216,23 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
 
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  app.on('activate', async function () {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      if (!await EngineManager.isEngineRunning()) {
+        try {
+          await EngineManager.startEngine(projectRoot);
+        } catch (e) {
+          console.error('[Main] Activate startEngine failed:', e);
+        }
+      }
+      createWindow();
+    }
   });
 });
 
 app.on('window-all-closed', () => {
   EngineManager.stopEngine();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  app.quit();
 });
 
 app.on('before-quit', () => {
