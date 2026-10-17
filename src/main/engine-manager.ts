@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
@@ -241,11 +241,28 @@ export class EngineManager {
     if (!useSidecar && process.env.NODE_ENV !== 'production') {
       uvicornArgs.push('--reload');
     }
-    if (useSidecar) {
-      // sidecar 模式：随包 ffmpeg/ffprobe 优先于系统 PATH（跨平台分隔符 win 为 ;，mac/linux 为 :）
+    if (isWin) {
+      // Windows 环境：随包 ffmpeg/ffprobe 优先；若缺失则自动探测 WinGet、Chocolatey、Scoop 常见安装路径
+      const userHome = process.env.USERPROFILE || '';
+      const winCandidates = [
+        resolve(resourcesDir, 'engine', 'bin'),
+        resolve(projectRoot, 'resources', 'engine', 'bin'),
+        resolve(userHome, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links'),
+        'C:\\ProgramData\\chocolatey\\bin',
+        resolve(userHome, 'scoop', 'shims'),
+        'C:\\ffmpeg\\bin'
+      ];
+      const pathSep = ';';
+      let currentPath = env.PATH || '';
+      for (const p of winCandidates) {
+        if (existsSync(p) && !currentPath.split(';').includes(p)) {
+          currentPath = `${p}${pathSep}${currentPath}`;
+        }
+      }
+      env.PATH = currentPath;
+    } else if (useSidecar) {
       const engineBin = resolve(resourcesDir, 'engine', 'bin');
-      const pathSep = isWin ? ';' : ':';
-      env.PATH = `${engineBin}${pathSep}${env.PATH ?? ''}`;
+      env.PATH = `${engineBin}:${env.PATH ?? ''}`;
     }
 
     if (process.platform === 'darwin') {
@@ -256,6 +273,34 @@ export class EngineManager {
       const toAdd = macBinPaths.filter((p) => !currentPath.split(':').includes(p) && existsSync(p));
       if (toAdd.length > 0) {
         env.PATH = `${currentPath}${currentPath ? pathSep : ''}${toAdd.join(pathSep)}`;
+      }
+
+      // 自动解除 macOS Gatekeeper 针对内部 engine 及 FFmpeg 二进制的隔离拦截属性 (com.apple.quarantine)
+      try {
+        const engineDir = resolve(resourcesDir, 'engine');
+        if (existsSync(engineDir)) {
+          spawnSync('xattr', ['-dr', 'com.apple.quarantine', engineDir], { stdio: 'ignore' });
+        }
+      } catch (_) {}
+    }
+
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      // 深度防御：确保 sidecar 可执行文件及随包 FFmpeg 具备 0o755 执行权限（防范解压归档丢失 +x）
+      try {
+        if (existsSync(pythonExecutable)) {
+          chmodSync(pythonExecutable, 0o755);
+        }
+        const engineBin = resolve(resourcesDir, 'engine', 'bin');
+        if (existsSync(engineBin)) {
+          const binFiles = readdirSync(engineBin);
+          for (const bf of binFiles) {
+            try {
+              chmodSync(resolve(engineBin, bf), 0o755);
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        console.warn('[EngineManager] Failed to ensure executable permissions:', err);
       }
     }
 

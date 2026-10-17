@@ -80,6 +80,9 @@ jobs:
           SCHEMA_SRC="$PWD/backend/app/db/schema.sql"
           python -m PyInstaller --noconfirm --clean --name videocut-engine \
             --paths backend \
+            --collect-all certifi \
+            --collect-all cv2 \
+            --collect-all PIL \
             --hidden-import uvicorn.logging \
             --hidden-import uvicorn.loops.auto \
             --hidden-import uvicorn.protocols.http.auto \
@@ -105,6 +108,7 @@ jobs:
             --add-data "$SCHEMA_SRC:app/db" \
             backend/engine_main.py \
             --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
+          rm -rf resources/engine/videocut-engine
           cp -r build_engine/dist/videocut-engine resources/engine/
           chmod -R +x resources/engine/videocut-engine
           echo "videocut-engine binary architecture:"
@@ -116,17 +120,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path resources/engine/bin | Out-Null
-          $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
-          if ($ffmpegCmd) {
-            Copy-Item $ffmpegCmd.Source resources/engine/bin/ffmpeg.exe -Force
-          }
-          $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
-          if ($ffprobeCmd) {
-            Copy-Item $ffprobeCmd.Source resources/engine/bin/ffprobe.exe -Force
-          }
+          echo "Downloading static FFmpeg & FFprobe for Windows x64..."
+          curl.exe -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64" -o resources/engine/bin/ffmpeg.exe
+          curl.exe -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64" -o resources/engine/bin/ffprobe.exe
           $SchemaSrc = Join-Path $PWD "backend\app\db\schema.sql"
           python -m PyInstaller --noconfirm --clean --name videocut-engine `
             --paths backend `
+            --collect-all certifi `
+            --collect-all cv2 `
+            --collect-all PIL `
             --hidden-import uvicorn.logging `
             --hidden-import uvicorn.loops.auto `
             --hidden-import uvicorn.protocols.http.auto `
@@ -152,6 +154,7 @@ jobs:
             --add-data "$SchemaSrc`;app/db" `
             backend/engine_main.py `
             --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
+          if (Test-Path resources/engine/videocut-engine) { Remove-Item resources/engine/videocut-engine -Recurse -Force }
           Copy-Item build_engine/dist/videocut-engine resources/engine/videocut-engine -Recurse -Force
           New-Item -ItemType Directory -Force -Path resources/default_storage | Out-Null
           if (Test-Path "storage/glossary.json") { Copy-Item "storage/glossary.json" "resources/default_storage/glossary.json" -Force }

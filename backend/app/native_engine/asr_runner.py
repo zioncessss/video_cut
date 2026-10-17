@@ -1,6 +1,7 @@
 import subprocess
 import json
 import os
+import time
 import threading
 import random
 from pathlib import Path
@@ -239,16 +240,22 @@ class ASRRunner:
 
     def extract_audio(self, video_path: Path, output_audio_path: Path) -> bool:
         """从视频中抽取 16kHz 单声道 wav 音频以供 ASR 识别"""
+        from app.core.config import get_ffmpeg_cmd
+        ffmpeg_bin = get_ffmpeg_cmd()
         try:
             cmd = [
-                "ffmpeg", "-y", "-i", str(video_path),
+                ffmpeg_bin, "-y", "-i", str(video_path),
                 "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 str(output_audio_path)
             ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-            return res.returncode == 0
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            if res.returncode != 0:
+                err_str = res.stderr.decode("utf-8", errors="replace")
+                print(f"[ASRRunner] FFmpeg 抽取音频失败 (exit {res.returncode}): {err_str[-300:]}")
+                return False
+            return output_audio_path.exists() and output_audio_path.stat().st_size > 0
         except Exception as e:
-            print(f"Audio extraction error: {e}")
+            print(f"[ASRRunner] Audio extraction exception: {e}")
             return False
 
     FILLER_PATTERN = re.compile(r'^[呃额嗯唔啊诶哎呀喔噢]+[，。？！…\s]*$|^[eE][hH]|[uU][mM]|[aA][hH]$')
@@ -777,7 +784,27 @@ class ASRRunner:
                             "file": (audio_path.name, f, "audio/wav")
                         }
                         res = httpx.post(stt_endpoint, headers=headers, data=data, files=files, timeout=timeout)
-                        res.raise_for_status()
+                        try:
+                            res.raise_for_status()
+                        except httpx.HTTPStatusError as e:
+                            # 尝试解析 MiniMax 返回的详细 JSON 报错信息并增强异常提示
+                            try:
+                                err_data = res.json()
+                                msg = None
+                                if isinstance(err_data, dict):
+                                    if "error" in err_data:
+                                        err_info = err_data["error"]
+                                        if isinstance(err_info, dict) and "message" in err_info:
+                                            msg = err_info["message"]
+                                        elif isinstance(err_info, str):
+                                            msg = err_info
+                                    elif "base_resp" in err_data:
+                                        msg = err_data["base_resp"].get("status_msg")
+                                if msg:
+                                    e.args = (f"{e.args[0]} - {msg}",)
+                            except Exception:
+                                pass
+                            raise
                         resp_json = res.json()
                         break
                 except (httpx.HTTPError, OSError, ValueError, Exception) as e:
@@ -815,16 +842,21 @@ class ASRRunner:
         统一调用 MiniMax 云端极速 ASR (asr-1.0)，获取毫秒级字时间戳。已彻底停用本地 Faster-Whisper。
         """
         from app.core import config
-        audio_tmp = video_path.parent / f"{video_path.stem}_audio.wav"
+        minimax_key = config.get_minimax_api_key()
+        if not minimax_key:
+            raise RuntimeError("未配置 MiniMax API Key，本地 ASR 已停用，请在系统设置中配置 MiniMax API Key")
+
+        audio_tmp = video_path.parent / f"{video_path.stem}_audio_{int(time.time()*1000)}.wav"
         try:
             extracted = self.extract_audio(video_path, audio_tmp)
-            target_audio = audio_tmp if extracted and audio_tmp.exists() else video_path
+            if not extracted:
+                raise RuntimeError(
+                    f"从口播视频 ({video_path.name}) 中提取纯音频流失败，无法提交 MiniMax ASR 转写。"
+                    f"请确认运行环境中包含有效的 FFmpeg 可执行组件。"
+                )
+            target_audio = audio_tmp if audio_tmp.exists() else video_path
 
-            minimax_key = config.get_minimax_api_key()
-            if not minimax_key:
-                raise RuntimeError("未配置 MiniMax API Key，本地 ASR 已停用，请在系统设置中配置 MiniMax API Key")
-
-            print(f"[ASRRunner] 使用 MiniMax 云端极速 ASR 转写: {video_path.name}")
+            print(f"[ASRRunner] 使用 MiniMax 云端极速 ASR 转写音频: {target_audio.name} (来源: {video_path.name})")
             segments = self.transcribe_minimax(
                 target_audio,
                 api_key=minimax_key,

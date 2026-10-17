@@ -87,7 +87,26 @@ async def _run_one(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        detail = getattr(e, "detail", None) or str(e)
+        detail = getattr(e, "detail", None)
+        if not detail:
+            detail = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    resp_data = e.response.json()
+                    msg = None
+                    if isinstance(resp_data, dict):
+                        if "error" in resp_data:
+                            err_info = resp_data["error"]
+                            if isinstance(err_info, dict) and "message" in err_info:
+                                msg = err_info["message"]
+                            elif isinstance(err_info, str):
+                                msg = err_info
+                        elif "base_resp" in resp_data:
+                            msg = resp_data["base_resp"].get("status_msg")
+                    if msg and msg not in detail:
+                        detail = f"{detail} ({msg})"
+                except Exception:
+                    pass
         item.status = "failed"
         item.error = f"批量剪辑失败: {detail}"
     finally:

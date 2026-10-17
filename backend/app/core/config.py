@@ -140,6 +140,82 @@ def _ensure_mac_tool_paths():
                 os.environ["PATH"] = f"{p}:{current}"
                 current = os.environ["PATH"]
 
+def get_ffmpeg_cmd() -> str:
+    """获取可用的 ffmpeg 可执行文件路径（随包 bin > 系统 PATH > WinGet/Chocolatey/Scoop 常见路径）"""
+    import shutil
+    import sys
+    
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+        
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates.append(exe_dir.parent / "bin" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+        candidates.append(exe_dir / "bin" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+        candidates.append(exe_dir / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+    
+    candidates.append(ROOT_DIR / "resources" / "engine" / "bin" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+    
+    if sys.platform == "win32":
+        user_home = Path.home()
+        candidates.append(user_home / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe")
+        candidates.append(Path("C:/ProgramData/chocolatey/bin/ffmpeg.exe"))
+        candidates.append(user_home / "scoop" / "shims" / "ffmpeg.exe")
+        candidates.append(Path("C:/ffmpeg/bin/ffmpeg.exe"))
+    elif sys.platform == "darwin":
+        candidates.append(Path("/opt/homebrew/bin/ffmpeg"))
+        candidates.append(Path("/usr/local/bin/ffmpeg"))
+        
+    for cand in candidates:
+        if cand.exists():
+            bin_dir = str(cand.parent)
+            path_sep = ";" if sys.platform == "win32" else ":"
+            if bin_dir not in os.environ.get("PATH", "").split(path_sep):
+                os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
+            return str(cand)
+            
+    return "ffmpeg"
+
+def get_ffprobe_cmd() -> str:
+    """获取可用的 ffprobe 可执行文件路径"""
+    import shutil
+    import sys
+    
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+        
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates.append(exe_dir.parent / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
+        candidates.append(exe_dir / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
+        candidates.append(exe_dir / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
+    
+    candidates.append(ROOT_DIR / "resources" / "engine" / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
+    
+    if sys.platform == "win32":
+        user_home = Path.home()
+        candidates.append(user_home / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links" / "ffprobe.exe")
+        candidates.append(Path("C:/ProgramData/chocolatey/bin/ffprobe.exe"))
+        candidates.append(user_home / "scoop" / "shims" / "ffprobe.exe")
+        candidates.append(Path("C:/ffmpeg/bin/ffprobe.exe"))
+    elif sys.platform == "darwin":
+        candidates.append(Path("/opt/homebrew/bin/ffprobe"))
+        candidates.append(Path("/usr/local/bin/ffprobe"))
+        
+    for cand in candidates:
+        if cand.exists():
+            bin_dir = str(cand.parent)
+            path_sep = ";" if sys.platform == "win32" else ":"
+            if bin_dir not in os.environ.get("PATH", "").split(path_sep):
+                os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
+            return str(cand)
+            
+    return "ffprobe"
+
 def has_zcode_available() -> bool:
     _ensure_mac_tool_paths()
     import shutil

@@ -209,22 +209,31 @@ def build_portrait_filter_chain(preset: str = "clean_natural", strength: float =
     return ",".join(parts)
 
 def _get_flame_icon(size: int) -> Optional[Image.Image]:
-    """利用 Windows 原生 Segoe UI Emoji 字体生成高保真真彩 🔥 图标"""
-    emoji_font_path = Path("C:/Windows/Fonts/seguiemj.ttf")
-    if emoji_font_path.exists():
-        try:
-            render_size = max(32, size * 2)
-            f = ImageFont.truetype(str(emoji_font_path), render_size)
-            img = Image.new("RGBA", (int(render_size * 1.4), int(render_size * 1.4)), (0, 0, 0, 0))
-            d = ImageDraw.Draw(img)
-            d.text((0, 0), "🔥", font=f, embedded_color=True)
-            bbox = img.getbbox()
-            if bbox:
-                cropped = img.crop(bbox)
-                w = max(1, int(cropped.width * size / cropped.height))
-                return cropped.resize((w, size), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
+    """利用 Windows/macOS 原生 Emoji 字体生成高保真真彩 🔥 图标"""
+    emoji_font_paths = []
+    if sys.platform == "win32":
+        windir = os.environ.get("WINDIR", "C:\\Windows")
+        emoji_font_paths.append(Path(windir) / "Fonts" / "seguiemj.ttf")
+    elif sys.platform == "darwin":
+        emoji_font_paths.extend([
+            Path("/System/Library/Fonts/Apple Color Emoji.ttc"),
+            Path("/Library/Fonts/Apple Color Emoji.ttc")
+        ])
+    for emoji_font_path in emoji_font_paths:
+        if emoji_font_path.exists():
+            try:
+                render_size = max(32, size * 2)
+                f = ImageFont.truetype(str(emoji_font_path), render_size)
+                img = Image.new("RGBA", (int(render_size * 1.4), int(render_size * 1.4)), (0, 0, 0, 0))
+                d = ImageDraw.Draw(img)
+                d.text((0, 0), "🔥", font=f, embedded_color=True)
+                bbox = img.getbbox()
+                if bbox:
+                    cropped = img.crop(bbox)
+                    w = max(1, int(cropped.width * size / cropped.height))
+                    return cropped.resize((w, size), Image.Resampling.LANCZOS)
+            except Exception:
+                pass
     return None
 
 def _build_atempo_chain(speed: float) -> str:
@@ -246,7 +255,10 @@ def _build_atempo_chain(speed: float) -> str:
 
 class FFmpegFilterComposer:
     def __init__(self):
-        self.has_ffmpeg = bool(shutil.which("ffmpeg"))
+        from app.core.config import get_ffmpeg_cmd, get_ffprobe_cmd
+        self.ffmpeg_bin = get_ffmpeg_cmd()
+        self.ffprobe_bin = get_ffprobe_cmd()
+        self.has_ffmpeg = bool(shutil.which(self.ffmpeg_bin) or Path(self.ffmpeg_bin).exists())
         self._has_cas: Optional[bool] = None
         self._cached_encode_args: Optional[List[str]] = None
         self._hdr_cache: Dict[str, bool] = {}
@@ -254,7 +266,7 @@ class FFmpegFilterComposer:
     def get_video_encode_args(self) -> List[str]:
         """
         探测并返回最优的视频编码参数。
-        优先启用硬件加速 (AMD AMF / NVIDIA NVENC / Intel QSV)，
+        优先启用硬件加速 (AMD AMF / NVIDIA NVENC / Intel QSV / Apple VideoToolbox)，
         若不可用则无缝回退至多线程 CPU 编码 (libx264 -preset veryfast -crf 18 -threads 0)。
         """
         if self._cached_encode_args is not None:
@@ -264,11 +276,13 @@ class FFmpegFilterComposer:
             self._cached_encode_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", "0"]
             return list(self._cached_encode_args)
 
+        ffmpeg_bin = self.ffmpeg_bin or "ffmpeg"
+
         # 0. 尝试 Apple VideoToolbox (macOS 专属原生硬件加速引擎，极速低功耗)
         if sys.platform == "darwin":
             try:
                 test_cmd = [
-                    "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                    ffmpeg_bin, "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
                     "-c:v", "h264_videotoolbox", "-q:v", "65",
                     "-f", "null", "-"
                 ]
@@ -285,7 +299,7 @@ class FFmpegFilterComposer:
         # 1. 尝试 AMD AMF (如 AMD Radeon 显卡)
         try:
             test_cmd = [
-                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                ffmpeg_bin, "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
                 "-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20",
                 "-f", "null", "-"
             ]
@@ -305,7 +319,7 @@ class FFmpegFilterComposer:
         # 2. 尝试 NVIDIA NVENC (开启空间/时间自适应量化AQ，彻底杜绝面部和暗部色块)
         try:
             test_cmd = [
-                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                ffmpeg_bin, "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
                 "-c:v", "h264_nvenc", "-preset", "p5", "-cq", "19", "-spatial-aq", "1", "-temporal-aq", "1",
                 "-f", "null", "-"
             ]
@@ -325,7 +339,7 @@ class FFmpegFilterComposer:
         # 3. 尝试 Intel QSV
         try:
             test_cmd = [
-                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
+                ffmpeg_bin, "-y", "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=0.04",
                 "-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "18",
                 "-f", "null", "-"
             ]
@@ -353,9 +367,11 @@ class FFmpegFilterComposer:
     def _run_ffmpeg_with_cpu_fallback(self, cmd: List[str], timeout: int = 300) -> subprocess.CompletedProcess:
         """
         执行 FFmpeg 压制。
-        若使用了 GPU 硬件加速 (AMF/NVENC/QSV) 且执行失败，自动无缝降级为多线程 CPU (libx264) 极速重试，
+        若使用了 GPU 硬件加速 (AMF/NVENC/QSV/VideoToolbox) 且执行失败，自动无缝降级为多线程 CPU (libx264) 极速重试，
         确保在任何显卡驱动异常或特定滤镜不兼容时 100% 不崩溃、成片不损坏。
         """
+        if cmd and cmd[0] in ("ffmpeg", "ffmpeg.exe"):
+            cmd[0] = self.ffmpeg_bin or "ffmpeg"
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         if res.returncode == 0:
             return res
@@ -399,7 +415,7 @@ class FFmpegFilterComposer:
                 self._has_cas = False
             else:
                 try:
-                    res = subprocess.run(["ffmpeg", "-h", "filter=cas"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                    res = subprocess.run([self.ffmpeg_bin or "ffmpeg", "-h", "filter=cas"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
                     self._has_cas = (res.returncode == 0)
                 except Exception:
                     self._has_cas = False
@@ -431,7 +447,7 @@ class FFmpegFilterComposer:
 
         try:
             cmd = [
-                "ffprobe", "-v", "error",
+                self.ffprobe_bin or "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=color_space,color_primaries,color_transfer,pix_fmt",
                 "-of", "default=noprint_wrappers=1",
@@ -518,13 +534,18 @@ class FFmpegFilterComposer:
         title_font_path = "C:/Windows/Fonts/msyhbd.ttc"
         sub_font_path = "C:/Windows/Fonts/msyh.ttc"
 
-        def _get_font(path: str, size: int):
+        def _get_font(path: str, size: int, bold: bool = True):
             alt_font = "C:/Windows/Fonts/simhei.ttf"
             try:
                 if Path(path).exists():
                     return ImageFont.truetype(path, size)
                 elif Path(alt_font).exists():
                     return ImageFont.truetype(alt_font, size)
+            except Exception:
+                pass
+            try:
+                from app.core.cover_generator import get_font
+                return get_font(size, bold=bold, family="heavy_gothic")
             except Exception:
                 pass
             return ImageFont.load_default()
@@ -538,8 +559,8 @@ class FFmpegFilterComposer:
                 36 if strategy.get("banner_size") == "small" else (60 if strategy.get("banner_size") == "large" else 48)
             )
             scaled_title_size = int(banner_font_size * 1.0)
-            t_font = _get_font(title_font_path, scaled_title_size)
-            s_font = _get_font(sub_font_path, int(scaled_title_size * 0.65)) if sub_title else None
+            t_font = _get_font(title_font_path, scaled_title_size, bold=True)
+            s_font = _get_font(sub_font_path, int(scaled_title_size * 0.65), bold=False) if sub_title else None
 
             # 加载并高精度生成真彩 🔥 Emoji 图标
             icon_h = max(18, int(scaled_title_size * 0.92))
@@ -620,7 +641,7 @@ class FFmpegFilterComposer:
             wm_font_size = strategy.get("watermark_font_size") or (
                 24 if strategy.get("watermark_size") == "small" else (44 if strategy.get("watermark_size") == "large" else 34)
             )
-            wm_font = _get_font(title_font_path, int(wm_font_size))
+            wm_font = _get_font(title_font_path, int(wm_font_size), bold=True)
 
             dummy = Image.new("RGBA", (1, 1))
             d = ImageDraw.Draw(dummy)

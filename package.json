@@ -9,12 +9,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "build:win": "electron-vite build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac",
-    "build:mac:x64": "electron-vite build && electron-builder --mac --x64",
-    "build:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
-    "build:mac-zip": "electron-vite build && electron-builder --mac zip",
-    "build:all": "electron-vite build && electron-builder -mw"
+    "prepackage": "node scripts/prepackage.js",
+    "build:win": "node scripts/prepackage.js && electron-vite build && electron-builder --win",
+    "build:mac": "node scripts/prepackage.js && electron-vite build && electron-builder --mac",
+    "build:mac:x64": "node scripts/prepackage.js && electron-vite build && electron-builder --mac --x64",
+    "build:mac:arm64": "node scripts/prepackage.js && electron-vite build && electron-builder --mac --arm64",
+    "build:mac-zip": "node scripts/prepackage.js && electron-vite build && electron-builder --mac zip",
+    "build:all": "node scripts/prepackage.js && electron-vite build && electron-builder -mw"
   },
   "dependencies": {
     "axios": "^1.6.8",
