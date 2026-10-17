@@ -60,17 +60,17 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p resources/engine/bin
-          echo "Downloading static FFmpeg & FFprobe for ${{ matrix.arch }}..."
-          curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${{ matrix.arch }}.gz" | gzip -d > resources/engine/bin/ffmpeg || {
+          echo "Downloading static standalone FFmpeg & FFprobe for ${{ matrix.arch }}..."
+          if ! curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffmpeg; then
             echo "Fallback to Homebrew ffmpeg..."
             brew install ffmpeg
-            cp $(which ffmpeg) resources/engine/bin/ffmpeg
-          }
-          curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${{ matrix.arch }}.gz" | gzip -d > resources/engine/bin/ffprobe || {
+            cp "$(which ffmpeg)" resources/engine/bin/ffmpeg
+          fi
+          if ! curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffprobe; then
             echo "Fallback to Homebrew ffprobe..."
             brew install ffmpeg
-            cp $(which ffprobe) resources/engine/bin/ffprobe
-          }
+            cp "$(which ffprobe)" resources/engine/bin/ffprobe
+          fi
           chmod +x resources/engine/bin/*
 
           # 植入默认词库与违禁词字典资源
