@@ -6,6 +6,19 @@
 """
 import os
 
+# 确保在 PyInstaller 冻结环境下 SSL 证书路径正确定位到 certifi (防范 macOS/Win 下 HTTPS 请求验证失败)
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+except Exception as e:
+    print(f"[engine_main] certifi SSL_CERT_FILE initialization note: {e}")
+
+# 显式导入 multipart，确保 FastAPI 解析 Form/File 上传时依赖可用
+try:
+    import multipart
+except Exception as e:
+    print(f"[engine_main] multipart import note: {e}")
+
 # 静态导入核心图像/计算依赖与 API 路由，确保 PyInstaller 依赖追踪期无一遗漏
 try:
     import PIL
