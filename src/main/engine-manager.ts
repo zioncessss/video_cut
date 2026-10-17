@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync, chmodSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -85,13 +85,38 @@ export class EngineManager {
       // 真实执行铁律：引擎不存在必须显式报错，绝不静默降级开白窗
       throw new Error(`未找到算力引擎：既无 sidecar 产物 (${sidecarPath})，也无开发环境 (${venvPython})`);
     }
+
+    // macOS/Linux 权限自愈防线：解压或打包可能丢失可执行权限 (+x)，运行时主动防御性补齐
+    if (!isWin) {
+      try {
+        chmodSync(pythonExecutable, 0o755);
+      } catch (permErr) {
+        console.warn(`[EngineManager] 自动修复 pythonExecutable 执行权限失败:`, permErr);
+      }
+      if (useSidecar) {
+        const engineBin = resolve(resourcesDir, 'engine', 'bin');
+        for (const binName of ['ffmpeg', 'ffprobe']) {
+          const binPath = resolve(engineBin, binName);
+          if (existsSync(binPath)) {
+            try {
+              chmodSync(binPath, 0o755);
+            } catch (permErr) {
+              console.warn(`[EngineManager] 自动修复 ${binName} 执行权限失败:`, permErr);
+            }
+          }
+        }
+      }
+    }
+
     const cwd = app.isPackaged && process.platform === 'darwin' ? app.getPath('userData') : projectRoot;
 
     console.log(`[EngineManager] Starting Python engine (${useSidecar ? 'sidecar' : 'dev'}) using: ${pythonExecutable} on port ${this.port}`);
 
     // 存储目录铁律：数据优先存放在软件程序根目录的 storage 下，不在系统 C 盘 AppData 占用宝贵空间；
-    // 自愈防御：若安装于受保护系统目录（如 C:\Program Files）导致无写入权限，自动降级至用户应用安全数据区
-    let chosenStorage = resolve(projectRoot, 'storage');
+    // macOS 打包态（/Applications 或只读 AppTranslocation）直接写入标准用户数据区，防御 EROFS 只读报错
+    let chosenStorage = (app.isPackaged && process.platform === 'darwin')
+      ? resolve(app.getPath('userData'), 'storage')
+      : resolve(projectRoot, 'storage');
     try {
       mkdirSync(chosenStorage, { recursive: true });
       const testFile = resolve(chosenStorage, '.write_probe');
