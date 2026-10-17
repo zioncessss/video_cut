@@ -71,30 +71,34 @@ async def health_check():
     return {"status": "ok", "service": "VideoCut Harness Engine"}
 
 def mount_routers():
+    import traceback
     try:
         from app.api.materials import router as materials_router
         app.include_router(materials_router, prefix="/api/v1/materials", tags=["Materials"])
     except Exception as e:
-        print(f"Note: materials router: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"核心素材路由挂载失败 (Fatal materials router mount error): {e}") from e
 
     try:
         from app.api.editor import router as editor_router
         app.include_router(editor_router, prefix="/api/v1/projects", tags=["Projects"])
         app.include_router(editor_router, prefix="/api/v1/editor", tags=["Editor"])
     except Exception as e:
-        print(f"Error mounting editor router: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"核心剪辑路由挂载失败 (Fatal editor router mount error): {e}") from e
 
     try:
         from app.api.instruction import router as instruction_router
         app.include_router(instruction_router, prefix="/api/v1/instruction", tags=["Instruction"])
     except Exception as e:
-        pass
+        traceback.print_exc()
 
     try:
         from app.api.batch import router as batch_router
         app.include_router(batch_router, prefix="/api/v1/batch", tags=["Batch"])
     except Exception as e:
-        pass
+        traceback.print_exc()
+        raise RuntimeError(f"核心批处理路由挂载失败 (Fatal batch router mount error): {e}") from e
 
     try:
         from app.api.system import router as system_router

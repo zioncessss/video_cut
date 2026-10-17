@@ -6,6 +6,17 @@
 """
 import os
 
+# 静态导入核心图像/计算依赖与 API 路由，确保 PyInstaller 依赖追踪期无一遗漏
+try:
+    import PIL
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+    import cv2
+    import numpy
+    from app.api import materials, editor, batch, instruction, system
+except Exception as e:
+    # 模块缺失直接打印告警
+    print(f"[engine_main] Pre-import verification error: {e}")
+
 
 def main() -> None:
     host = os.getenv("VIDEOCUT_HOST", "127.0.0.1")

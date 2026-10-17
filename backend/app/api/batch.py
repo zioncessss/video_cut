@@ -56,13 +56,12 @@ async def _run_one(
     filter_banned_words: bool = False
 ) -> None:
     """执行单个口播视频的完整剪辑流水线，任何失败如实落库"""
-    from app.api.editor import AnalyzeAndCutRequest, analyze_and_cut, render_project, redecide_scenes, SceneDecisionRequest
-
     item.status = "running"
     item.progress = 5
     _persist(job)
     await asyncio.sleep(0.05)
     try:
+        from app.api.editor import AnalyzeAndCutRequest, analyze_and_cut, render_project
         project = await analyze_and_cut(AnalyzeAndCutRequest(
             talking_head_id=item.material_id,
             aspect_ratio=aspect_ratio,
@@ -86,6 +85,8 @@ async def _run_one(
         item.progress = 100
         await asyncio.sleep(0.05)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         detail = getattr(e, "detail", None) or str(e)
         item.status = "failed"
         item.error = f"批量剪辑失败: {detail}"
@@ -139,6 +140,10 @@ async def _execute_job(
                 item.error = "任务被主动取消 (Cancelled)"
                 _persist(job)
                 raise
+            except Exception as e:
+                item.status = "failed"
+                item.error = f"任务调度异常: {str(e)}"
+                _persist(job)
 
     target_items = [i for i in job.items if i.status in ("failed", "queued", "interrupted")] if retry_failed_only else job.items
     for it in target_items:
@@ -154,14 +159,29 @@ async def _execute_job(
         tasks.append(t)
 
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 严格检查 gather 返回的所有异常，避免任何未捕获异常被静默忽略
+        for idx, res in enumerate(results):
+            if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
+                it = target_items[idx]
+                if it.status not in ("completed", "canceled"):
+                    it.status = "failed"
+                    it.error = f"执行异常: {str(res)}"
     finally:
         _running_tasks.pop(job_id, None)
+        # 防御性自愈：作业结束时，任何仍然处于 queued 或 running 的条目，标记为 failed
+        for it in job.items:
+            if it.status in ("queued", "running"):
+                it.status = "failed"
+                it.error = it.error or "执行异常中断或未被调度 (Execution interrupted)"
+
         if job.status != BatchJobStatus.CANCELED:
             job.status = BatchJobStatus.FINISHED
         completed_count, _ = _count_states(job)
         job.completed_count = completed_count
         _persist(job)
+        # 任务已进入终态，从内存活跃表卸载，后续查询由权威 SQLite 提供单一事实源
+        _jobs.pop(job_id, None)
 
 
 @router.post("/submit")
@@ -312,7 +332,11 @@ async def import_and_cut(req: BatchImportRequest, bg_tasks: BackgroundTasks):
 
 @router.get("/jobs/{job_id}")
 async def get_batch_job(job_id: str):
-    job = _jobs.get(job_id) or BatchJobRepository().get_by_id(job_id)
+    job = None
+    if job_id in _running_tasks:
+        job = _jobs.get(job_id)
+    if not job:
+        job = BatchJobRepository().get_by_id(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="批量任务不存在")
 
@@ -371,9 +395,10 @@ async def get_batch_job(job_id: str):
 async def list_batch_jobs():
     db_jobs = BatchJobRepository().list_all()
     jobs_map = {j.id: j for j in db_jobs}
-    # 内存活跃态优先覆盖，确保正在运行的任务状态最新且已落库历史不丢失
-    for j in _jobs.values():
-        jobs_map[j.id] = j
+    # 仅将当前真正处于活跃调度中（_running_tasks）的内存状态覆盖进来，确保不覆盖 SQLite 权威落库
+    for j_id, j in _jobs.items():
+        if j_id in _running_tasks:
+            jobs_map[j_id] = j
     jobs = sorted(jobs_map.values(), key=lambda x: getattr(x, "created_at", 0) or 0, reverse=True)
     return {
         "code": 0,
@@ -415,6 +440,7 @@ async def cancel_batch_job(job_id: str):
                 canceled_count += 1
 
         _persist(job)
+        _jobs.pop(job_id, None)
 
     return {
         "code": 0,

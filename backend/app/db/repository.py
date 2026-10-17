@@ -632,12 +632,19 @@ class BatchJobRepository:
                 items = [BatchJobItem(**i) for i in json.loads(row["payload_json"])]
             except Exception:
                 items = []
+        job_status = BatchJobStatus(row["status"])
+        # 自愈修复：若历史任务已进入终态 (FINISHED / CANCELED / INTERRUPTED)，但内部条目仍残留 queued 或 running，自动纠偏为 failed
+        if job_status in (BatchJobStatus.FINISHED, BatchJobStatus.CANCELED, BatchJobStatus.INTERRUPTED):
+            for i in items:
+                if i.status in ("queued", "running"):
+                    i.status = "failed"
+                    i.error = i.error or ("作业已被用户主动取消" if job_status == BatchJobStatus.CANCELED else "执行异常中断或未被调度 (Execution interrupted)")
         return BatchJob(
             id=row["id"],
             total_count=row["total_count"],
             completed_count=row["completed_count"],
             concurrency=row["concurrency"],
-            status=BatchJobStatus(row["status"]),
+            status=job_status,
             items=items,
             created_at=row["created_at"]
         )

@@ -82,3 +82,31 @@ def test_batch_flow_with_mocked_pipeline(tmp_path, monkeypatch):
     summary = next(j for j in listed if j["job_id"] == job_id)
     assert summary["completed_count"] == 1
     assert summary["failed_count"] == 1
+
+
+def test_batch_stranded_items_healing_in_finished_job():
+    """验证终态作业中遗留的 queued/running 条目会被自动自愈为 failed，杜绝已完成作业显示排队中"""
+    from app.db.repository import BatchJobRepository
+    from app.models.entities import BatchJob, BatchJobItem, BatchJobStatus
+
+    repo = BatchJobRepository()
+    raw_job = BatchJob(
+        id="job-stranded-test",
+        total_count=2,
+        completed_count=0,
+        concurrency=1,
+        status=BatchJobStatus.FINISHED,
+        items=[
+            BatchJobItem(material_id="mat-1", status="queued"),
+            BatchJobItem(material_id="mat-2", status="running")
+        ]
+    )
+    repo.save(raw_job)
+
+    loaded = repo.get_by_id("job-stranded-test")
+    assert loaded is not None
+    assert loaded.status == BatchJobStatus.FINISHED
+    for it in loaded.items:
+        assert it.status == "failed"
+        assert "执行异常中断" in it.error
+

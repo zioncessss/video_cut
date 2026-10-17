@@ -1085,12 +1085,24 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                           {isExpanded ? (
                             <>
                               <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                                isDone ? 'bg-emerald-50 text-emerald-600 border border-emerald-200/60' :
+                                isDone ? (
+                                  doneCount === 0 && j.total_count > 0
+                                    ? 'bg-rose-50 text-rose-600 border border-rose-200/60'
+                                    : failedCount > 0
+                                      ? 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                      : 'bg-emerald-50 text-emerald-600 border border-emerald-200/60'
+                                ) :
                                 j.status === 'canceled' ? 'bg-gray-100 text-gray-600 border border-gray-200' :
                                 j.status === 'interrupted' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
                                 'bg-indigo-50 text-indigo-600'
                               }`}>
-                                {isDone ? `已完成 ${doneCount}/${j.total_count}` :
+                                {isDone ? (
+                                  doneCount === 0 && j.total_count > 0
+                                    ? `全部失败 0/${j.total_count}`
+                                    : failedCount > 0
+                                      ? `部分完成 ${doneCount}/${j.total_count}`
+                                      : `已完成 ${doneCount}/${j.total_count}`
+                                ) :
                                  j.status === 'canceled' ? `已取消 ${doneCount}/${j.total_count}` :
                                  j.status === 'interrupted' ? `已中断 ${doneCount}/${j.total_count}` :
                                  `处理中 ${doneCount}/${j.total_count}`}
@@ -1123,12 +1135,24 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                             </>
                           ) : (
                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                              isDone ? 'bg-emerald-50 text-emerald-600 border border-emerald-200/60' :
+                              isDone ? (
+                                doneCount === 0 && j.total_count > 0
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-200/60'
+                                  : failedCount > 0
+                                    ? 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                    : 'bg-emerald-50 text-emerald-600 border border-emerald-200/60'
+                              ) :
                               j.status === 'canceled' ? 'bg-gray-100 text-gray-600 border border-gray-200' :
                               j.status === 'interrupted' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
                               'bg-indigo-50 text-indigo-600'
                             }`}>
-                              {isDone ? '已完成' :
+                              {isDone ? (
+                                doneCount === 0 && j.total_count > 0
+                                  ? '全部失败'
+                                  : failedCount > 0
+                                    ? '部分完成'
+                                    : '已完成'
+                              ) :
                                j.status === 'canceled' ? '已取消' :
                                j.status === 'interrupted' ? '已中断' :
                                '处理中'}
