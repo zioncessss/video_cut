@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # 基础工作区与存储路径
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -142,13 +142,45 @@ def _ensure_mac_tool_paths():
 
 def get_ffmpeg_cmd() -> str:
     """获取可用的 ffmpeg 可执行文件路径（随包 bin > 系统 PATH > WinGet/Chocolatey/Scoop 常见路径）"""
+def _download_binary_fallback(bin_name: str) -> Optional[Path]:
+    """若随包与系统均无该二进制，尝试静默自愈拉取到 STORAGE_DIR/bin（避开 Program Files 权限限制）"""
+    try:
+        import platform
+        import urllib.request
+        
+        target_dir = STORAGE_DIR / "bin"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        ext = ".exe" if sys.platform == "win32" else ""
+        file_name = f"{bin_name}{ext}"
+        dest_path = target_dir / file_name
+        if dest_path.exists() and dest_path.stat().st_size > 1024:
+            return dest_path
+            
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+        if sys.platform == "win32":
+            url = f"https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/{bin_name}-win32-x64"
+        elif sys.platform == "darwin":
+            url = f"https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/{bin_name}-darwin-{arch}"
+        else:
+            return None
+            
+        print(f"[config] 正在触发底层算力自愈，静默拉取 {bin_name} 到 {dest_path}...")
+        urllib.request.urlretrieve(url, str(dest_path))
+        if dest_path.exists() and dest_path.stat().st_size > 1024:
+            if sys.platform != "win32":
+                dest_path.chmod(0o755)
+            print(f"[config] 底层算力自愈成功: {dest_path}")
+            return dest_path
+    except Exception as e:
+        print(f"[config] 算力组件 {bin_name} 自愈下载失败: {e}")
+    return None
+
+def get_ffmpeg_cmd() -> str:
+    """获取可用的 ffmpeg 可执行文件路径"""
     import shutil
     import sys
     
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-        
     candidates = []
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
@@ -157,6 +189,7 @@ def get_ffmpeg_cmd() -> str:
         candidates.append(exe_dir / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
     
     candidates.append(ROOT_DIR / "resources" / "engine" / "bin" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+    candidates.append(STORAGE_DIR / "bin" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
     
     if sys.platform == "win32":
         user_home = Path.home()
@@ -175,6 +208,18 @@ def get_ffmpeg_cmd() -> str:
             if bin_dir not in os.environ.get("PATH", "").split(path_sep):
                 os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
             return str(cand)
+
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+        
+    fallback = _download_binary_fallback("ffmpeg")
+    if fallback:
+        bin_dir = str(fallback.parent)
+        path_sep = ";" if sys.platform == "win32" else ":"
+        if bin_dir not in os.environ.get("PATH", "").split(path_sep):
+            os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
+        return str(fallback)
             
     return "ffmpeg"
 
@@ -183,10 +228,6 @@ def get_ffprobe_cmd() -> str:
     import shutil
     import sys
     
-    found = shutil.which("ffprobe")
-    if found:
-        return found
-        
     candidates = []
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
@@ -195,6 +236,7 @@ def get_ffprobe_cmd() -> str:
         candidates.append(exe_dir / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
     
     candidates.append(ROOT_DIR / "resources" / "engine" / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
+    candidates.append(STORAGE_DIR / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe"))
     
     if sys.platform == "win32":
         user_home = Path.home()
@@ -213,6 +255,18 @@ def get_ffprobe_cmd() -> str:
             if bin_dir not in os.environ.get("PATH", "").split(path_sep):
                 os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
             return str(cand)
+
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+
+    fallback = _download_binary_fallback("ffprobe")
+    if fallback:
+        bin_dir = str(fallback.parent)
+        path_sep = ";" if sys.platform == "win32" else ":"
+        if bin_dir not in os.environ.get("PATH", "").split(path_sep):
+            os.environ["PATH"] = f"{bin_dir}{path_sep}{os.environ.get('PATH', '')}"
+        return str(fallback)
             
     return "ffprobe"
 
