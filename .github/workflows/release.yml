@@ -21,14 +21,14 @@ jobs:
             arch: x64
             target: win
             name: Windows-x64
-          - os: macos-13
-            arch: x64
-            target: mac-intel
-            name: macOS-Intel-x64
-          - os: macos-14
+          - os: macos-latest
             arch: arm64
-            target: mac-arm
+            target: mac-arm64
             name: macOS-AppleSilicon-arm64
+          - os: macos-latest
+            arch: x64
+            target: mac-x64
+            name: macOS-Intel-x64
 
     steps:
       - name: Check out repository
@@ -48,6 +48,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.arch }}
           cache: 'pip'
 
       - name: Install Python & Packaging Dependencies
@@ -55,45 +56,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt pyinstaller
 
-      # macOS 构建步骤 (区分 Intel x64 与 Apple Silicon arm64)
+      # macOS 构建步骤：下载对应架构的静态独立 FFmpeg 并构建匹配架构的原生 Python 算力引擎
       - name: Setup macOS FFmpeg & Build macOS Sidecar
         if: runner.os == 'macOS'
         run: |
           mkdir -p resources/engine/bin
-          echo "Downloading static standalone FFmpeg & FFprobe for ${{ matrix.arch }}..."
-          if ! curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffmpeg; then
-            echo "Fallback to Homebrew ffmpeg..."
-            brew install ffmpeg
-            cp "$(which ffmpeg)" resources/engine/bin/ffmpeg
-          fi
-          if ! curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffprobe; then
-            echo "Fallback to Homebrew ffprobe..."
-            brew install ffmpeg
-            cp "$(which ffprobe)" resources/engine/bin/ffprobe
-          fi
+          echo "Downloading static FFmpeg & FFprobe for ${{ matrix.arch }}..."
+          curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffmpeg
+          curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${{ matrix.arch }}" -o resources/engine/bin/ffprobe
           chmod +x resources/engine/bin/*
+          echo "FFmpeg binary architecture:"
+          file resources/engine/bin/ffmpeg
+          file resources/engine/bin/ffprobe
 
           # 植入默认词库与违禁词字典资源
           mkdir -p resources/default_storage
           [ -f storage/glossary.json ] && cp storage/glossary.json resources/default_storage/ || true
           [ -f storage/banned_words.json ] && cp storage/banned_words.json resources/default_storage/ || true
 
-          # 构建原生 Mach-O Python 算力引擎 (在 Intel 上为 x86_64，在 Apple Silicon 上为 arm64)
+          # 构建原生 Mach-O Python 算力引擎 (使用绝对路径防御 specpath 相对路径错误)
+          SCHEMA_SRC="$PWD/backend/app/db/schema.sql"
           python -m PyInstaller --noconfirm --clean --name videocut-engine \
             --paths backend \
-            --collect-all faster_whisper \
-            --collect-all ctranslate2 \
-            --collect-all av \
             --hidden-import uvicorn.logging \
             --hidden-import uvicorn.loops.auto \
             --hidden-import uvicorn.protocols.http.auto \
             --hidden-import uvicorn.protocols.websockets.auto \
             --hidden-import uvicorn.lifespan.on \
-            --add-data "backend/app/db/schema.sql:app/db" \
+            --add-data "$SCHEMA_SRC:app/db" \
             backend/engine_main.py \
             --distpath build_engine/dist --workpath build_engine/work --specpath build_engine
           cp -r build_engine/dist/videocut-engine resources/engine/
           chmod +x resources/engine/videocut-engine/videocut-engine
+          echo "videocut-engine binary architecture:"
+          file resources/engine/videocut-engine/videocut-engine
 
       # Windows 构建步骤
       - name: Setup Windows FFmpeg & Build Windows Sidecar
@@ -112,9 +108,6 @@ jobs:
           $SchemaSrc = Join-Path $PWD "backend\app\db\schema.sql"
           python -m PyInstaller --noconfirm --clean --name videocut-engine `
             --paths backend `
-            --collect-all faster_whisper `
-            --collect-all ctranslate2 `
-            --collect-all av `
             --hidden-import uvicorn.logging `
             --hidden-import uvicorn.loops.auto `
             --hidden-import uvicorn.protocols.http.auto `
@@ -137,19 +130,14 @@ jobs:
           pnpm build
 
       - name: Package Windows Application (x64 NSIS)
-        if: matrix.target == 'win'
+        if: runner.os == 'Windows'
         run: |
           npx electron-builder --win -p never
 
-      - name: Package macOS Intel Application (x64 DMG & ZIP)
-        if: matrix.target == 'mac-intel'
+      - name: Package macOS Application
+        if: runner.os == 'macOS'
         run: |
-          npx electron-builder --mac --x64 -p never
-
-      - name: Package macOS Apple Silicon Application (arm64 DMG & ZIP)
-        if: matrix.target == 'mac-arm'
-        run: |
-          npx electron-builder --mac --arm64 -p never
+          npx electron-builder --mac --${{ matrix.arch }} -p never
 
       - name: Upload Platform Artifacts
         uses: actions/upload-artifact@v4

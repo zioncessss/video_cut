@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, unlinkSync, statSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import http from 'http';
@@ -94,6 +94,26 @@ export class EngineManager {
         console.warn(`[EngineManager] 自动修复 pythonExecutable 执行权限失败:`, permErr);
       }
       if (useSidecar) {
+        // 递归为 sidecar 目录下的所有文件添加可执行/可读权限，彻底杜绝 zip 解压丢失 +x 导致 dyld 报 Permission denied
+        try {
+          const makeExecutableRecursively = (dir: string) => {
+            if (!existsSync(dir)) return;
+            const entries = readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+              const fullPath = resolve(dir, entry.name);
+              try {
+                chmodSync(fullPath, 0o755);
+              } catch {}
+              if (entry.isDirectory()) {
+                makeExecutableRecursively(fullPath);
+              }
+            }
+          };
+          makeExecutableRecursively(sidecarDir);
+        } catch (e) {
+          console.warn(`[EngineManager] 递归修复 sidecarDir 权限异常:`, e);
+        }
+
         const engineBin = resolve(resourcesDir, 'engine', 'bin');
         for (const binName of ['ffmpeg', 'ffprobe']) {
           const binPath = resolve(engineBin, binName);

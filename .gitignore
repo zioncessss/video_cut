@@ -85,3 +85,4 @@ storage/*.jpg
 storage/frames_scan/
 storage/test_video_frames/
 backend/storage/
+specs/**/vendor_reference/
