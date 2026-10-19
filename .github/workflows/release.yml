@@ -205,8 +205,10 @@ jobs:
       - name: Package macOS Application
         if: runner.os == 'macOS'
         run: |
+          # 禁用 Spotlight 索引，彻底根除 hdiutil detach 发生 "Resource busy" 导致 DMG 制作失败的系统级竞态
+          sudo mdutil -a -i off || true
           node scripts/prepackage.js --arch=${{ matrix.arch }}
-          npx electron-builder --mac --${{ matrix.arch }} -p never
+          npx electron-builder --mac --${{ matrix.arch }} -p never || (echo "Retrying electron-builder after cooldown..." && sleep 5 && npx electron-builder --mac --${{ matrix.arch }} -p never)
 
       # 直接将各平台产物发布到 GitHub Release（按平台与架构精准隔离，杜绝交叉覆盖）
       - name: Release Platform Assets to GitHub Release
