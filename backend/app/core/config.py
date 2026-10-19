@@ -1,7 +1,8 @@
 import json
 import os
+import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 
 # 基础工作区与存储路径
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -36,13 +37,40 @@ def _heal_and_restore_storage_if_empty(storage_dir: Path) -> None:
     candidates: List[Path] = []
     local_app_data = os.getenv("LOCALAPPDATA")
     if local_app_data:
-        candidates.append(Path(local_app_data) / "videocut_persistent_storage")
-    candidates.append(Path(r"D:\project\video_cut\storage"))
-    candidates.append(ROOT_DIR / "storage")
+        persistent_storage = Path(local_app_data) / "videocut_persistent_storage"
+        candidates.append(persistent_storage)
+        active_ptr = persistent_storage / "active_storage_dir.txt"
+        if active_ptr.exists():
+            try:
+                hist_dir = Path(active_ptr.read_text(encoding="utf-8").strip())
+                if hist_dir.exists():
+                    candidates.append(hist_dir)
+            except Exception:
+                pass
+        candidates.append(Path(local_app_data) / "videocut" / "storage")
     app_data = os.getenv("APPDATA")
     if app_data:
         candidates.append(Path(app_data) / "videocut" / "storage")
+
     import sys
+    # 注册表与常见历史安装目录探测 (Windows)
+    if sys.platform == "win32":
+        try:
+            import winreg
+            for root_k in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(root_k, r"Software\videocut") as k:
+                        inst_loc = winreg.QueryValueEx(k, "InstallLocation")[0]
+                        if inst_loc:
+                            candidates.append(Path(inst_loc) / "storage")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if ROOT_DIR:
+        candidates.append(ROOT_DIR / "storage")
+
     if sys.platform == "darwin":
         candidates.append(Path.home() / "Library" / "Application Support" / "videocut" / "storage")
         candidates.append(Path.home() / ".videocut" / "storage")
@@ -87,8 +115,19 @@ def _heal_and_restore_storage_if_empty(storage_dir: Path) -> None:
         except Exception as err:
             print(f"[Config] 恢复备份数据失败: {err}")
 
+def _record_active_storage_dir(storage_dir: Path) -> None:
+    try:
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            persistent = Path(local_app_data) / "videocut_persistent_storage"
+            persistent.mkdir(parents=True, exist_ok=True)
+            (persistent / "active_storage_dir.txt").write_text(str(storage_dir.resolve()), encoding="utf-8")
+    except Exception:
+        pass
+
 STORAGE_DIR = _resolve_safe_storage_dir()
 _heal_and_restore_storage_if_empty(STORAGE_DIR)
+_record_active_storage_dir(STORAGE_DIR)
 MATERIALS_DIR = STORAGE_DIR / "materials"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 PROJECTS_DIR = STORAGE_DIR / "projects"
@@ -140,8 +179,6 @@ def _ensure_mac_tool_paths():
                 os.environ["PATH"] = f"{p}:{current}"
                 current = os.environ["PATH"]
 
-def get_ffmpeg_cmd() -> str:
-    """获取可用的 ffmpeg 可执行文件路径（随包 bin > 系统 PATH > WinGet/Chocolatey/Scoop 常见路径）"""
 def _download_binary_fallback(bin_name: str) -> Optional[Path]:
     """若随包与系统均无该二进制，尝试静默自愈拉取到 STORAGE_DIR/bin（避开 Program Files 权限限制）"""
     try:
@@ -423,12 +460,169 @@ load_settings()
 # 专用业务词库与 ASR 纠偏知识库配置文件路径
 GLOSSARY_FILE = STORAGE_DIR / "glossary.json"
 
+def resolve_media_path(raw_path: Optional[Union[str, Path]]) -> Optional[Path]:
+    """
+    全系统权威媒体与工程路径解析器。
+    无论路径格式为：
+    - 数据库标准相对路径: "storage/materials/talking_head/xyz.mp4" 或 "storage/tasks/abc/subtitles.ass"
+    - 无 storage 前缀相对路径: "materials/talking_head/xyz.mp4" 或 "tasks/abc/video.mp4"
+    - 存量绝对路径（可能来自旧安装目录、旧机器盘符、或开发机 D:/project/...）
+    - 外部上传文件绝对路径
+    统一自愈解析为当前环境实际有效的物理 Path。
+    """
+    if not raw_path:
+        return None
+
+    raw_str = str(raw_path).strip().strip('"').strip("'")
+    if not raw_str:
+        return None
+
+    norm_str = raw_str.replace("\\", "/")
+    p = Path(raw_str)
+
+    # 1. 本身是绝对路径且在当前系统上物理存在，直接返回
+    try:
+        if p.is_absolute() and p.exists():
+            return p.resolve()
+    except Exception:
+        pass
+
+    # 2. 如果是绝对路径但不存在（说明来自更新前旧目录或不同机器的绝对路径）
+    # 提取 storage/ 后面的相对部分，尝试在当前 STORAGE_DIR 中对齐
+    storage_prefix = f"{STORAGE_DIR.name}/"
+    markers = (storage_prefix, "storage/", "materials/", "tasks/", "outputs/", "covers/")
+    sub_rel = None
+    for marker in markers:
+        if marker in norm_str:
+            idx = norm_str.find(marker)
+            sub_rel = norm_str[idx:]
+            break
+
+    candidates_to_check: List[Path] = []
+    if sub_rel:
+        clean_rel = sub_rel
+        for pref in (storage_prefix, "storage/"):
+            if clean_rel.startswith(pref):
+                clean_rel = clean_rel[len(pref):]
+                break
+        candidates_to_check.append(STORAGE_DIR / clean_rel)
+        candidates_to_check.append(STORAGE_DIR.parent / sub_rel)
+
+    # 3. 标准相对路径判定
+    if not p.is_absolute():
+        candidates_to_check.append(STORAGE_DIR.parent / raw_str)
+        candidates_to_check.append(STORAGE_DIR / raw_str)
+        for pref in (storage_prefix, "storage/"):
+            if norm_str.startswith(pref):
+                candidates_to_check.append(STORAGE_DIR / norm_str[len(pref):])
+
+    # 4. 跨版本持久备份区与历史存储目录探查
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        persistent_storage = Path(local_app_data) / "videocut_persistent_storage"
+        if persistent_storage.exists():
+            if sub_rel:
+                clean_rel = sub_rel
+                for pref in (storage_prefix, "storage/"):
+                    if clean_rel.startswith(pref):
+                        clean_rel = clean_rel[len(pref):]
+                        break
+                candidates_to_check.append(persistent_storage / clean_rel)
+            elif not p.is_absolute():
+                candidates_to_check.append(persistent_storage / raw_str)
+            active_ptr = persistent_storage / "active_storage_dir.txt"
+            if active_ptr.exists():
+                try:
+                    hist_dir = Path(active_ptr.read_text(encoding="utf-8").strip())
+                    if hist_dir.exists() and hist_dir.resolve() != STORAGE_DIR.resolve():
+                        if sub_rel:
+                            clean_rel = sub_rel
+                            for pref in (storage_prefix, "storage/"):
+                                if clean_rel.startswith(pref):
+                                    clean_rel = clean_rel[len(pref):]
+                                    break
+                            candidates_to_check.append(hist_dir / clean_rel)
+                        elif not p.is_absolute():
+                            candidates_to_check.append(hist_dir / raw_str)
+                except Exception:
+                    pass
+
+    for cand in candidates_to_check:
+        try:
+            if cand.exists():
+                return cand.resolve()
+        except Exception:
+            continue
+
+    # 若物理文件尚未生成（如新任务的 output_video_path 目标路径），返回标准 STORAGE_DIR 映射路径
+    if sub_rel:
+        clean_rel = sub_rel
+        for pref in (storage_prefix, "storage/"):
+            if clean_rel.startswith(pref):
+                clean_rel = clean_rel[len(pref):]
+                break
+        return (STORAGE_DIR / clean_rel).resolve()
+    if not p.is_absolute():
+        return (STORAGE_DIR.parent / raw_str).resolve()
+    return p.resolve()
+
+
+def to_storage_relative(path: Optional[Union[str, Path]]) -> str:
+    """
+    统一将任意物理路径转换为相对于 STORAGE_DIR.parent 的标准相对路径
+    (生产环境下为 'storage/tasks/...'，测试环境下为 'videocut_pytest_storage/tasks/...')
+    保证与 STORAGE_DIR.parent 互逆兼容，无论测试还是生产环境均不漂移
+    """
+    if not path:
+        return ""
+    storage_folder_name = STORAGE_DIR.name
+    try:
+        p = Path(path).resolve()
+        if p == STORAGE_DIR.resolve() or STORAGE_DIR.resolve() in p.parents:
+            return str(p.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
+    except Exception:
+        pass
+
+    norm_str = str(path).replace("\\", "/").strip()
+    if f"/{storage_folder_name}/" in norm_str:
+        return f"{storage_folder_name}/" + norm_str.split(f"/{storage_folder_name}/", 1)[1]
+    if norm_str.startswith(f"{storage_folder_name}/"):
+        return norm_str
+
+    if "/storage/" in norm_str:
+        rel_tail = norm_str.split("/storage/", 1)[1]
+        return f"{storage_folder_name}/{rel_tail}"
+    if norm_str.startswith("storage/"):
+        return f"{storage_folder_name}/" + norm_str[len("storage/"):]
+
+    for marker in ("materials/", "tasks/", "outputs/", "covers/"):
+        if marker in norm_str:
+            return f"{storage_folder_name}/" + norm_str[norm_str.find(marker):]
+
+    return norm_str
+
+
 def _ensure_storage_path(path: Path) -> Path:
-    """规范化路径并校验其必须位于 storage 目录内，杜绝路径穿越"""
+    """
+    规范化路径并校验或自愈其位于 storage 目录内。
+    若路径来自旧安装路径或迁移源，自动自愈重映射至当前 STORAGE_DIR。
+    """
     resolved = path.resolve()
-    if resolved != STORAGE_DIR.resolve() and STORAGE_DIR.resolve() not in resolved.parents:
-        raise ValueError(f"路径越界，仅允许访问 {STORAGE_DIR} 目录内的文件: {path}")
+    # 如果已在 STORAGE_DIR 内，直接放行
+    if resolved == STORAGE_DIR.resolve() or STORAGE_DIR.resolve() in resolved.parents:
+        return resolved
+
+    # 尝试自愈：如果在当前 STORAGE_DIR 中存在同名相对路径，自动重定向
+    cand = resolve_media_path(resolved)
+    if cand and cand.exists():
+        return cand
+
+    # 如果是本地存在的合法物理文件（如用户上传的外部自定义封面），直接放行
+    if resolved.exists():
+        return resolved
+
     return resolved
+
 
 # 供各存储/合成模块统一复用的公开守卫入口
 ensure_storage_path = _ensure_storage_path

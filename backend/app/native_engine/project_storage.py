@@ -5,7 +5,7 @@ import uuid
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
-from app.core.config import PROJECTS_DIR, TASKS_DIR, STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR
+from app.core.config import PROJECTS_DIR, TASKS_DIR, STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, resolve_media_path, to_storage_relative
 from app.models.entities import CutProject, CutProjectStatus, SubtitleSegment, EditingStrategy, HighlightWord
 from app.native_engine.keyword_matcher import build_highlight_words
 from app.db.repository import ProjectRepository
@@ -153,10 +153,8 @@ class ProjectStorageService:
                     vid_rel = mdata.get("output_video_path")
                     if not vid_rel:
                         continue
-                    vid_p = Path(vid_rel)
-                    if not vid_p.is_absolute():
-                        vid_p = (STORAGE_DIR.parent / vid_rel).resolve()
-                    if not vid_p.exists() or vid_p.stat().st_size < 10 * 1024:
+                    vid_p = resolve_media_path(vid_rel)
+                    if not vid_p or not vid_p.exists() or vid_p.stat().st_size < 10 * 1024:
                         continue
 
                     subs = []
@@ -264,14 +262,19 @@ class ProjectStorageService:
                     is_broken = True
                 else:
                     rel_path = mat_map[th_id]
-                    full_p = (STORAGE_DIR.parent / rel_path).resolve()
-                    if not full_p.exists():
+                    full_p = resolve_media_path(rel_path)
+                    if not full_p or not full_p.exists():
                         is_broken = True
 
                 if is_broken:
-                    print(f"[ProjectStorageService] 自动清理失效底料草稿工程: {pid} (th_id={th_id})")
-                    self.delete_project(pid)
-                    cleaned += 1
+                    # 仅在口播素材已从 materials 表彻底删除时才物理清理；
+                    # 若素材记录在库但物理文件暂不可达，绝不误删用户草稿
+                    if not th_id or th_id not in mat_map:
+                        print(f"[ProjectStorageService] 清理孤儿草稿工程: {pid} (th_id={th_id})")
+                        self.delete_project(pid)
+                        cleaned += 1
+                    else:
+                        print(f"[ProjectStorageService] 提示：草稿关联素材物理文件暂未就绪: {pid} (th_id={th_id})")
         except Exception as e:
             print(f"[ProjectStorageService] 巡检失效草稿失败: {e}")
         return cleaned
@@ -314,7 +317,13 @@ class ProjectStorageService:
         return None
 
     def save_project(self, project: CutProject) -> CutProject:
-        """保存工程至 SQLite（唯一权威存储，无损保存不误删同素材其他成片）"""
+        if project.task_dir:
+            project.task_dir = to_storage_relative(project.task_dir)
+        if project.output_video_path:
+            project.output_video_path = to_storage_relative(project.output_video_path)
+        if project.cover_image_path:
+            project.cover_image_path = to_storage_relative(project.cover_image_path)
+
         project.updated_at = time.time()
         self._cache_by_th_id[project.talking_head_id] = project
         self._cache_by_proj_id[project.id] = project
@@ -331,8 +340,8 @@ class ProjectStorageService:
         # 1. 清理专属任务目录（包含 output_*.mp4, cover.jpg, subtitles.ass, project_manifest.json 等）
         if p.task_dir:
             try:
-                td = (STORAGE_DIR.parent / p.task_dir).resolve()
-                if td.exists() and td.is_dir() and TASKS_DIR.resolve() in td.parents:
+                td = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
+                if td.exists() and td.is_dir() and (TASKS_DIR.resolve() in td.parents or "tasks" in td.parts):
                     shutil.rmtree(td, ignore_errors=True)
             except Exception as e:
                 print(f"[ProjectStorageService] 清理任务目录失败 {p.task_dir}: {e}")
@@ -340,8 +349,8 @@ class ProjectStorageService:
         # 2. 如果 output_video_path 位于历史 outputs 目录下，单独清理
         if p.output_video_path:
             try:
-                vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
-                if vp.exists() and vp.is_file() and (OUTPUTS_DIR.resolve() in vp.parents or TASKS_DIR.resolve() in vp.parents):
+                vp = resolve_media_path(p.output_video_path) or (STORAGE_DIR.parent / p.output_video_path).resolve()
+                if vp.exists() and vp.is_file() and (OUTPUTS_DIR.resolve() in vp.parents or TASKS_DIR.resolve() in vp.parents or "outputs" in vp.parts or "tasks" in vp.parts):
                     vp.unlink(missing_ok=True)
             except Exception as e:
                 print(f"[ProjectStorageService] 清理成片视频文件失败 {p.output_video_path}: {e}")
@@ -349,8 +358,8 @@ class ProjectStorageService:
         # 3. 如果 cover 位于历史 covers 目录下，单独清理
         if p.cover_image_path:
             try:
-                cp = (STORAGE_DIR.parent / p.cover_image_path).resolve()
-                if cp.exists() and cp.is_file() and COVERS_DIR.resolve() in cp.parents:
+                cp = resolve_media_path(p.cover_image_path) or (STORAGE_DIR.parent / p.cover_image_path).resolve()
+                if cp.exists() and cp.is_file() and (COVERS_DIR.resolve() in cp.parents or "covers" in cp.parts):
                     cp.unlink(missing_ok=True)
             except Exception as e:
                 print(f"[ProjectStorageService] 清理封面文件失败 {p.cover_image_path}: {e}")

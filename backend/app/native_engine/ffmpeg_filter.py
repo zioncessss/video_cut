@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 import io
 import base64
@@ -364,7 +364,7 @@ class FFmpegFilterComposer:
         ]
         return list(self._cached_encode_args)
 
-    def _run_ffmpeg_with_cpu_fallback(self, cmd: List[str], timeout: int = 300) -> subprocess.CompletedProcess:
+    def _run_ffmpeg_with_cpu_fallback(self, cmd: List[str], timeout: int = 300, cwd: Optional[Union[str, Path]] = None) -> subprocess.CompletedProcess:
         """
         执行 FFmpeg 压制。
         若使用了 GPU 硬件加速 (AMF/NVENC/QSV/VideoToolbox) 且执行失败，自动无缝降级为多线程 CPU (libx264) 极速重试，
@@ -372,7 +372,7 @@ class FFmpegFilterComposer:
         """
         if cmd and cmd[0] in ("ffmpeg", "ffmpeg.exe"):
             cmd[0] = self.ffmpeg_bin or "ffmpeg"
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, cwd=str(cwd) if cwd else None)
         if res.returncode == 0:
             return res
 
@@ -402,12 +402,53 @@ class FFmpegFilterComposer:
                             skip += 2
                     continue
                 cpu_cmd.append(arg)
-            res_retry = subprocess.run(cpu_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            res_retry = subprocess.run(cpu_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, cwd=str(cwd) if cwd else None)
             if res_retry.returncode == 0:
                 print("[FFmpegFilterComposer] CPU 极速多线程重试成功，已顺利完成全片压制！")
             return res_retry
 
         return res
+
+    def _build_ass_filter_expr(self, ass_path: Union[str, Path], work_dir: Optional[Path] = None) -> Optional[str]:
+        """
+        生成对所有操作系统、路径编码、Windows 盘符冒号均 100% 免疫的 ASS 字幕滤镜表达式。
+
+        核心痛点防范：
+        1. Windows 盘符冒号与转义歧义（例如 ass='D\\:/...' 在部分 FFmpeg 构建下直接报 option 'filter_complex': Invalid argument）
+        2. 中文目录名在 Windows C 运行时 libass fopen 下由于编码不匹配抛出 'fopen failed'
+
+        终极解法：
+        当 work_dir 可用时，确保 work_dir 下存在纯 ASCII 相对文件名 'subtitles.ass'，
+        并直接在 filter_complex 中输出 'ass=subtitles.ass'。
+        完全不包含盘符、冒号、反斜杠及中文路径，直接消灭任何转义与编码 Bug！
+        """
+        ass_p = Path(ass_path)
+        if not ass_p.exists():
+            return None
+
+        if work_dir:
+            try:
+                work_dir.mkdir(parents=True, exist_ok=True)
+                local_ass = work_dir / "subtitles.ass"
+                if ass_p.resolve() != local_ass.resolve():
+                    shutil.copy2(str(ass_p), str(local_ass))
+                if local_ass.exists():
+                    return "ass=subtitles.ass"
+            except Exception as e:
+                print(f"[FFmpegFilterComposer] 本地工作目录准备 subtitles.ass 异常: {e}")
+
+        # 兜底：若 work_dir 不可用，在 Windows 下使用纯 ASCII 临时文件避免中文路径 fopen failed
+        try:
+            import tempfile
+            temp_dir = Path(tempfile.gettempdir())
+            temp_ass = temp_dir / "vc_burn_subtitles.ass"
+            shutil.copy2(str(ass_p), str(temp_ass))
+            escaped = str(temp_ass.resolve()).replace("\\", "/").replace(":", "\\:")
+            return f"ass='{escaped}'"
+        except Exception:
+            escaped = str(ass_p.resolve()).replace("\\", "/").replace(":", "\\:")
+            return f"ass='{escaped}'"
+
 
     def check_has_cas(self) -> bool:
         if self._has_cas is None:
@@ -694,6 +735,8 @@ class FFmpegFilterComposer:
         3. 复合烧录 ASS 高级高亮字幕、顶部 Title 挂顶胶囊横幅与品牌水印角标。
         4. 采用 Lanczos 滤镜与 CRF 18 高清转码，保留真实色彩与画质。
         """
+        output_path = Path(output_path).resolve()
+        th_resolved = Path(talking_head_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         is_916 = aspect_ratio == "9:16"
         target_w = 1080 if is_916 else 1920
@@ -702,7 +745,7 @@ class FFmpegFilterComposer:
         speed = max(0.5, min(3.0, float(strat.get("video_speed") or 1.0)))
         is_sped = abs(speed - 1.0) >= 0.01
 
-        th_is_hdr = self.is_hdr_video(talking_head_path)
+        th_is_hdr = self.is_hdr_video(th_resolved)
         filter_preset = strat.get("filter_preset") or "clean_natural"
         filter_strength = float(strat.get("filter_strength") if strat.get("filter_strength") is not None else 1.0)
         th_filter = self.build_color_normalize_filter(
@@ -724,7 +767,7 @@ class FFmpegFilterComposer:
         # 模式 A: 存在 kept_spans（粗剪智能切片 + 防爆音平滑拼接 + 紧凑时间轴合成）
         # -------------------------------------------------------------------------
         if kept_spans and len(kept_spans) > 0:
-            inputs = ["-i", str(talking_head_path)]
+            inputs = ["-i", str(th_resolved)]
             next_input_idx = 1
             filter_parts = []
             n_kept = len(kept_spans)
@@ -789,8 +832,8 @@ class FFmpegFilterComposer:
                         if b_dur > 0.05:
                             b_idx = next_input_idx
                             next_input_idx += 1
-                            inputs.extend(["-i", str(broll_file)])
-                            b_hdr = self.is_hdr_video(Path(broll_file))
+                            inputs.extend(["-i", str(Path(broll_file).resolve())])
+                            b_hdr = self.is_hdr_video(Path(broll_file).resolve())
                             b_norm = self.build_color_normalize_filter(b_hdr, target_w, target_h, filter_preset="original")
                             b_source_st = round(float(b.get("source_start_time", 0.0) or 0.0), 3)
                             fade_filter = ""
@@ -816,9 +859,10 @@ class FFmpegFilterComposer:
 
             # 烧录 ASS 字幕
             if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
-                escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
-                filter_parts.append(f"{current_v}ass='{escaped_ass}'[v_sub];")
-                current_v = "[v_sub]"
+                ass_filter_expr = self._build_ass_filter_expr(ass_subtitle_path, work_dir=output_path.parent)
+                if ass_filter_expr:
+                    filter_parts.append(f"{current_v}{ass_filter_expr}[v_sub];")
+                    current_v = "[v_sub]"
 
             # 顶部横幅与水印图层
             if has_overlay:
@@ -867,7 +911,7 @@ class FFmpegFilterComposer:
             ])
 
             try:
-                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
+                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300, cwd=output_path.parent)
                 if res.returncode == 0:
                     return True
                 err_str = res.stderr.decode("utf-8", errors="replace")
@@ -887,7 +931,7 @@ class FFmpegFilterComposer:
 
         # 单一视频流快速高清转码管道 (无空镜平替时)
         if not broll_cuts:
-            inputs = ["-i", str(talking_head_path)]
+            inputs = ["-i", str(th_resolved)]
             filter_chain = []
             if not is_sped:
                 filter_chain.append(f"[0:v]{th_filter}[v_scaled]")
@@ -913,9 +957,10 @@ class FFmpegFilterComposer:
                 current_v = "[v_for_sub]"
 
             if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
-                escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
-                filter_chain.append(f"{current_v}ass='{escaped_ass}'[v_sub]")
-                current_v = "[v_sub]"
+                ass_filter_expr = self._build_ass_filter_expr(ass_subtitle_path, work_dir=output_path.parent)
+                if ass_filter_expr:
+                    filter_chain.append(f"{current_v}{ass_filter_expr}[v_sub]")
+                    current_v = "[v_sub]"
 
             if has_overlay:
                 inputs.extend(["-i", str(overlay_png_path)])
@@ -959,7 +1004,7 @@ class FFmpegFilterComposer:
             ])
 
             try:
-                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=90)
+                res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=90, cwd=output_path.parent)
                 if res.returncode == 0:
                     return True
 
@@ -973,7 +1018,7 @@ class FFmpegFilterComposer:
                 overlay_png_path.unlink(missing_ok=True)
 
         # 构建多输入与 filter_complex 滤镜链 (空镜混合模式)
-        inputs = ["-i", str(talking_head_path)]
+        inputs = ["-i", str(th_resolved)]
         fade_mode = str(strat.get("transition_style") or "cut") == "fade"
         # fade 档相邻转场下限：xfade duration 必须为正，接近 0 时视觉上即为硬切
         MIN_FADE = 0.04
@@ -1049,8 +1094,8 @@ class FFmpegFilterComposer:
                 seg["input_idx"] = next_input_idx
                 next_input_idx += 1
                 # 消除全局无限循环解码 (-stream_loop -1)，按需载入素材
-                inputs.extend(["-i", seg["path"]])
-                broll_is_hdr = self.is_hdr_video(Path(seg["path"]))
+                inputs.extend(["-i", str(Path(seg["path"]).resolve())])
+                broll_is_hdr = self.is_hdr_video(Path(seg["path"]).resolve())
                 broll_filter = self.build_color_normalize_filter(broll_is_hdr, target_w, target_h)
                 filter_parts.append(
                     f"[{seg['input_idx']}:v]trim=start={seg['trim_start']}:duration={seg['base_dur']},setpts=PTS-STARTPTS,{broll_filter}[v_seg{i}];"
@@ -1105,9 +1150,10 @@ class FFmpegFilterComposer:
             current_v = "[v_for_sub]"
 
         if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
-            escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
-            full_filter += f";{current_v}ass='{escaped_ass}'[v_sub]"
-            current_v = "[v_sub]"
+            ass_filter_expr = self._build_ass_filter_expr(ass_subtitle_path, work_dir=output_path.parent)
+            if ass_filter_expr:
+                full_filter += f";{current_v}{ass_filter_expr}[v_sub]"
+                current_v = "[v_sub]"
 
         if has_overlay:
             overlay_idx = next_input_idx
@@ -1165,7 +1211,7 @@ class FFmpegFilterComposer:
         ])
 
         try:
-            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300)
+            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300, cwd=output_path.parent)
             if res.returncode == 0:
                 return True
 
@@ -1241,18 +1287,19 @@ class FFmpegFilterComposer:
         overlay_png_path = output_path.parent / f"{output_path.stem}_fast_overlay.png"
         has_overlay = bool(self.generate_overlay_canvas(target_w, target_h, strat, overlay_png_path))
 
-        inputs = ["-i", str(clean_base_path)]
+        inputs = ["-i", str(Path(clean_base_path).resolve())]
         filter_parts = []
         current_v = "[0:v]"
 
         if strat.get("show_subtitles", True) and ass_subtitle_path and Path(ass_subtitle_path).exists():
-            escaped_ass = str(ass_subtitle_path).replace("\\", "/").replace(":", "\\:")
-            filter_parts.append(f"{current_v}ass='{escaped_ass}'[v_sub]")
-            current_v = "[v_sub]"
+            ass_filter_expr = self._build_ass_filter_expr(ass_subtitle_path, work_dir=output_path.parent)
+            if ass_filter_expr:
+                filter_parts.append(f"{current_v}{ass_filter_expr}[v_sub]")
+                current_v = "[v_sub]"
 
         if has_overlay:
             overlay_idx = len(inputs) // 2
-            inputs.extend(["-i", str(overlay_png_path)])
+            inputs.extend(["-i", str(Path(overlay_png_path).resolve())])
             filter_parts.append(f"{current_v}[{overlay_idx}:v]overlay=0:0[v_out]")
             current_v = "[v_out]"
 
@@ -1275,7 +1322,7 @@ class FFmpegFilterComposer:
         ])
 
         try:
-            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=120)
+            res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=120, cwd=output_path.parent)
             if res.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
                 return True
             err_str = res.stderr.decode("utf-8", errors="replace")

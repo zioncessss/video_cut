@@ -360,7 +360,7 @@ async def get_batch_job(job_id: str):
         raise HTTPException(status_code=404, detail="批量任务不存在")
 
     # 逐条补全工程信息、成片路径、封面、任务独立目录：完成的条目直接给出可打开的输出文件（真实产物，绝不伪造）
-    from app.core.config import STORAGE_DIR
+    from app.core.config import STORAGE_DIR, resolve_media_path
     from app.native_engine.project_storage import project_storage_service
     items_out = []
     for i in job.items:
@@ -382,8 +382,8 @@ async def get_batch_job(job_id: str):
             d["cover_image_path"] = p.cover_image_path
             if p.output_video_path:
                 d["output_video_path"] = p.output_video_path
-                full_path = STORAGE_DIR.parent / p.output_video_path
-                if full_path.exists():
+                full_path = resolve_media_path(p.output_video_path)
+                if full_path and full_path.exists():
                     d["output_absolute_path"] = str(full_path.resolve())
                     d["output_file_size_mb"] = round(full_path.stat().st_size / (1024 * 1024), 2)
         if i.status == "running":

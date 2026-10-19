@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+
 jobs:
   build:
     name: Build (${{ matrix.name }})
@@ -19,14 +23,17 @@ jobs:
         include:
           - os: windows-latest
             arch: x64
+            pyinstaller_arch: x86_64
             target: win
             name: Windows-x64
           - os: macos-latest
             arch: arm64
+            pyinstaller_arch: arm64
             target: mac-arm64
             name: macOS-AppleSilicon-arm64
-          - os: macos-13
+          - os: macos-15-intel
             arch: x64
+            pyinstaller_arch: x86_64
             target: mac-x64
             name: macOS-Intel-x64
 
@@ -78,7 +85,14 @@ jobs:
 
           # 构建原生 Mach-O Python 算力引擎 (使用绝对路径防御 specpath 相对路径错误)
           SCHEMA_SRC="$PWD/backend/app/db/schema.sql"
-          python -m PyInstaller --noconfirm --clean --name videocut-engine \
+          PY_CMD="python"
+          if [ "${{ matrix.arch }}" = "x64" ] && [ "$(uname -m)" = "arm64" ]; then
+            echo "Running under Rosetta 2 for x86_64 target..."
+            PY_CMD="arch -x86_64 python"
+          fi
+
+          $PY_CMD -m PyInstaller --noconfirm --clean --name videocut-engine \
+            --target-arch ${{ matrix.pyinstaller_arch }} \
             --paths backend \
             --collect-all certifi \
             --collect-all cv2 \
@@ -111,8 +125,23 @@ jobs:
           rm -rf resources/engine/videocut-engine
           cp -r build_engine/dist/videocut-engine resources/engine/
           chmod -R +x resources/engine/videocut-engine
-          echo "videocut-engine binary architecture:"
+
+          echo ""
+          echo "=== 校验 ${{ matrix.arch }} 二进制架构一致性 ==="
+          file resources/engine/bin/ffmpeg
+          file resources/engine/bin/ffprobe
           file resources/engine/videocut-engine/videocut-engine
+
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            file resources/engine/videocut-engine/videocut-engine | grep -qE "x86_64|universal" || { echo "FATAL: videocut-engine is not x86_64!"; exit 1; }
+            file resources/engine/bin/ffmpeg | grep -qE "x86_64|universal" || { echo "FATAL: ffmpeg is not x86_64!"; exit 1; }
+            file resources/engine/bin/ffprobe | grep -qE "x86_64|universal" || { echo "FATAL: ffprobe is not x86_64!"; exit 1; }
+          else
+            file resources/engine/videocut-engine/videocut-engine | grep -qE "arm64|universal" || { echo "FATAL: videocut-engine is not arm64!"; exit 1; }
+            file resources/engine/bin/ffmpeg | grep -qE "arm64|universal" || { echo "FATAL: ffmpeg is not arm64!"; exit 1; }
+            file resources/engine/bin/ffprobe | grep -qE "arm64|universal" || { echo "FATAL: ffprobe is not arm64!"; exit 1; }
+          fi
+          echo "✅ All macOS binaries verified 100% matching ${{ matrix.arch }}!"
 
       # Windows 构建步骤
       - name: Setup Windows FFmpeg & Build Windows Sidecar
@@ -176,9 +205,10 @@ jobs:
       - name: Package macOS Application
         if: runner.os == 'macOS'
         run: |
+          node scripts/prepackage.js --arch=${{ matrix.arch }}
           npx electron-builder --mac --${{ matrix.arch }} -p never
 
-      # 直接将各平台产物发布到 GitHub Release（彻底规避 upload-artifact 500MB 存储配额限制）
+      # 直接将各平台产物发布到 GitHub Release（按平台与架构精准隔离，杜绝交叉覆盖）
       - name: Release Platform Assets to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -189,9 +219,9 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.zip
+            dist/*-${{ matrix.arch }}-mac.dmg
+            dist/*-${{ matrix.arch }}-mac.zip
+            dist/*-Setup-*.exe
             resources/一键解除Mac拦截.command
             scripts/fix-macos-gatekeeper.command
         env:

@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
-from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections, load_glossary, save_glossary, reset_glossary_to_default
+from app.core.config import STORAGE_DIR, OUTPUTS_DIR, COVERS_DIR, TASKS_DIR, create_task_dir, ensure_storage_path, apply_glossary_corrections, load_glossary, save_glossary, reset_glossary_to_default, resolve_media_path, to_storage_relative
 import time
 from app.models.entities import (
     CutProject,
@@ -317,8 +317,8 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
 
     # 1. 成片物理文件检测：若成片已被物理清理或移动，如实同步状态，绝不伪造
     if p.output_video_path:
-        full_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
-        if full_path.exists() and full_path.is_file():
+        full_path = resolve_media_path(p.output_video_path)
+        if full_path and full_path.exists() and full_path.is_file():
             if not (p.output_absolute_path and Path(p.output_absolute_path).exists()):
                 p.output_absolute_path = str(full_path.resolve())
             if p.output_absolute_path and Path(p.output_absolute_path).exists():
@@ -357,21 +357,21 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
     # 3. 封面健壮性检测与自动自愈：优先从已压制成片截取，未压制时避开片头废动作截取
     has_valid_cover = False
     if p.cover_image_path:
-        full_cover = (STORAGE_DIR.parent / p.cover_image_path).resolve()
-        if full_cover.exists() and full_cover.is_file() and full_cover.stat().st_size > 0:
+        full_cover = resolve_media_path(p.cover_image_path)
+        if full_cover and full_cover.exists() and full_cover.is_file() and full_cover.stat().st_size > 0:
             has_valid_cover = True
 
     if not has_valid_cover:
         try:
-            cov_dir = (STORAGE_DIR.parent / p.task_dir).resolve() if p.task_dir else (STORAGE_DIR / "covers").resolve()
+            cov_dir = resolve_media_path(p.task_dir) if p.task_dir else (STORAGE_DIR / "covers").resolve()
             cov_dir.mkdir(parents=True, exist_ok=True)
             target_cover_path = cov_dir / "cover.jpg"
 
             cover_extracted = False
             # 优先从已压制成片中提取 0.5s（已含调优滤镜与字幕）
             if p.output_video_path:
-                full_out = (STORAGE_DIR.parent / p.output_video_path).resolve()
-                if full_out.exists() and full_out.is_file():
+                full_out = resolve_media_path(p.output_video_path)
+                if full_out and full_out.exists() and full_out.is_file():
                     cover_extracted = extract_cover_frame(full_out, target_cover_path, timestamp=0.5)
                     if cover_extracted:
                         p.cover_source = "rendered_video"
@@ -380,8 +380,8 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
             if not cover_extracted and p.talking_head_id:
                 th = storage_service.get_material(p.talking_head_id)
                 if th and th.filepath:
-                    full_th = (STORAGE_DIR.parent / th.filepath).resolve()
-                    if full_th.exists() and full_th.is_file():
+                    full_th = resolve_media_path(th.filepath)
+                    if full_th and full_th.exists() and full_th.is_file():
                         head_span = next((s for s in (p.prune_spans or []) if s.reason == PruneReason.HEAD_IDLE.value and s.is_active), None)
                         head_idle_end = head_span.end_time if head_span else (p.subtitles[0].start_time if p.subtitles else 0.0)
                         cover_ts = round(head_idle_end + 0.5, 3)
@@ -390,8 +390,7 @@ def _enrich_project_export_meta(p: CutProject) -> CutProject:
                             p.cover_source = "frame"
 
             if cover_extracted and target_cover_path.exists():
-                rel_path = str(target_cover_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
-                p.cover_image_path = rel_path
+                p.cover_image_path = to_storage_relative(target_cover_path)
                 project_storage_service.save_project(p)
         except Exception as e:
             print(f"[_enrich_project_export_meta] 自动恢复封面失败: {e}")
@@ -429,8 +428,8 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
             _set_progress(cached_project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成（命中缓存）")
             return _enrich_project_export_meta(cached_project)
 
-    full_th_path = STORAGE_DIR.parent / talking_head.filepath
-    if not full_th_path.exists():
+    full_th_path = resolve_media_path(talking_head.filepath)
+    if not full_th_path or not full_th_path.exists():
         raise HTTPException(status_code=404, detail="口播主视频文件在磁盘上不存在")
 
     def _notify_progress(stage: PipelineStage, percent: int, msg: str):
@@ -800,7 +799,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
         # 独立工程文件夹：每个待剪口播视频进入剪辑阶段自动安排专属目录 YYYYMMDD_HHMMSS_{title}
         task_dir_path = create_task_dir(Path(talking_head.filename).stem)
-        task_dir_rel = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
+        task_dir_rel = to_storage_relative(task_dir_path)
 
         # 策略同步：若尚未个性化定制横幅主标题，默认同步短视频标题核心关键词
         if not strat.banner_main_title or strat.banner_main_title == "科目二一把过秘籍":
@@ -857,8 +856,8 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                 for b in project.broll_replacements:
                     m = storage_service.get_material(b.material_id)
                     if m:
-                        full_b_path = STORAGE_DIR.parent / m.filepath
-                        if full_b_path.exists():
+                        full_b_path = resolve_media_path(m.filepath)
+                        if full_b_path and full_b_path.exists():
                             b_st = b.start_time
                             b_et = b.end_time
                             eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
@@ -880,7 +879,7 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
                                 "transition": transition_seconds
                             })
 
-            full_th_path = STORAGE_DIR.parent / talking_head.filepath
+            full_th_path = resolve_media_path(talking_head.filepath)
             eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
             try:
                 compose_ok = composer.compose_jl_cut(
@@ -1455,8 +1454,8 @@ async def update_project_title(project_id: str, req: UpdateTitleRequest):
         p.title = new_title
         project_storage_service.save_project(p)
         if p.task_dir:
-            td = (STORAGE_DIR.parent / p.task_dir).resolve()
-            if td.exists():
+            td = resolve_media_path(p.task_dir)
+            if td and td.exists():
                 _save_task_manifest(td, p)
     return _enrich_project_export_meta(p)
 
@@ -1501,8 +1500,8 @@ async def update_subtitles(project_id: str, req: UpdateSubtitlesRequest):
 
     project_storage_service.save_project(p)
     if p.task_dir:
-        td = (STORAGE_DIR.parent / p.task_dir).resolve()
-        if td.exists():
+        td = resolve_media_path(p.task_dir)
+        if td and td.exists():
             _save_task_manifest(td, p)
     return _enrich_project_export_meta(p)
 
@@ -1529,8 +1528,8 @@ async def update_strategy(project_id: str, strategy: EditingStrategy):
     _sync_prune_spans(p, force=prune_changed)
     project_storage_service.save_project(p)
     if p.task_dir:
-        td = (STORAGE_DIR.parent / p.task_dir).resolve()
-        if td.exists():
+        td = resolve_media_path(p.task_dir)
+        if td and td.exists():
             _save_task_manifest(td, p)
     return _enrich_project_export_meta(p)
 
@@ -1771,8 +1770,8 @@ async def split_subtitle_endpoint(project_id: str, subtitle_id: str, req: Option
 
     project_storage_service.save_project(p)
     if p.task_dir:
-        td = (STORAGE_DIR.parent / p.task_dir).resolve()
-        if td.exists():
+        td = resolve_media_path(p.task_dir)
+        if td and td.exists():
             _save_task_manifest(td, p)
 
     return {
@@ -1854,8 +1853,8 @@ async def merge_next_subtitle_endpoint(project_id: str, subtitle_id: str):
 
     project_storage_service.save_project(p)
     if p.task_dir:
-        td = (STORAGE_DIR.parent / p.task_dir).resolve()
-        if td.exists():
+        td = resolve_media_path(p.task_dir)
+        if td and td.exists():
             _save_task_manifest(td, p)
 
     return {
@@ -2034,15 +2033,13 @@ async def render_project(
     if not p.task_dir:
         stem_name = Path(th.filename).stem if th.filename else "clip"
         task_dir_path = create_task_dir(stem_name)
-        p.task_dir = str(task_dir_path.relative_to(STORAGE_DIR.parent)).replace("\\", "/")
+        p.task_dir = to_storage_relative(task_dir_path)
 
-    target_task_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+    target_task_dir = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
     target_task_dir.mkdir(parents=True, exist_ok=True)
 
     # 记录前一次的输出文件路径，渲染成功后再安全清理，避免覆盖同名文件产生 Windows 文件句柄锁冲突
-    old_output_path = None
-    if p.output_video_path:
-        old_output_path = (STORAGE_DIR.parent / p.output_video_path).resolve()
+    old_output_path = resolve_media_path(p.output_video_path) if p.output_video_path else None
 
     dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_title = sanitize_filename(p.title or (Path(th.filename).stem if th and th.filename else "成片"))
@@ -2065,8 +2062,8 @@ async def render_project(
         for b in p.broll_replacements:
             m = storage_service.get_material(b.material_id)
             if m:
-                full_b_path = STORAGE_DIR.parent / m.filepath
-                if full_b_path.exists():
+                full_b_path = resolve_media_path(m.filepath)
+                if full_b_path and full_b_path.exists():
                     b_st = b.start_time
                     b_et = b.end_time
                     eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
@@ -2121,7 +2118,7 @@ async def render_project(
     generate_srt_file(render_subtitles, srt_path, smooth_timings=True)
 
     # 4. 复合分层渲染与底包极速复用缓存（将耗时 40~60s 的全片重编码与切片，解耦为 1~2s 极速字幕压制）
-    full_th_path = STORAGE_DIR.parent / th.filepath
+    full_th_path = resolve_media_path(th.filepath)
     eff_total_dur = sum(k.duration for k in kept_spans) if kept_spans else th_dur
 
     clean_base_path = target_task_dir / "_clean_base.mp4"
@@ -2309,8 +2306,8 @@ async def render_project(
             try:
                 base_img = None
                 if p.cover_config.source in ("custom_upload", "upload") and p.cover_config.custom_image_path:
-                    cand_p = ensure_storage_path(STORAGE_DIR.parent / p.cover_config.custom_image_path)
-                    if cand_p.exists():
+                    cand_p = resolve_media_path(p.cover_config.custom_image_path)
+                    if cand_p and cand_p.exists():
                         base_img = Image.open(cand_p).convert("RGBA")
                 if not base_img:
                     ts_val = p.cover_config.frame_timestamp if p.cover_config.frame_timestamp > 0 else 0.5
@@ -2341,8 +2338,8 @@ async def render_project(
                         temp_frame = target_task_dir / f"_base_frame_{ts_tag}.jpg"
                         video_src_for_frame = base_comp_path if base_comp_path.exists() else None
                         if not video_src_for_frame and th and th.filepath:
-                            mat_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
-                            if mat_p.exists():
+                            mat_p = resolve_media_path(th.filepath)
+                            if mat_p and mat_p.exists():
                                 video_src_for_frame = mat_p
                         if video_src_for_frame:
                             import subprocess as _sub
@@ -2367,19 +2364,19 @@ async def render_project(
 
                 final_cover = render_cover_image(base_img, p.cover_config, target_size=(1080, 1920))
                 final_cover.save(cover_dest, format="JPEG", quality=95)
-                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                p.cover_image_path = to_storage_relative(cover_dest)
             except Exception as ce:
                 print(f"[render_project] 重新渲染高清封面异常，回退处理: {ce}")
                 if not cover_dest.exists():
                     extract_cover_frame(base_comp_path, cover_dest, timestamp=0.5)
-                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                p.cover_image_path = to_storage_relative(cover_dest)
         else:
             if not cover_dest.exists():
                 if extract_cover_frame(base_comp_path, cover_dest, timestamp=0.5):
-                    p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                    p.cover_image_path = to_storage_relative(cover_dest)
                     p.cover_source = "frame"
             else:
-                p.cover_image_path = f"{p.task_dir}/cover.jpg"
+                p.cover_image_path = to_storage_relative(cover_dest)
     else:
         p.cover_image_path = None
 
@@ -2540,7 +2537,7 @@ async def render_project(
                     shutil.copyfile(str(base_comp_path), str(output_path))
 
     if output_path.exists():
-        p.output_video_path = f"{p.task_dir}/{output_filename}"
+        p.output_video_path = to_storage_relative(output_path)
         p.output_absolute_path = str(output_path.resolve())
         p.output_filename = output_filename
         p.output_file_size_mb = round(output_path.stat().st_size / (1024 * 1024), 2)
@@ -2621,20 +2618,21 @@ async def get_cover_candidates(project_id: str):
     if p.talking_head_id:
         th = storage_service.get_material(p.talking_head_id)
         if th and th.filepath:
-            cand_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
-            if cand_p.exists():
+            cand_p = resolve_media_path(th.filepath)
+            if cand_p and cand_p.exists():
                 video_file = cand_p
     if not video_file and p.output_video_path:
-        out_p = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
-        if out_p.exists():
+        out_p = resolve_media_path(p.output_video_path)
+        if out_p and out_p.exists():
             video_file = out_p
 
     if not video_file:
         raise HTTPException(status_code=400, detail="未找到视频源文件，无法截取候选帧")
 
     if p.task_dir:
-        target_dir = (STORAGE_DIR.parent / p.task_dir / "thumbs").resolve()
-        rel_base = f"{p.task_dir}/thumbs"
+        td_resolved = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
+        target_dir = td_resolved / "thumbs"
+        rel_base = f"{to_storage_relative(td_resolved)}/thumbs"
     else:
         target_dir = (COVERS_DIR / "candidates" / p.id).resolve()
         rel_base = f"storage/covers/candidates/{p.id}"
@@ -2674,11 +2672,11 @@ async def set_project_cover(project_id: str, req: CoverRequest):
 
     # 保存路径
     if p.task_dir:
-        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        target_dir = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         cover_name = "cover.jpg"
         cover_path = target_dir / cover_name
-        rel_cover = f"{p.task_dir}/{cover_name}"
+        rel_cover = to_storage_relative(cover_path)
     else:
         ts_now = int(time.time())
         cover_name = f"cover_{p.id}_{ts_now}.jpg"
@@ -2690,18 +2688,18 @@ async def set_project_cover(project_id: str, req: CoverRequest):
     if source == "video_frame":
         video_file = None
         if p.task_dir:
-            base_p = ensure_storage_path(STORAGE_DIR.parent / p.task_dir / "_base_composition.mp4")
+            base_p = (resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()) / "_base_composition.mp4"
             if base_p.exists() and base_p.stat().st_size > 10240:
                 video_file = base_p
         if not video_file and p.output_video_path:
-            out_p = ensure_storage_path(STORAGE_DIR.parent / p.output_video_path)
-            if out_p.exists():
+            out_p = resolve_media_path(p.output_video_path)
+            if out_p and out_p.exists():
                 video_file = out_p
         if not video_file and p.talking_head_id:
             th = storage_service.get_material(p.talking_head_id)
             if th and th.filepath:
-                cand_p = ensure_storage_path(STORAGE_DIR.parent / th.filepath)
-                if cand_p.exists():
+                cand_p = resolve_media_path(th.filepath)
+                if cand_p and cand_p.exists():
                     video_file = cand_p
 
         if not video_file:
@@ -2712,8 +2710,9 @@ async def set_project_cover(project_id: str, req: CoverRequest):
         ts_tag = int(round(float(ts_val) * 100))
         cand_dirs = []
         if p.task_dir:
-            cand_dirs.append((STORAGE_DIR.parent / p.task_dir / "thumbs").resolve())
-            cand_dirs.append((STORAGE_DIR.parent / p.task_dir).resolve())
+            td_resolved = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
+            cand_dirs.append(td_resolved / "thumbs")
+            cand_dirs.append(td_resolved)
         cand_dirs.append((COVERS_DIR / "candidates" / p.id).resolve())
 
         for cdir in cand_dirs:
@@ -2750,8 +2749,8 @@ async def set_project_cover(project_id: str, req: CoverRequest):
 
     elif source == "custom_upload":
         if req.custom_image_path:
-            img_p = ensure_storage_path(STORAGE_DIR.parent / req.custom_image_path)
-            if img_p.exists():
+            img_p = resolve_media_path(req.custom_image_path)
+            if img_p and img_p.exists():
                 base_img = Image.open(img_p).convert("RGBA")
         elif req.image_base64:
             import base64 as _b64
@@ -2786,8 +2785,9 @@ async def set_project_cover(project_id: str, req: CoverRequest):
     project_storage_service.save_project(p)
 
     if p.task_dir:
-        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
-        _save_task_manifest(target_dir, p)
+        target_dir = resolve_media_path(p.task_dir)
+        if target_dir and target_dir.exists():
+            _save_task_manifest(target_dir, p)
 
     return {
         "code": 0,
@@ -2824,22 +2824,22 @@ async def upload_project_cover(
 
     cover_ext = ext if ext in valid_exts else ".jpg"
     if p.task_dir:
-        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
+        target_dir = resolve_media_path(p.task_dir) or (STORAGE_DIR.parent / p.task_dir).resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         raw_name = f"custom_cover_raw{cover_ext}"
         adapted_name = "cover.jpg"
         raw_path = target_dir / raw_name
         adapted_path = target_dir / adapted_name
-        rel_raw = f"{p.task_dir}/{raw_name}"
-        rel_cover = f"{p.task_dir}/{adapted_name}"
+        rel_raw = to_storage_relative(raw_path)
+        rel_cover = to_storage_relative(adapted_path)
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         raw_name = f"custom_raw_{p.id}_{ts}{cover_ext}"
         adapted_name = f"cover_{p.id}_{ts}.jpg"
         raw_path = COVERS_DIR / raw_name
         adapted_path = COVERS_DIR / adapted_name
-        rel_raw = f"storage/covers/{raw_name}"
-        rel_cover = f"storage/covers/{adapted_name}"
+        rel_raw = to_storage_relative(raw_path)
+        rel_cover = to_storage_relative(adapted_path)
 
     raw_path.write_bytes(content)
 
@@ -2867,8 +2867,9 @@ async def upload_project_cover(
     project_storage_service.save_project(p)
 
     if p.task_dir:
-        target_dir = (STORAGE_DIR.parent / p.task_dir).resolve()
-        _save_task_manifest(target_dir, p)
+        target_dir = resolve_media_path(p.task_dir)
+        if target_dir and target_dir.exists():
+            _save_task_manifest(target_dir, p)
 
     return {
         "code": 0,
@@ -2900,19 +2901,22 @@ async def open_folder(req: OpenFolderRequest = OpenFolderRequest()):
         p = project_storage_service.get_by_project_id(req.project_id)
         if p:
             if p.task_dir:
-                td = (STORAGE_DIR.parent / p.task_dir).resolve()
-                if td.exists():
+                td = resolve_media_path(p.task_dir)
+                if td and td.exists():
                     target_path = td
             if not target_path and p.output_video_path:
-                vp = (STORAGE_DIR.parent / p.output_video_path).resolve()
-                if vp.exists():
+                vp = resolve_media_path(p.output_video_path)
+                if vp and vp.exists():
                     target_path = vp
     elif req.path:
         p = Path(req.path)
-        if p.is_absolute():
+        if p.is_absolute() and p.exists():
             target_path = p
         else:
-            target_path = (STORAGE_DIR.parent / req.path).resolve()
+            target_path = resolve_media_path(req.path)
+
+    if not target_path or not target_path.exists():
+        target_path = TASKS_DIR.resolve() if TASKS_DIR.exists() else OUTPUTS_DIR.resolve()
 
     if not target_path or not target_path.exists():
         target_path = TASKS_DIR.resolve() if TASKS_DIR.exists() else OUTPUTS_DIR.resolve()

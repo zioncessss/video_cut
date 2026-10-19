@@ -130,6 +130,20 @@ export class EngineManager {
 
     const cwd = app.isPackaged && process.platform === 'darwin' ? app.getPath('userData') : projectRoot;
 
+    // macOS 架构主动防御检查：若在 Intel Mac 上运行了 arm64 sidecar，提前抛出明确提示
+    if (process.platform === 'darwin' && useSidecar && existsSync(pythonExecutable)) {
+      try {
+        const fileCheck = spawnSync('file', [pythonExecutable], { encoding: 'utf-8' });
+        const out = fileCheck.stdout || '';
+        if (process.arch === 'x64' && out.includes('arm64') && !out.includes('x86_64')) {
+          console.error('[EngineManager] 架构不匹配：当前为 Intel (x64) 系统，但内置引擎为 arm64 架构！');
+          throw new Error('【芯片架构不匹配】当前 Mac 为 Intel (x86_64) 处理器，但安装了 Apple Silicon (arm64) 版安装包。请前往 GitHub Release 下载专属的 VideoCut-*-x64-mac.dmg 版本！');
+        }
+      } catch (err: any) {
+        if (err.message && err.message.includes('芯片架构不匹配')) throw err;
+      }
+    }
+
     console.log(`[EngineManager] Starting Python engine (${useSidecar ? 'sidecar' : 'dev'}) using: ${pythonExecutable} on port ${this.port}`);
 
     // 存储目录铁律：数据优先存放在软件程序根目录的 storage 下，不在系统 C 盘 AppData 占用宝贵空间；
@@ -159,14 +173,25 @@ export class EngineManager {
     if (isCurrentDbEmpty) {
       // 多路径自动探查候选数据源：
       // 1. 系统独立持久存储区 (%LOCALAPPDATA%\videocut_persistent_storage)
-      // 2. 本地开发/已有工程目录 (D:\project\video_cut\storage 或 resolve(projectRoot, '../../storage'))
+      // 2. 之前记录的 active_storage_dir
       // 3. 用户数据目录 (app.getPath('userData')/storage)
       const candidateDirs: string[] = [];
-      if (persistentBackupDir) candidateDirs.push(persistentBackupDir);
-      candidateDirs.push('D:\\project\\video_cut\\storage');
+      if (persistentBackupDir) {
+        candidateDirs.push(persistentBackupDir);
+        const activePtr = resolve(persistentBackupDir, 'active_storage_dir.txt');
+        if (existsSync(activePtr)) {
+          try {
+            const hist = readFileSync(activePtr, 'utf-8').trim();
+            if (hist && existsSync(hist)) candidateDirs.push(hist);
+          } catch {}
+        }
+      }
       try {
-        candidateDirs.push(resolve(projectRoot, '../../storage'));
         candidateDirs.push(resolve(app.getPath('userData'), 'storage'));
+        if (!app.isPackaged) {
+          candidateDirs.push(resolve(projectRoot, 'storage'));
+          candidateDirs.push(resolve(projectRoot, '../../storage'));
+        }
       } catch {}
 
       let bestCandidate: string | null = null;
@@ -316,12 +341,15 @@ export class EngineManager {
       }
     );
 
+    let lastStderr = '';
     this.process.stdout?.on('data', (data) => {
       console.log(`[PythonEngine] ${data.toString().trim()}`);
     });
 
     this.process.stderr?.on('data', (data) => {
-      console.error(`[PythonEngine Error] ${data.toString().trim()}`);
+      const msg = data.toString().trim();
+      lastStderr = (lastStderr + '\n' + msg).slice(-2000);
+      console.error(`[PythonEngine Error] ${msg}`);
     });
 
     this.process.on('exit', (code) => {
@@ -338,9 +366,13 @@ export class EngineManager {
         console.log(`[EngineManager] Python engine is now healthy and ready on ${this.apiBase}`);
         return;
       }
+      if (!this.process) {
+        break;
+      }
     }
     // 真实执行铁律：引擎起不来必须显式抛错，由主进程弹窗告知用户，绝不静默降级开窗
-    throw new Error(`算力引擎在 ${timeoutMs / 1000}s 内未就绪（端口 ${this.port}）。请检查 resources/engine 引擎产物或 .venv 开发环境后重启应用。`);
+    const detail = lastStderr ? `\n\n引擎报错明细：\n${lastStderr}` : '';
+    throw new Error(`算力引擎在 ${timeoutMs / 1000}s 内未能就绪（端口 ${this.port}）。${detail}\n\n请检查 resources/engine 产物、系统架构兼容性或 .venv 开发环境后重启应用。`);
   }
 
   public static stopEngine(): void {
@@ -352,7 +384,18 @@ export class EngineManager {
         const currentDb = resolve(this.storageDir, 'videocut.db');
         if (persistentBackupDir && existsSync(currentDb) && statSync(currentDb).size > 90 * 1024) {
           mkdirSync(persistentBackupDir, { recursive: true });
-          cpSync(this.storageDir, persistentBackupDir, { recursive: true });
+          const syncFiles = ['videocut.db', 'videocut.db-wal', 'videocut.db-shm', 'settings.json', 'glossary.json', 'banned_words.json', 'materials_meta.json'];
+          for (const f of syncFiles) {
+            const src = resolve(this.storageDir, f);
+            if (existsSync(src)) {
+              cpSync(src, resolve(persistentBackupDir, f));
+            }
+          }
+          const projDir = resolve(this.storageDir, 'projects');
+          if (existsSync(projDir)) {
+            cpSync(projDir, resolve(persistentBackupDir, 'projects'), { recursive: true });
+          }
+          writeFileSync(resolve(persistentBackupDir, 'active_storage_dir.txt'), this.storageDir, 'utf-8');
         }
       } catch (e) {
         console.warn('[EngineManager] 同步持久备份数据失败:', e);

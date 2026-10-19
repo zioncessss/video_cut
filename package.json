@@ -1,6 +1,6 @@
 {
   "name": "videocut",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "AI 智能驾校口播短视频极速剪辑与混剪工具",
   "main": "./out/main/index.js",
   "author": "VideoCut Team",
@@ -12,8 +12,8 @@
     "prepackage": "node scripts/prepackage.js",
     "build:win": "node scripts/prepackage.js && electron-vite build && electron-builder --win",
     "build:mac": "node scripts/prepackage.js && electron-vite build && electron-builder --mac",
-    "build:mac:x64": "node scripts/prepackage.js && electron-vite build && electron-builder --mac --x64",
-    "build:mac:arm64": "node scripts/prepackage.js && electron-vite build && electron-builder --mac --arm64",
+    "build:mac:x64": "node scripts/prepackage.js --arch=x64 && electron-vite build && electron-builder --mac --x64",
+    "build:mac:arm64": "node scripts/prepackage.js --arch=arm64 && electron-vite build && electron-builder --mac --arm64",
     "build:mac-zip": "node scripts/prepackage.js && electron-vite build && electron-builder --mac zip",
     "build:all": "node scripts/prepackage.js && electron-vite build && electron-builder -mw"
   },

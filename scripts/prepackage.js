@@ -16,8 +16,20 @@ const rootDir = path.resolve(__dirname, '..');
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 
+let targetArch = 'x64';
+const archArg = process.argv.find((a) => a.startsWith('--arch='));
+if (archArg) {
+  targetArch = archArg.split('=')[1].trim();
+} else if (process.env.TARGET_ARCH) {
+  targetArch = process.env.TARGET_ARCH.trim();
+} else if (process.env.npm_config_arch) {
+  targetArch = process.env.npm_config_arch.trim();
+} else {
+  targetArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+}
+
 console.log('--------------------------------------------------');
-console.log(' [PrePackage] 正在校验桌面端打包所需关键依赖资源...');
+console.log(` [PrePackage] 正在校验桌面端打包所需关键依赖资源 (目标架构: ${targetArch})...`);
 console.log('--------------------------------------------------');
 
 // 1. 确保 resources/engine/bin 及其可执行程序
@@ -31,10 +43,29 @@ const ffprobeName = isWin ? 'ffprobe.exe' : 'ffprobe';
 const ffmpegDest = path.resolve(binDir, ffmpegName);
 const ffprobeDest = path.resolve(binDir, ffprobeName);
 
+function checkBinaryArchMatch(filePath, expectedArch) {
+  if (!isMac || !fs.existsSync(filePath)) return true;
+  try {
+    const fileOut = execSync(`file "${filePath}"`, { stdio: 'pipe' }).toString();
+    if (expectedArch === 'x64' || expectedArch === 'x86_64') {
+      return fileOut.includes('x86_64') || fileOut.includes('universal');
+    } else if (expectedArch === 'arm64') {
+      return fileOut.includes('arm64') || fileOut.includes('universal');
+    }
+  } catch (_) {}
+  return true;
+}
+
 function findOrDownload(binName, destPath, downloadUrl) {
   if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1024) {
-    console.log(` [PrePackage] ✓ 已就绪: ${path.relative(rootDir, destPath)}`);
-    return true;
+    if (checkBinaryArchMatch(destPath, targetArch)) {
+      console.log(` [PrePackage] ✓ 已就绪 (架构匹配 ${targetArch}): ${path.relative(rootDir, destPath)}`);
+      return true;
+    }
+    console.warn(` [PrePackage] ⚠️ 发现现存 ${binName} 架构与目标架构 ${targetArch} 不匹配，正在清理重新拉取...`);
+    try {
+      fs.unlinkSync(destPath);
+    } catch (_) {}
   }
 
   // 1. 尝试从系统探测并复制
@@ -70,7 +101,7 @@ function findOrDownload(binName, destPath, downloadUrl) {
     } catch (_) {}
 
     for (const c of candidates) {
-      if (fs.existsSync(c)) {
+      if (fs.existsSync(c) && checkBinaryArchMatch(c, targetArch)) {
         found = c;
         break;
       }
@@ -85,7 +116,7 @@ function findOrDownload(binName, destPath, downloadUrl) {
 
   // 2. 尝试使用 curl 下载静态独立包
   if (downloadUrl) {
-    console.log(` [PrePackage] 正在从 GitHub 极速拉取静态独立版 ${binName}...`);
+    console.log(` [PrePackage] 正在从 GitHub 极速拉取静态独立版 ${binName} (${targetArch})...`);
     try {
       execSync(`curl -fSL "${downloadUrl}" -o "${destPath}"`, { stdio: 'inherit' });
       if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1024) {
@@ -101,13 +132,12 @@ function findOrDownload(binName, destPath, downloadUrl) {
   return false;
 }
 
-const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
 const ffmpegUrl = isWin
   ? 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64'
-  : `https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${arch}`;
+  : `https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-${targetArch}`;
 const ffprobeUrl = isWin
   ? 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64'
-  : `https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${arch}`;
+  : `https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-${targetArch}`;
 
 const hasFFmpeg = findOrDownload(ffmpegName, ffmpegDest, ffmpegUrl);
 const hasFFprobe = findOrDownload(ffprobeName, ffprobeDest, ffprobeUrl);
@@ -131,11 +161,23 @@ if (!fs.existsSync(sidecarExe)) {
   if (isWin) {
     console.error('  powershell -ExecutionPolicy Bypass -File scripts/build-engine.ps1\n');
   } else {
-    console.error('  bash scripts/build-engine.sh\n');
+    console.error(`  bash scripts/build-engine.sh --arch=${targetArch}\n`);
   }
   process.exit(1);
 } else {
-  console.log(` [PrePackage] ✓ 已就绪: ${path.relative(rootDir, sidecarExe)}`);
+  if (isMac && !checkBinaryArchMatch(sidecarExe, targetArch)) {
+    console.error(`\n❌【致命错误】Python 算力引擎架构不匹配！`);
+    console.error(`  当前打包目标架构为: ${targetArch}`);
+    try {
+      const actArch = execSync(`file "${sidecarExe}"`, { stdio: 'pipe' }).toString().trim();
+      console.error(`  但现有 videocut-engine 二进制实际架构为: ${actArch}`);
+    } catch (_) {}
+    console.error(`请针对 ${targetArch} 架构重新构建算力引擎后再打包：`);
+    console.error(`  bash scripts/build-engine.sh --arch=${targetArch}\n`);
+    process.exit(1);
+  }
+
+  console.log(` [PrePackage] ✓ 已就绪 (架构匹配 ${targetArch}): ${path.relative(rootDir, sidecarExe)}`);
   if (!isWin) {
     try {
       fs.chmodSync(sidecarExe, 0o755);

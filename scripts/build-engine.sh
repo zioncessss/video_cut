@@ -5,9 +5,19 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT="$( cd "$DIR/.." && pwd )"
 ARCH=$(uname -m)
+for arg in "$@"; do
+    case $arg in
+        --arch=x64|--arch=x86_64|x64|x86_64)
+            ARCH="x86_64"
+            ;;
+        --arch=arm64|arm64)
+            ARCH="arm64"
+            ;;
+    esac
+done
 
 echo "========================================================"
-echo "  VideoCut macOS 算力引擎构建工具 (架构: $ARCH)"
+echo "  VideoCut macOS 算力引擎构建工具 (目标架构: $ARCH)"
 echo "========================================================"
 
 PYTHON="python3"
@@ -15,10 +25,15 @@ if [ -f "$ROOT/.venv/bin/python" ]; then
     PYTHON="$ROOT/.venv/bin/python"
 fi
 
+if [ "$ARCH" = "x86_64" ] && [ "$(uname -m)" = "arm64" ]; then
+    echo "提示：在 Apple Silicon 主机上构建 x86_64 架构，启用 Rosetta 2 转译..."
+    PYTHON="arch -x86_64 $PYTHON"
+fi
+
 echo "[1/4] 检查 PyInstaller 环境..."
 $PYTHON -m pip install -q pyinstaller || true
 
-echo "[2/4] 构建 macOS Mach-O videocut-engine 算力引擎..."
+echo "[2/4] 构建 macOS Mach-O videocut-engine 算力引擎 ($ARCH)..."
 WORK_PATH="$ROOT/build_engine"
 DIST_PATH="$WORK_PATH/dist"
 SCHEMA_SRC="$ROOT/backend/app/db/schema.sql"
@@ -26,6 +41,7 @@ SCHEMA_SRC="$ROOT/backend/app/db/schema.sql"
 $PYTHON -m PyInstaller \
   --noconfirm --clean \
   --name videocut-engine \
+  --target-arch "$ARCH" \
   --paths "$ROOT/backend" \
   --collect-all certifi \
   --collect-all cv2 \
@@ -72,22 +88,35 @@ if [ "$ARCH" = "x86_64" ]; then
     CURL_ARCH="x64"
 fi
 
-if [ ! -f "$FFMPEG_DEST" ]; then
-    if command -v ffmpeg >/dev/null 2>&1; then
-        cp "$(which ffmpeg)" "$FFMPEG_DEST"
-    else
-        echo "  正在拉取 static ffmpeg for $CURL_ARCH..."
-        curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-$CURL_ARCH" -o "$FFMPEG_DEST"
+# 检查已存在 ffmpeg 架构，若与目标架构不符则清理重拉
+if [ -f "$FFMPEG_DEST" ]; then
+    if [ "$ARCH" = "x86_64" ] && ! file "$FFMPEG_DEST" | grep -qE "x86_64|universal"; then
+        echo "  清理非 x86_64 架构的旧 ffmpeg..."
+        rm -f "$FFMPEG_DEST"
+    elif [ "$ARCH" = "arm64" ] && ! file "$FFMPEG_DEST" | grep -qE "arm64|universal"; then
+        echo "  清理非 arm64 架构的旧 ffmpeg..."
+        rm -f "$FFMPEG_DEST"
     fi
 fi
 
-if [ ! -f "$FFPROBE_DEST" ]; then
-    if command -v ffprobe >/dev/null 2>&1; then
-        cp "$(which ffprobe)" "$FFPROBE_DEST"
-    else
-        echo "  正在拉取 static ffprobe for $CURL_ARCH..."
-        curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-$CURL_ARCH" -o "$FFPROBE_DEST"
+if [ -f "$FFPROBE_DEST" ]; then
+    if [ "$ARCH" = "x86_64" ] && ! file "$FFPROBE_DEST" | grep -qE "x86_64|universal"; then
+        echo "  清理非 x86_64 架构的旧 ffprobe..."
+        rm -f "$FFPROBE_DEST"
+    elif [ "$ARCH" = "arm64" ] && ! file "$FFPROBE_DEST" | grep -qE "arm64|universal"; then
+        echo "  清理非 arm64 架构的旧 ffprobe..."
+        rm -f "$FFPROBE_DEST"
     fi
+fi
+
+if [ ! -f "$FFMPEG_DEST" ]; then
+    echo "  正在拉取 static ffmpeg for $CURL_ARCH..."
+    curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-$CURL_ARCH" -o "$FFMPEG_DEST"
+fi
+
+if [ ! -f "$FFPROBE_DEST" ]; then
+    echo "  正在拉取 static ffprobe for $CURL_ARCH..."
+    curl -fSL "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-$CURL_ARCH" -o "$FFPROBE_DEST"
 fi
 
 chmod +x "$ROOT/resources/engine/bin/"* 2>/dev/null || true
@@ -96,6 +125,20 @@ mkdir -p "$ROOT/resources/default_storage"
 [ -f "$ROOT/storage/glossary.json" ] && cp "$ROOT/storage/glossary.json" "$ROOT/resources/default_storage/" || true
 [ -f "$ROOT/storage/banned_words.json" ] && cp "$ROOT/storage/banned_words.json" "$ROOT/resources/default_storage/" || true
 
+echo ""
+echo "--- 架构一致性校验 ---"
+file "$ROOT/resources/engine/videocut-engine/videocut-engine"
+file "$FFMPEG_DEST"
+file "$FFPROBE_DEST"
+
+if [ "$ARCH" = "x86_64" ]; then
+    file "$ROOT/resources/engine/videocut-engine/videocut-engine" | grep -qE "x86_64|universal" || { echo "❌ 致命错误: videocut-engine 不是 x86_64 架构!"; exit 1; }
+    file "$FFMPEG_DEST" | grep -qE "x86_64|universal" || { echo "❌ 致命错误: ffmpeg 不是 x86_64 架构!"; exit 1; }
+else
+    file "$ROOT/resources/engine/videocut-engine/videocut-engine" | grep -qE "arm64|universal" || { echo "❌ 致命错误: videocut-engine 不是 arm64 架构!"; exit 1; }
+    file "$FFMPEG_DEST" | grep -qE "arm64|universal" || { echo "❌ 致命错误: ffmpeg 不是 arm64 架构!"; exit 1; }
+fi
+
 echo "========================================================"
-echo "  ✅ macOS videocut-engine 算力引擎构建成功！"
+echo "  ✅ macOS videocut-engine ($ARCH) 算力引擎与依赖组件构建成功！"
 echo "========================================================"

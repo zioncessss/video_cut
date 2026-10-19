@@ -29,19 +29,13 @@
     ${endIf}
   ${endIf}
 
-  # 2. 如果旧安装目录下存在 storage 用户数据，在覆盖安装或旧版卸载前将其完整安全备份至 LOCALAPPDATA 独立持久区
+  # 2. 如果旧安装目录下存在 storage 用户数据，在覆盖安装或旧版卸载前将其核心数据库与元数据备份至 LOCALAPPDATA 独立持久区
   ${if} $OLD_INSTALL_DIR != ""
     ${if} ${FileExists} "$OLD_INSTALL_DIR\storage\videocut.db"
       CreateDirectory "$LOCALAPPDATA\videocut_persistent_storage"
-      nsExec::Exec 'cmd /c "xcopy \"$OLD_INSTALL_DIR\storage\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" /E /I /Y /Q /H /R >nul 2>&1"'
-    ${endIf}
-  ${endIf}
-
-  # 3. 兜底保护：若持久区无数据，而开发/工作区存在有效数据，同步至持久备份区作为底火
-  ${if} ${FileExists} "D:\project\video_cut\storage\videocut.db"
-    ${ifNot} ${FileExists} "$LOCALAPPDATA\videocut_persistent_storage\videocut.db"
-      CreateDirectory "$LOCALAPPDATA\videocut_persistent_storage"
-      nsExec::Exec 'cmd /c "xcopy \"D:\project\video_cut\storage\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" /E /I /Y /Q /H /R >nul 2>&1"'
+      nsExec::Exec 'cmd /c "copy /Y \"$OLD_INSTALL_DIR\storage\videocut.db*\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" >nul 2>&1"'
+      nsExec::Exec 'cmd /c "copy /Y \"$OLD_INSTALL_DIR\storage\*.json\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" >nul 2>&1"'
+      nsExec::Exec 'cmd /c "echo $OLD_INSTALL_DIR\storage > \"$LOCALAPPDATA\videocut_persistent_storage\active_storage_dir.txt\""'
     ${endIf}
   ${endIf}
 !macroend
@@ -56,8 +50,6 @@
   ${ifNot} ${FileExists} "$INSTDIR\storage\videocut.db"
     ${if} ${FileExists} "$LOCALAPPDATA\videocut_persistent_storage\videocut.db"
       nsExec::Exec 'cmd /c "xcopy \"$LOCALAPPDATA\videocut_persistent_storage\" \"$INSTDIR\storage\\\" /E /I /Y /Q /H /R >nul 2>&1"'
-    ${elseIf} ${FileExists} "D:\project\video_cut\storage\videocut.db"
-      nsExec::Exec 'cmd /c "xcopy \"D:\project\video_cut\storage\" \"$INSTDIR\storage\\\" /E /I /Y /Q /H /R >nul 2>&1"'
     ${endIf}
   ${endIf}
 
@@ -71,7 +63,9 @@
   # 卸载启动时：始终无条件将现有 storage 数据镜像同步到 LOCALAPPDATA 独立持久区，防范更新卸载流程抹除数据
   ${if} ${FileExists} "$INSTDIR\storage\videocut.db"
     CreateDirectory "$LOCALAPPDATA\videocut_persistent_storage"
-    nsExec::Exec 'cmd /c "xcopy \"$INSTDIR\storage\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" /E /I /Y /Q /H /R >nul 2>&1"'
+    nsExec::Exec 'cmd /c "copy /Y \"$INSTDIR\storage\videocut.db*\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" >nul 2>&1"'
+    nsExec::Exec 'cmd /c "copy /Y \"$INSTDIR\storage\*.json\" \"$LOCALAPPDATA\videocut_persistent_storage\\\" >nul 2>&1"'
+    nsExec::Exec 'cmd /c "echo $INSTDIR\storage > \"$LOCALAPPDATA\videocut_persistent_storage\active_storage_dir.txt\""'
   ${endIf}
 !macroend
 

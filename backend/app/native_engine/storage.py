@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple, Any
-from app.core.config import CATEGORY_DIRS, STORAGE_DIR, ALLOWED_VIDEO_EXTENSIONS, ensure_storage_path
+from app.core.config import CATEGORY_DIRS, STORAGE_DIR, ALLOWED_VIDEO_EXTENSIONS, ensure_storage_path, resolve_media_path, to_storage_relative
 from app.models.entities import Material, MaterialCategory
 from app.db.repository import MaterialRepository
 
@@ -110,8 +110,8 @@ class StorageService:
         # 1. 精准查重 (Deduplication)：优先检查数据库中是否已存在内容完全一致且物理文件存在的素材
         existing_matches = self.repo.find_by_hash(content_hash)
         for cand in existing_matches:
-            full_cand_path = (STORAGE_DIR.parent / cand.filepath).resolve()
-            if full_cand_path.exists() and full_cand_path.stat().st_size > 0:
+            full_cand_path = resolve_media_path(cand.filepath)
+            if full_cand_path and full_cand_path.exists() and full_cand_path.stat().st_size > 0:
                 if cand.category == category:
                     # 同分类完全一致：若传入了新的 plate_region 则更新属性
                     if plate_region and cand.plate_region != plate_region:
@@ -142,8 +142,8 @@ class StorageService:
         for cand in all_materials:
             if cand.content_hash:
                 continue
-            full_cand_path = (STORAGE_DIR.parent / cand.filepath).resolve()
-            if full_cand_path.exists() and full_cand_path.stat().st_size == file_size:
+            full_cand_path = resolve_media_path(cand.filepath)
+            if full_cand_path and full_cand_path.exists() and full_cand_path.stat().st_size == file_size:
                 cand_hash, _ = self.compute_file_hash(full_cand_path)
                 cand.content_hash = cand_hash
                 cand.file_size = file_size
@@ -265,8 +265,8 @@ class StorageService:
                 for x in self.repo.list_all()
             )
             if not still_referenced:
-                full_path = STORAGE_DIR.parent / m.filepath
-                if full_path.exists():
+                full_path = resolve_media_path(m.filepath)
+                if full_path and full_path.exists():
                     try:
                         full_path.unlink()
                     except Exception:
@@ -377,8 +377,8 @@ class StorageService:
         mat_models = self.repo.list_all()
         hash_to_materials: Dict[str, List[Material]] = {}
         for m in mat_models:
-            full_p = (STORAGE_DIR.parent / m.filepath).resolve()
-            if not full_p.exists():
+            full_p = resolve_media_path(m.filepath)
+            if not full_p or not full_p.exists():
                 # 物理文件已不存在，清理此失效记录
                 if not dry_run:
                     self.repo.delete(m.id)
@@ -429,8 +429,9 @@ class StorageService:
 
                         # 如果 dup 的物理文件与 chosen 的物理文件不同，删除冗余物理文件
                         if dup.filepath != chosen.filepath:
-                            dup_path = (STORAGE_DIR.parent / dup.filepath).resolve()
-                            if dup_path.exists() and dup_path != (STORAGE_DIR.parent / chosen.filepath).resolve():
+                            dup_path = resolve_media_path(dup.filepath)
+                            chosen_path = resolve_media_path(chosen.filepath)
+                            if dup_path and dup_path.exists() and dup_path != chosen_path:
                                 freed_bytes += dup_path.stat().st_size
                                 try:
                                     dup_path.unlink(missing_ok=True)
