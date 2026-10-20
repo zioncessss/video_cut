@@ -420,10 +420,10 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
     existing_proj = project_storage_service.get_by_material_id(req.talking_head_id)
     known_proj_id = existing_proj.id if existing_proj else None
 
-    # 如果非强制重算，且该视频已有持久化缓存工程，则直接加载返回
+    # 如果非强制重算，且该视频已有持久化缓存工程（且画幅一致），则直接加载返回
     if not req.force_retranscribe:
         cached_project = project_storage_service.get_by_material_id(req.talking_head_id)
-        if cached_project:
+        if cached_project and (not req.aspect_ratio or cached_project.aspect_ratio == req.aspect_ratio):
             _set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成（命中缓存）")
             _set_progress(cached_project.id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成（命中缓存）")
             return _enrich_project_export_meta(cached_project)
@@ -442,7 +442,10 @@ async def analyze_and_cut(req: AnalyzeAndCutRequest):
 
         # 1. 固化 ASR 转写（自然句层，不切割）与智能合并
         _notify_progress(PipelineStage.ASR_TRANSCRIBING, 45, "ASR 语音转写中（自然句层）...")
-        raw_segments = await asyncio.to_thread(asr_runner.transcribe, full_th_path)
+        if existing_proj and existing_proj.raw_asr_segments and not req.force_retranscribe:
+            raw_segments = existing_proj.raw_asr_segments
+        else:
+            raw_segments = await asyncio.to_thread(asr_runner.transcribe, full_th_path)
 
         # 2. 字幕处理（支持高精 ASR 直通模式，杜绝大模型过度纠偏）：
         #    若开启 enable_llm_correction 则走大模型纠偏；

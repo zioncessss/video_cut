@@ -56,6 +56,10 @@ async def _run_one(
     filter_banned_words: bool = False
 ) -> None:
     """执行单个口播视频的完整剪辑流水线，任何失败如实落库"""
+    # 清理上一次该素材可能残留的进度条状态
+    from app.api.editor import _pipeline_progress
+    _pipeline_progress.pop(item.material_id, None)
+
     item.status = "running"
     item.progress = 5
     _persist(job)
@@ -174,7 +178,7 @@ async def _execute_job(
     tasks = []
     for idx, it in enumerate(target_items):
         t = asyncio.create_task(worker(it, delay=idx * 0.25))
-        job_tasks[it.material_id] = t
+        job_tasks[f"{it.material_id}_{idx}"] = t
         tasks.append(t)
 
     try:
@@ -352,7 +356,7 @@ async def import_and_cut(req: BatchImportRequest, bg_tasks: BackgroundTasks):
 @router.get("/jobs/{job_id}")
 async def get_batch_job(job_id: str):
     job = None
-    if job_id in _running_tasks:
+    if job_id in _running_tasks or job_id in _jobs:
         job = _jobs.get(job_id)
     if not job:
         job = BatchJobRepository().get_by_id(job_id)
@@ -414,10 +418,9 @@ async def get_batch_job(job_id: str):
 async def list_batch_jobs():
     db_jobs = BatchJobRepository().list_all()
     jobs_map = {j.id: j for j in db_jobs}
-    # 仅将当前真正处于活跃调度中（_running_tasks）的内存状态覆盖进来，确保不覆盖 SQLite 权威落库
+    # 内存中的活跃作业（_jobs）状态优先，确保不漏掉刚加入且正在执行的作业
     for j_id, j in _jobs.items():
-        if j_id in _running_tasks:
-            jobs_map[j_id] = j
+        jobs_map[j_id] = j
     jobs = sorted(jobs_map.values(), key=lambda x: getattr(x, "created_at", 0) or 0, reverse=True)
     return {
         "code": 0,
@@ -448,7 +451,7 @@ async def cancel_batch_job(job_id: str):
         job.status = BatchJobStatus.CANCELED
 
         job_tasks = _running_tasks.get(job_id, {})
-        for mid, task in job_tasks.items():
+        for task_key, task in list(job_tasks.items()):
             if not task.done():
                 task.cancel()
 

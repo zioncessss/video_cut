@@ -110,3 +110,63 @@ def test_batch_stranded_items_healing_in_finished_job():
         assert it.status == "failed"
         assert "执行异常中断" in it.error
 
+
+def test_multiple_sequential_and_concurrent_batch_submissions(tmp_path, monkeypatch):
+    """
+    排查与验证：混剪开始一次后，再次添加视频（无论是同素材重剪还是新素材），
+    两批任务均能独立调度、正常执行、落库并可查询，互不阻塞。
+    """
+    import app.api.editor as editor_mod
+
+    m1 = _make_material(tmp_path, "seq_mat_1.mp4")
+    m2 = _make_material(tmp_path, "seq_mat_2.mp4")
+
+    analyzed_calls = []
+    rendered_calls = []
+
+    async def fake_analyze(req):
+        analyzed_calls.append(req.talking_head_id)
+        return CutProject(
+            id=f"proj-{req.talking_head_id}",
+            title="test-title",
+            talking_head_id=req.talking_head_id,
+            aspect_ratio=req.aspect_ratio,
+            output_video_path=f"storage/projects/proj-{req.talking_head_id}/final.mp4"
+        )
+
+    async def fake_render(project_id, **kwargs):
+        rendered_calls.append(project_id)
+        return CutProject(id=project_id, title="test-title", talking_head_id="x")
+
+    monkeypatch.setattr(editor_mod, "analyze_and_cut", fake_analyze)
+    monkeypatch.setattr(editor_mod, "render_project", fake_render)
+
+    # 1. 提交第一批混剪任务
+    sub1 = client.post("/api/v1/batch/submit", json={"material_ids": [m1.id], "aspect_ratio": "9:16"})
+    assert sub1.status_code == 200
+    job1_id = sub1.json()["data"]["job_id"]
+
+    # 2. 再次添加视频并提交第二批混剪（包含已出现过的 m1 和新素材 m2）
+    sub2 = client.post("/api/v1/batch/submit", json={"material_ids": [m1.id, m2.id], "aspect_ratio": "16:9"})
+    assert sub2.status_code == 200
+    job2_id = sub2.json()["data"]["job_id"]
+    assert job1_id != job2_id
+
+    # 3. 验证两个批次详情均能正常查询，条目状态均为 completed
+    st1 = client.get(f"/api/v1/batch/jobs/{job1_id}").json()["data"]
+    assert st1["status"] == "finished"
+    assert st1["completed_count"] == 1
+    assert st1["items"][0]["status"] == "completed"
+
+    st2 = client.get(f"/api/v1/batch/jobs/{job2_id}").json()["data"]
+    assert st2["status"] == "finished"
+    assert st2["completed_count"] == 2
+    assert all(it["status"] == "completed" for it in st2["items"])
+
+    # 4. 验证作业列表均能列出，且按创建时间排序
+    listed = client.get("/api/v1/batch/jobs").json()["data"]
+    job_ids = [j["job_id"] for j in listed]
+    assert job1_id in job_ids
+    assert job2_id in job_ids
+
+

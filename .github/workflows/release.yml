@@ -200,6 +200,7 @@ jobs:
       - name: Package Windows Application (x64 NSIS)
         if: runner.os == 'Windows'
         run: |
+          node scripts/prepackage.js --arch=x64
           npx electron-builder --win -p never
 
       - name: Package macOS Application

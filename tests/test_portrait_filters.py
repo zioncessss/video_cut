@@ -4,7 +4,8 @@ from pathlib import Path
 from app.native_engine.ffmpeg_filter import (
     composer,
     PORTRAIT_PRESETS,
-    build_portrait_filter_chain
+    build_portrait_filter_chain,
+    _extract_ffmpeg_error
 )
 from app.models.entities import EditingStrategy
 
@@ -77,6 +78,60 @@ def test_black_border_defense_in_normalize_filter():
     assert pad_idx != -1
     # 验证严格顺序：scale -> portrait_filter -> pad
     assert scale_idx < portrait_idx < pad_idx
+
+def test_color_normalize_filter_ffmpeg_cross_version_compatibility():
+    """
+    跨版本 FFmpeg 滤镜语法兼容性测试：
+    1. 确保绝对不包含低版本 FFmpeg (如 6.x) 不支持的 AMBIENT_VIEWING_ENVIRONMENT 等不稳定参数。
+    2. 确保色彩归一化必须严格输出标准的 yuv420p 与 bt709 标头。
+    3. 若本地或打包目录存在真实的 FFmpeg 6.x 二进制，通过真实滤镜图校验 100% 语法合法。
+    """
+    import subprocess
+    from app.core.config import get_ffmpeg_cmd
+
+    filter_sdr = composer.build_color_normalize_filter(is_hdr=False, target_w=1080, target_h=1920)
+    filter_hdr = composer.build_color_normalize_filter(is_hdr=True, target_w=1080, target_h=1920)
+
+    # 1. 严格断言不包含破坏性参数
+    assert "AMBIENT_VIEWING_ENVIRONMENT" not in filter_sdr
+    assert "AMBIENT_VIEWING_ENVIRONMENT" not in filter_hdr
+
+    # 2. 严格断言包含工业级标准色彩标头
+    assert "format=yuv420p" in filter_sdr
+    assert "color_primaries=bt709:color_trc=bt709:colorspace=bt709" in filter_sdr
+
+    # 3. 针对现存的 FFmpeg 二进制（包含 6.1.1 与 8.x）进行真实 filtergraph 解析验证
+    ffmpeg_candidates = [
+        get_ffmpeg_cmd(),
+        "D:/Program Files (x86)/VideoCut/resources/engine/bin/ffmpeg.exe"
+    ]
+    for ff in ffmpeg_candidates:
+        if ff and Path(ff).exists():
+            test_cmd = [
+                str(ff), "-f", "lavfi", "-i", "color=c=blue:s=1280x720:d=0.04",
+                "-vf", filter_sdr,
+                "-f", "null", "-"
+            ]
+            res = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            assert res.returncode == 0, f"FFmpeg ({ff}) 解析 SDR 归一化滤镜失败: {res.stderr.decode('utf-8', errors='replace')}"
+
+def test_extract_ffmpeg_error_diagnostic_quality():
+    """验证 _extract_ffmpeg_error 能够准确提取 FFmpeg stderr 中的根因行，而不是机械截断"""
+    sample_stderr = """
+ffmpeg version 6.1.1-essentials_build-www.gyan.dev
+Input #0, lavfi, from 'color=c=blue:s=1280x720:d=1':
+[Parsed_sidedata_0 @ 00000223aa25f7c0] [Eval @ 00000086a1bfdcf0] Undefined constant or missing '(' in 'AMBIENT_VIEWING_ENVIRONMENT'
+[Parsed_sidedata_0 @ 00000223aa25f7c0] Unable to parse option value "AMBIENT_VIEWING_ENVIRONMENT"
+Error applying option 'type' to filter 'sidedata': Invalid argument
+[vost#0:0/wrapped_avframe @ 00000223aa25e940] Error initializing a simple filtergraph
+Error opening output file -.
+Error opening output files: Invalid argument
+    """
+    extracted = _extract_ffmpeg_error(sample_stderr)
+    assert "Undefined constant or missing" in extracted
+    assert "Unable to parse option value" in extracted
+    assert "Error applying option 'type'" in extracted
+
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="需要本地 FFmpeg 支持")
 def test_real_video_render_with_portrait_filter(tmp_path):

@@ -253,6 +253,32 @@ def _build_atempo_chain(speed: float) -> str:
     factors.append(str(round(curr, 4)))
     return ",".join(f"atempo={f}" for f in factors)
 
+def _extract_ffmpeg_error(stderr_output: Union[bytes, str], max_lines: int = 6) -> str:
+    """从 FFmpeg 冗长复杂的 stderr 输出中精准提炼出最具诊断价值的关键错误原因行"""
+    if isinstance(stderr_output, bytes):
+        text = stderr_output.decode("utf-8", errors="replace")
+    else:
+        text = str(stderr_output)
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "未知错误 (stderr 为空)"
+
+    # 提取所有包含错误特征的关键行（例如 [Parsed_...], Error, Failed, Invalid, Undefined, Unable 等）
+    error_lines = [
+        ln for ln in lines
+        if any(kw in ln.lower() for kw in ("error", "fail", "invalid", "undefined", "unable", "fatal", "no such"))
+    ]
+    if error_lines:
+        # 优先保留滤镜与参数相关的根因行（过滤无具体诊断信息的通用退出行）
+        root_cause_lines = [
+            ln for ln in error_lines
+            if not any(generic in ln.lower() for generic in ("error opening output", "conversion failed", "error while processing"))
+        ]
+        chosen = root_cause_lines if root_cause_lines else error_lines
+        return " | ".join(chosen[-max_lines:])
+    return " | ".join(lines[-max_lines:])
+
 class FFmpegFilterComposer:
     def __init__(self):
         from app.core.config import get_ffmpeg_cmd, get_ffprobe_cmd
@@ -379,8 +405,8 @@ class FFmpegFilterComposer:
         hw_codecs = ("h264_amf", "h264_nvenc", "h264_qsv", "h264_videotoolbox")
         used_hw = any(codec in cmd for codec in hw_codecs)
         if used_hw:
-            err_str = res.stderr.decode("utf-8", errors="replace")
-            print(f"[FFmpegFilterComposer] GPU 硬件编码执行异常 (exit {res.returncode}): {err_str[-200:]}，自动触发 CPU (libx264 veryfast) 兜底重试...")
+            err_diag = _extract_ffmpeg_error(res.stderr)
+            print(f"[FFmpegFilterComposer] GPU 硬件编码执行异常 (exit {res.returncode}): {err_diag}，自动触发 CPU (libx264 veryfast) 兜底重试...")
             self._cached_encode_args = [
                 "-c:v", "libx264",
                 "-preset", "veryfast",
@@ -533,7 +559,6 @@ class FFmpegFilterComposer:
 
         color_meta = (
             "format=yuv420p,"
-            "sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT,"
             "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
         )
 
@@ -875,7 +900,7 @@ class FFmpegFilterComposer:
             full_filter = "".join(filter_parts).rstrip(";")
 
             cmd = [
-                "ffmpeg", "-y",
+                self.ffmpeg_bin or "ffmpeg", "-y",
                 "-threads", "0", "-filter_threads", "0",
                 *inputs,
                 "-filter_complex", full_filter,
@@ -914,10 +939,10 @@ class FFmpegFilterComposer:
                 res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=300, cwd=output_path.parent)
                 if res.returncode == 0:
                     return True
-                err_str = res.stderr.decode("utf-8", errors="replace")
-                print(f"[FFmpegFilterComposer] Kept spans render failed (exit {res.returncode}): {err_str[-300:]}")
+                err_diag = _extract_ffmpeg_error(res.stderr)
+                print(f"[FFmpegFilterComposer] Kept spans render failed (exit {res.returncode}): {err_diag}")
                 if talking_head_path.stat().st_size > 10240:
-                    raise RuntimeError(f"FFmpeg 粗剪压制失败 (exit {res.returncode}): {err_str[-200:]}")
+                    raise RuntimeError(f"FFmpeg 粗剪压制失败 (exit {res.returncode}): {err_diag}")
                 shutil.copyfile(str(talking_head_path), str(output_path))
                 return True
             except Exception as e:
@@ -968,7 +993,7 @@ class FFmpegFilterComposer:
                 current_v = "[v_out]"
 
             cmd = [
-                "ffmpeg", "-y",
+                self.ffmpeg_bin or "ffmpeg", "-y",
                 "-threads", "0", "-filter_threads", "0",
                 *inputs,
                 "-filter_complex", ";".join(filter_chain),
@@ -1008,8 +1033,8 @@ class FFmpegFilterComposer:
                 if res.returncode == 0:
                     return True
 
-                err_str = res.stderr.decode("utf-8", errors="replace")
-                print(f"[FFmpegFilterComposer] Single transcode failed (exit {res.returncode}): {err_str[-300:]}")
+                err_diag = _extract_ffmpeg_error(res.stderr)
+                print(f"[FFmpegFilterComposer] Single transcode failed (exit {res.returncode}): {err_diag}")
                 if talking_head_path.stat().st_size > 10240:
                     return False
                 shutil.copyfile(str(talking_head_path), str(output_path))
@@ -1175,7 +1200,7 @@ class FFmpegFilterComposer:
                 sub_a_map = ["-map", "[a_sped]"]
 
         cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_bin or "ffmpeg", "-y",
             "-threads", "0", "-filter_threads", "0",
             *inputs,
             "-filter_complex", full_filter,
@@ -1215,10 +1240,10 @@ class FFmpegFilterComposer:
             if res.returncode == 0:
                 return True
 
-            err_str = res.stderr.decode("utf-8", errors="replace")
-            print(f"[FFmpegFilterComposer] Complex render failed (exit {res.returncode}): {err_str[-300:]}")
+            err_diag = _extract_ffmpeg_error(res.stderr)
+            print(f"[FFmpegFilterComposer] Complex render failed (exit {res.returncode}): {err_diag}")
             if talking_head_path.stat().st_size > 10240:
-                raise RuntimeError(f"FFmpeg 导出失败 (exit {res.returncode}): {err_str[-200:]}")
+                raise RuntimeError(f"FFmpeg 导出失败 (exit {res.returncode}): {err_diag}")
             shutil.copyfile(str(talking_head_path), str(output_path))
             return True
         except Exception as e:
@@ -1303,7 +1328,7 @@ class FFmpegFilterComposer:
             filter_parts.append(f"{current_v}[{overlay_idx}:v]overlay=0:0[v_out]")
             current_v = "[v_out]"
 
-        cmd = ["ffmpeg", "-y", "-threads", "0", "-filter_threads", "0", *inputs]
+        cmd = [self.ffmpeg_bin or "ffmpeg", "-y", "-threads", "0", "-filter_threads", "0", *inputs]
         if filter_parts:
             cmd.extend(["-filter_complex", ";".join(filter_parts), "-map", current_v])
         else:
@@ -1325,10 +1350,10 @@ class FFmpegFilterComposer:
             res = self._run_ffmpeg_with_cpu_fallback(cmd, timeout=120, cwd=output_path.parent)
             if res.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
                 return True
-            err_str = res.stderr.decode("utf-8", errors="replace")
-            print(f"[FFmpegFilterComposer] Fast burn failed (exit {res.returncode}): {err_str[-300:]}")
+            err_diag = _extract_ffmpeg_error(res.stderr)
+            print(f"[FFmpegFilterComposer] Fast burn failed (exit {res.returncode}): {err_diag}")
             if clean_base_path.stat().st_size > 10240:
-                raise RuntimeError(f"FFmpeg 极速烧录失败 (exit {res.returncode}): {err_str[-200:]}")
+                raise RuntimeError(f"FFmpeg 极速烧录失败 (exit {res.returncode}): {err_diag}")
             shutil.copyfile(str(clean_base_path), str(output_path))
             return True
         finally:

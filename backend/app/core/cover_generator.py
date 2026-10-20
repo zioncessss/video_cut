@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from app.models.entities import CoverDesignConfig
+from app.core.config import get_ffmpeg_cmd, get_ffprobe_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -1422,7 +1423,7 @@ def _probe_is_hdr_video(video_path: Path) -> bool:
         return False
     try:
         cmd = [
-            "ffprobe", "-v", "error",
+            get_ffprobe_cmd(), "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=color_space,color_primaries,color_transfer,pix_fmt",
             "-of", "default=noprint_wrappers=1",
@@ -1450,7 +1451,7 @@ def extract_candidate_frames(
         duration = 10.0
         try:
             probe = subprocess.run([
-                "ffprobe", "-v", "error",
+                get_ffprobe_cmd(), "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 str(video_path)
@@ -1494,7 +1495,7 @@ def extract_candidate_frames(
             is_hdr = _probe_is_hdr_video(video_path)
 
         # 基础命令
-        cmd = ["ffmpeg", "-y", "-ss", f"{ts:.3f}", "-i", str(video_path)]
+        cmd = [get_ffmpeg_cmd(), "-y", "-ss", f"{ts:.3f}", "-i", str(video_path)]
         if is_hdr:
             # HDR HLG / BT.2020 注入广播级色调映射滤镜链，使绿树通透、肤色红润，彻底消除灰白惨白滤镜感
             cmd.extend([
@@ -1510,7 +1511,7 @@ def extract_candidate_frames(
         # 环境滤镜缺失兜底：若带有 zscale 的命令执行失败，安全回退普通抽取
         if proc.returncode != 0 or not out_file.exists():
             subprocess.run([
-                "ffmpeg", "-y",
+                get_ffmpeg_cmd(), "-y",
                 "-ss", f"{ts:.3f}",
                 "-i", str(video_path),
                 "-frames:v", "1",

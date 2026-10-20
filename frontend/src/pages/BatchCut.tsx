@@ -6,6 +6,7 @@ import {
   fetchHardwareMetrics,
   fetchAllProjects,
   uploadAndBatchCut,
+  importAndBatchCut,
   openFolder,
   deleteProject,
   batchDeleteProjects,
@@ -57,6 +58,13 @@ const ITEM_STATUS_META: Record<string, { label: string; cls: string }> = {
   interrupted: { label: '已中断', cls: 'bg-amber-50 text-amber-600' },
 };
 
+interface BatchFileInputItem {
+  name: string;
+  size: number;
+  path?: string;
+  rawFile?: File;
+}
+
 export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const { showAlert, showToast: showGlobalToast } = useDialog();
   const [hardware, setHardware] = useState<any>(null);
@@ -66,7 +74,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const [activeTab, setActiveTab] = useState<'gallery' | 'queue'>('gallery');
 
   // 批量参数与上传
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<BatchFileInputItem[]>([]);
   const [batchAspectRatio, setBatchAspectRatio] = useState<'9:16' | '16:9'>('9:16');
   const [batchFilterBannedWords, setBatchFilterBannedWords] = useState<boolean>(() => {
     try {
@@ -154,7 +162,6 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
     }
 
     if (forceRefreshDetails) {
-      jobDetailsCacheRef.current = {};
       setImageErrors({});
       setImageRetryCounts({});
       setImageRetryTimestamps({});
@@ -237,12 +244,27 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
     };
   }, []);
 
+  const handleCloseUploadModal = () => {
+    setShowUploadModal(false);
+    setSelectedFiles([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const files = Array.from(e.target.files);
+      const files: BatchFileInputItem[] = Array.from(e.target.files).map(f => ({
+        name: f.name,
+        size: f.size,
+        path: (f as any).path,
+        rawFile: f
+      }));
       setSelectedFiles(prev => [...prev, ...files]);
       setShowUploadModal(true);
     }
+    // 关键修复：重置 input.value 确保二次选择同一视频文件时 onChange 必能触发
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -253,8 +275,49 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
       const files = Array.from(e.dataTransfer.files).filter(f =>
         f.type.startsWith('video/') || /\.(mp4|mov|mkv|avi|webm)$/i.test(f.name)
       );
-      setSelectedFiles(prev => [...prev, ...files]);
-      setShowUploadModal(true);
+      if (files.length > 0) {
+        const items: BatchFileInputItem[] = files.map(f => ({
+          name: f.name,
+          size: f.size,
+          path: (f as any).path,
+          rawFile: f
+        }));
+        setSelectedFiles(prev => [...prev, ...items]);
+        setShowUploadModal(true);
+      }
+    }
+  };
+
+  const handleAddVideosClick = async () => {
+    if ((window as any).electronAPI?.showOpenDialog) {
+      try {
+        const res = await (window as any).electronAPI.showOpenDialog({
+          title: '选择要批量混剪的口播视频',
+          filters: [
+            { name: '视频文件', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }
+          ],
+          properties: ['openFile', 'multiSelections']
+        });
+        if (!res.canceled && res.filePaths && res.filePaths.length > 0) {
+          const items: BatchFileInputItem[] = res.filePaths.map((fp: string) => {
+            const filename = fp.replace(/^.*[\\/]/, '');
+            return {
+              name: filename,
+              size: 0,
+              path: fp
+            };
+          });
+          setSelectedFiles(prev => [...prev, ...items]);
+          setShowUploadModal(true);
+          return;
+        }
+      } catch (err) {
+        console.warn('[BatchCut] Electron showOpenDialog 异常，回退文件选择框:', err);
+      }
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
     }
   };
 
@@ -264,45 +327,81 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
   const handleStartBatchCut = async () => {
     if (selectedFiles.length === 0) return;
-    const filesToUpload = [...selectedFiles];
-    const totalBytes = filesToUpload.reduce((sum, f) => sum + f.size, 0);
+    const itemsToCut = [...selectedFiles];
+    const totalBytes = itemsToCut.reduce((sum, f) => sum + (f.size || 0), 0);
 
     // 1. 0 毫秒即时转场：立即关闭确认弹窗并无缝切到混剪队列，彻底消除假死卡顿
-    setShowUploadModal(false);
-    setSelectedFiles([]);
+    handleCloseUploadModal();
     setActiveTab('queue');
-
-    // 2. 挂载队列顶部的素材极速上传进度卡片
-    setUploadingState({
-      totalFiles: filesToUpload.length,
-      totalBytes,
-      loadedBytes: 0,
-      percent: 0,
-      filenames: filesToUpload.map(f => f.name)
-    });
 
     setSubmitting(true);
     try {
-      await uploadAndBatchCut(
-        filesToUpload,
-        batchAspectRatio,
-        undefined,
-        1.0,
-        (pe: any) => {
-          const loaded = pe.loaded || 0;
-          const total = pe.total || totalBytes || 1;
-          const pct = Math.min(99, Math.round((loaded / total) * 100));
-          setUploadingState(prev => prev ? {
-            ...prev,
-            loadedBytes: loaded,
-            percent: pct
-          } : null);
-        },
-        batchFilterBannedWords
-      );
-      // 3. 上传完成，平滑移除上传进度条并强制刷新最新任务列表
-      setUploadingState(null);
-      await loadData(true);
+      const nativePaths = itemsToCut
+        .map(f => f.path)
+        .filter((p): p is string => typeof p === 'string' && p.length > 0);
+
+      const isAllNative = nativePaths.length === itemsToCut.length && !!(window as any).electronAPI;
+
+      if (isAllNative) {
+        setUploadingState({
+          totalFiles: itemsToCut.length,
+          totalBytes: 0,
+          loadedBytes: 0,
+          percent: 100,
+          filenames: itemsToCut.map(f => f.name)
+        });
+        const res = await importAndBatchCut(
+          nativePaths,
+          batchAspectRatio,
+          undefined,
+          1.0,
+          batchFilterBannedWords
+        );
+        if (res?.job_id) {
+          setExpandedJobs(prev => ({ ...prev, [res.job_id]: true }));
+        }
+        setUploadingState(null);
+        await loadData(false);
+      } else {
+        const rawFiles = itemsToCut
+          .map(f => f.rawFile)
+          .filter((f): f is File => f instanceof File);
+
+        if (rawFiles.length === 0) {
+          throw new Error('未获取到有效的视频文件对象');
+        }
+
+        setUploadingState({
+          totalFiles: rawFiles.length,
+          totalBytes,
+          loadedBytes: 0,
+          percent: 0,
+          filenames: rawFiles.map(f => f.name)
+        });
+
+        const res = await uploadAndBatchCut(
+          rawFiles,
+          batchAspectRatio,
+          undefined,
+          1.0,
+          (pe: any) => {
+            const loaded = pe.loaded || 0;
+            const total = pe.total || totalBytes || 1;
+            const pct = Math.min(99, Math.round((loaded / total) * 100));
+            setUploadingState(prev => prev ? {
+              ...prev,
+              loadedBytes: loaded,
+              percent: pct
+            } : null);
+          },
+          batchFilterBannedWords
+        );
+        if (res?.job_id) {
+          setExpandedJobs(prev => ({ ...prev, [res.job_id]: true }));
+        }
+        setUploadingState(null);
+        await loadData(false);
+      }
     } catch (err: any) {
       setUploadingState(null);
       showAlert({ title: '启动批量剪辑失败', message: err?.response?.data?.detail || err.message, type: 'error' });
@@ -567,7 +666,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={handleAddVideosClick}
             className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -1242,7 +1341,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                 <span className="text-xs text-gray-400 font-mono">({selectedFiles.length} 个视频)</span>
               </div>
               <button
-                onClick={() => setShowUploadModal(false)}
+                onClick={handleCloseUploadModal}
                 className="text-gray-400 hover:text-gray-600 p-1 rounded-lg"
               >
                 <X className="w-4 h-4" />
@@ -1256,9 +1355,11 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
                   <div className="flex items-center space-x-2 truncate">
                     <Film className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                     <span className="truncate text-gray-700 font-medium">{file.name}</span>
-                    <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
-                      ({(file.size / (1024 * 1024)).toFixed(1)} MB)
-                    </span>
+                    {file.size > 0 && (
+                      <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
+                        ({(file.size / (1024 * 1024)).toFixed(1)} MB)
+                      </span>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1308,7 +1409,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
             <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100">
               <button
                 type="button"
-                onClick={() => setShowUploadModal(false)}
+                onClick={handleCloseUploadModal}
                 className="px-4 py-2 rounded-xl text-xs text-gray-600 hover:bg-gray-100 font-medium transition-colors cursor-pointer"
               >
                 取消
