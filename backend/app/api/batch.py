@@ -57,8 +57,10 @@ async def _run_one(
 ) -> None:
     """执行单个口播视频的完整剪辑流水线，任何失败如实落库"""
     # 清理上一次该素材可能残留的进度条状态
-    from app.api.editor import _pipeline_progress
+    from app.api.editor import _pipeline_progress, _set_progress, PipelineStage
     _pipeline_progress.pop(item.material_id, None)
+    if item.project_id:
+        _pipeline_progress.pop(item.project_id, None)
 
     item.status = "running"
     item.progress = 5
@@ -78,6 +80,10 @@ async def _run_one(
         item.project_id = project.id
         item.progress = 60
         _persist(job)
+
+        # 标志进入压制阶段，重置阶段进度，彻底消除 analyze_and_cut 产生的 100% 进度导致的倒挂与假死
+        _set_progress(item.material_id, PipelineStage.VIDEO_COMPOSING, 65, "正在压制生成成片预览与封面 (FFmpeg)...")
+        _set_progress(project.id, PipelineStage.VIDEO_COMPOSING, 65, "正在压制生成成片预览与封面 (FFmpeg)...")
         await asyncio.sleep(0.05)
 
         # 批量流水线直接进行全量成片压制，保证生成可直接播放、导出的最终 MP4 与封面
@@ -87,6 +93,8 @@ async def _run_one(
             await render_project(project.id)
         item.status = "completed"
         item.progress = 100
+        _set_progress(item.material_id, PipelineStage.COMPLETED, 100, "成片与封面压制完成")
+        _set_progress(project.id, PipelineStage.COMPLETED, 100, "成片与封面压制完成")
         await asyncio.sleep(0.05)
     except Exception as e:
         import traceback
@@ -131,65 +139,66 @@ async def _execute_job(
     job = _jobs.get(job_id) or BatchJobRepository().get_by_id(job_id)
     if not job:
         return
-    _jobs[job_id] = job
-    job.status = BatchJobStatus.RUNNING
-    _persist(job)
-
-    sem = asyncio.Semaphore(max(1, job.concurrency))
     job_tasks = {}
     _running_tasks[job_id] = job_tasks
 
-    async def worker(item: BatchJobItem, delay: float = 0.0):
-        if delay > 0:
-            await asyncio.sleep(delay)
+    try:
+        job.status = BatchJobStatus.RUNNING
+        _persist(job)
 
-        if job.status == BatchJobStatus.CANCELED:
-            item.status = "canceled"
-            item.error = "作业已被用户主动取消"
-            _persist(job)
-            return
+        sem = asyncio.Semaphore(max(1, job.concurrency))
 
-        async with sem:
+        async def worker(item: BatchJobItem, delay: float = 0.0):
+            if delay > 0:
+                await asyncio.sleep(delay)
+
             if job.status == BatchJobStatus.CANCELED:
                 item.status = "canceled"
                 item.error = "作业已被用户主动取消"
                 _persist(job)
                 return
-            try:
-                eff_banned = getattr(item, "filter_banned_words", False) or filter_banned_words
-                await _run_one(job, item, aspect_ratio, video_speed, filter_banned_words=eff_banned)
-            except asyncio.CancelledError:
-                item.status = "canceled"
-                item.error = "任务被主动取消 (Cancelled)"
-                _persist(job)
-                raise
-            except Exception as e:
-                item.status = "failed"
-                item.error = f"任务调度异常: {str(e)}"
-                _persist(job)
 
-    target_items = [i for i in job.items if i.status in ("failed", "queued", "interrupted")] if retry_failed_only else job.items
-    for it in target_items:
-        it.status = "queued"
-        it.error = None
-        it.progress = 0
-    _persist(job)
+            async with sem:
+                if job.status == BatchJobStatus.CANCELED:
+                    item.status = "canceled"
+                    item.error = "作业已被用户主动取消"
+                    _persist(job)
+                    return
+                try:
+                    eff_banned = getattr(item, "filter_banned_words", False) or filter_banned_words
+                    await _run_one(job, item, aspect_ratio, video_speed, filter_banned_words=eff_banned)
+                except asyncio.CancelledError:
+                    item.status = "canceled"
+                    item.error = "任务被主动取消 (Cancelled)"
+                    _persist(job)
+                    raise
+                except Exception as e:
+                    item.status = "failed"
+                    item.error = f"任务调度异常: {str(e)}"
+                    _persist(job)
 
-    tasks = []
-    for idx, it in enumerate(target_items):
-        t = asyncio.create_task(worker(it, delay=idx * 0.25))
-        job_tasks[f"{it.material_id}_{idx}"] = t
-        tasks.append(t)
+        target_items = [i for i in job.items if i.status in ("failed", "queued", "interrupted")] if retry_failed_only else job.items
+        for it in target_items:
+            it.status = "queued"
+            it.error = None
+            it.progress = 0
+        _persist(job)
 
-    try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        # 严格检查 gather 返回的所有异常，避免任何未捕获异常被静默忽略
-        for idx, res in enumerate(results):
-            if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
-                it = target_items[idx]
-                if it.status not in ("completed", "canceled"):
-                    it.status = "failed"
-                    it.error = f"执行异常: {str(res)}"
+        tasks = []
+        for idx, it in enumerate(target_items):
+            t = asyncio.create_task(worker(it, delay=idx * 0.25))
+            job_tasks[f"{it.material_id}_{idx}"] = t
+            tasks.append(t)
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 严格检查 gather 返回的所有异常，避免任何未捕获异常被静默忽略
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
+                    it = target_items[idx]
+                    if it.status not in ("completed", "canceled"):
+                        it.status = "failed"
+                        it.error = f"执行异常: {str(res)}"
     finally:
         _running_tasks.pop(job_id, None)
         # 防御性自愈：作业结束时，任何仍然处于 queued 或 running 的条目，标记为 failed
@@ -395,9 +404,18 @@ async def get_batch_job(job_id: str):
             prog = _pipeline_progress.get(i.material_id) or (
                 _pipeline_progress.get(i.project_id) if i.project_id else None
             )
-            if prog and getattr(prog, "percent", 0) > d.get("progress", 0):
-                d["progress"] = prog.percent
-                d["stage_message"] = getattr(prog, "message", None)
+            if prog:
+                cur_prog = d.get("progress", 0)
+                if cur_prog < 60:
+                    # analyze_and_cut 阶段：0~100 映射为 5~58%，避免初剪完成或命中缓存时的 100% 倒挂
+                    scaled = min(58, max(5, int(getattr(prog, "percent", 0) * 0.58)))
+                    if scaled > cur_prog:
+                        d["progress"] = scaled
+                    d["stage_message"] = getattr(prog, "message", None)
+                else:
+                    # 进入 render_project 压制阶段：显示压制提示与平滑进度
+                    d["stage_message"] = getattr(prog, "message", "正在压制生成成片预览与封面 (FFmpeg)...")
+                    d["progress"] = max(cur_prog, 70)
         items_out.append(d)
 
     completed_count, failed_count = _count_states(job)

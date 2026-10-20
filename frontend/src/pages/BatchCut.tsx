@@ -120,7 +120,18 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
   const toggleJobExpanded = (jobId: string, defaultExpanded: boolean = true) => {
     setExpandedJobs(prev => {
       const current = prev[jobId] !== undefined ? prev[jobId] : defaultExpanded;
-      return { ...prev, [jobId]: !current };
+      const nextVal = !current;
+      if (nextVal && !jobDetailsCacheRef.current[jobId]) {
+        axios.get(`${API_BASE}/batch/jobs/${jobId}`).then(d => {
+          if (d.data?.data && isMountedRef.current) {
+            jobDetailsCacheRef.current[jobId] = d.data.data;
+            setJobDetails(prevD => ({ ...prevD, [jobId]: d.data.data }));
+          }
+        }).catch(err => {
+          console.warn('[BatchCut] 按需拉取批次详情失败:', err?.message);
+        });
+      }
+      return { ...prev, [jobId]: nextVal };
     });
   };
 
@@ -508,6 +519,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
   const handleCancelJob = async (jobId: string) => {
     setCancelingJobIds(prev => ({ ...prev, [jobId]: true }));
+    delete jobDetailsCacheRef.current[jobId];
     try {
       await cancelBatchJob(jobId);
       showGlobalToast('已取消批量剪辑任务', 'info');
@@ -521,6 +533,7 @@ export const BatchCut: React.FC<BatchCutProps> = ({ onNavigateToEditor }) => {
 
   const handleRetryFailed = async (jobId: string) => {
     setRetryingJobIds(prev => ({ ...prev, [jobId]: true }));
+    delete jobDetailsCacheRef.current[jobId];
     try {
       const res = await retryFailedBatchJob(jobId);
       showGlobalToast(`已将 ${res.retrying_count || '部分'} 个失败条目重新提交混剪`, 'success');

@@ -4,6 +4,7 @@ mock analyze_and_cut / render_project（重量级 ASR/LLM/FFmpeg），验证：
 submit 契约、逐项状态流转、单项失败落真实错误且不中断其余、持久化可查询。
 """
 import sys
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,8 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from app.main import app  # noqa: E402
-from app.models.entities import MaterialCategory, CutProject  # noqa: E402
+from app.models.entities import MaterialCategory, CutProject, BatchJob, BatchJobItem  # noqa: E402
 from app.native_engine.storage import storage_service  # noqa: E402
-from app.models.entities import BatchJobItem  # noqa: E402
 
 client = TestClient(app)
 
@@ -168,5 +168,67 @@ def test_multiple_sequential_and_concurrent_batch_submissions(tmp_path, monkeypa
     job_ids = [j["job_id"] for j in listed]
     assert job1_id in job_ids
     assert job2_id in job_ids
+
+
+@pytest.mark.asyncio
+async def test_batch_progress_smoothing_and_lifecycle_integrity(tmp_path, monkeypatch):
+    """
+    状态同步与生命周期防僵死测试：
+    1. 确保在 analyze_and_cut 完成后但 render_project 压制未完成时，
+       条目对外返回的 progress 不会被 100% 倒挂顶满，且带有压制阶段提示；
+    2. 确保作业终态下所有 items 均被正确收敛。
+    """
+    import app.api.editor as editor_mod
+    import app.api.batch as batch_mod
+    from app.models.entities import PipelineStage
+
+    m = _make_material(tmp_path, "smooth_progress.mp4")
+
+    # 模拟 analyze_and_cut 产生了 100% 初剪完成事件
+    async def fake_analyze(req):
+        editor_mod._set_progress(req.talking_head_id, PipelineStage.COMPLETED, 100, "智能初剪与纠偏已完成")
+        return CutProject(
+            id=f"proj-{req.talking_head_id}",
+            title="smooth-title",
+            talking_head_id=req.talking_head_id,
+            aspect_ratio=req.aspect_ratio,
+            output_video_path=f"storage/projects/proj-{req.talking_head_id}/final.mp4"
+        )
+
+    # 模拟 render_project 阶段被挂起观察
+    render_started = asyncio.Event()
+    render_finish = asyncio.Event()
+
+    async def fake_render(project_id, **kwargs):
+        render_started.set()
+        await render_finish.wait()
+        return CutProject(id=project_id, title="smooth-title", talking_head_id=m.id)
+
+    monkeypatch.setattr(editor_mod, "analyze_and_cut", fake_analyze)
+    monkeypatch.setattr(editor_mod, "render_project", fake_render)
+
+    # 构造并运行作业条目
+    job = BatchJob(total_count=1, items=[BatchJobItem(material_id=m.id)])
+    batch_mod._jobs[job.id] = job
+    batch_mod._persist(job)
+
+    run_task = asyncio.create_task(batch_mod._run_one(job, job.items[0], "9:16"))
+
+    await render_started.wait()
+    # 此时 analyze_and_cut 已结束，正在 render_project
+    st = client.get(f"/api/v1/batch/jobs/{job.id}").json()["data"]
+    item_data = st["items"][0]
+    # 严格断言：正在压制中时，progress 绝对不能是 100% 假完成
+    assert item_data["status"] == "running"
+    assert item_data["progress"] < 100
+    assert item_data["progress"] >= 60
+    assert "压制" in (item_data.get("stage_message") or "")
+    render_finish.set()
+    await run_task
+
+    final_st = client.get(f"/api/v1/batch/jobs/{job.id}").json()["data"]
+    assert final_st["items"][0]["status"] == "completed"
+    assert final_st["items"][0]["progress"] == 100
+
 
 
